@@ -9,17 +9,24 @@ PATCH_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "=== Generating header from YAML ==="
 python3 "$PATCH_DIR/gen_joints_header.py"
 
+SOURCES=(patch_common.cpp joint_extend.cpp)
+
 echo "=== Compiling ==="
-"$CW/mwcceppc.exe" \
-    -I- -i "$KAMEK_STDLIB" -i "$PATCH_DIR" \
-    -Cpp_exceptions off -enum int -Os \
-    -use_lmw_stmw on -fp hard -rostr \
-    -sdata 0 -sdata2 0 \
-    -c -o "$PATCH_DIR/joint_extend.o" "$PATCH_DIR/joint_extend.cpp"
+for src in "${SOURCES[@]}"; do
+    obj="${src%.cpp}.o"
+    "$CW/mwcceppc.exe" \
+        -I- -i "$KAMEK_STDLIB" -i "$PATCH_DIR" \
+        -Cpp_exceptions off -enum int -Os \
+        -use_lmw_stmw on -fp hard -rostr \
+        -sdata 0 -sdata2 0 \
+        -c -o "$PATCH_DIR/$obj" "$PATCH_DIR/$src"
+done
 
 echo "=== Linking ==="
+OBJS=()
+for src in "${SOURCES[@]}"; do OBJS+=("$PATCH_DIR/${src%.cpp}.o"); done
 "$KAMEK" \
-    "$PATCH_DIR/joint_extend.o" \
+    "${OBJS[@]}" \
     -static=0x806ED000 \
     -externals="$PATCH_DIR/externals.txt" \
     -output-gecko="$PATCH_DIR/joint_extend_gecko.txt" \
