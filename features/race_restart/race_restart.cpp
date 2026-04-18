@@ -13,9 +13,18 @@
 //   Running the restart before this frame's update begins avoids dangling
 //   references to about-to-be-freed sub-objects on the caller's stack.
 //
-// Hotkey: internal-button-mask bit 0x2000, rising edge.
-//   Input_IsItemButtonPressed skips this bit in race scene state 0x2a, so it
-//   does not collide with item / versus buttons. (See mkgp2_input_system.md.)
+// Hotkey: internal-button-mask bit 0x0800, rising edge.
+//   This bit = "Versus" button (physical green button on the arcade panel).
+//   It's set by InputObj_ReadRawInput when either the JVS operator Versus bit
+//   (g_jvsOperatorBits & 0x8000) or the player's JVS raw bit 0x40 is on, so
+//   pressing the Versus key fires it reliably on both real hardware and
+//   Dolphin's Triforce JVS emulation. Race scene state 0x2a doesn't consume
+//   Versus press for anything, so using it for restart won't conflict.
+//   (See mkgp2_input_system.md for the full raw->game bit table.)
+//
+//   Note: we avoid bit 0x2000 even though prior docs suggested it was free —
+//   InputObj_ReadRawInput never sets 0x2000 from any JVS path, so the edge
+//   would never fire.
 
 typedef unsigned char  u8;
 typedef unsigned int   u32;
@@ -40,7 +49,8 @@ extern "C" void TryRaceRestart(void* scene) {
     u32 pressed = held & ~s_prevHeld;
     s_prevHeld = held;
 
-    if (pressed & 0x2000) {
+    // 0x0800 = Versus button (green). See top-of-file comment.
+    if (pressed & 0x0800) {
         DebugPrintfSafe("MKGP2: race restart (scene=%p)\n", scene);
         RaceScene_Dtor(scene, 0);
         RaceScene_Init(scene);
