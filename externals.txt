@@ -24,6 +24,15 @@ DebugPrintf=0x8002ceec
 ProcessSystemTick=0x8009d5f8
 Alloc=0x8003b1fc
 
+# Race mode
+RaceScene_Init=0x800a1d80
+RaceScene_Dtor=0x800a1a1c
+RaceMode_FrameUpdate=0x800a0ef4
+
+# Input
+GetInputManager=0x8003907c
+InputMgr_GetPlayer=0x80039020
+
 # Globals
 g_courseId=0x806cf108
 g_isUraCourse=0x806d1268
