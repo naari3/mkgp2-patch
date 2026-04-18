@@ -13,18 +13,17 @@
 //   Running the restart before this frame's update begins avoids dangling
 //   references to about-to-be-freed sub-objects on the caller's stack.
 //
-// Hotkey: internal-button-mask bit 0x0800, rising edge.
-//   This bit = "Versus" button (physical green button on the arcade panel).
-//   It's set by InputObj_ReadRawInput when either the JVS operator Versus bit
-//   (g_jvsOperatorBits & 0x8000) or the player's JVS raw bit 0x40 is on, so
-//   pressing the Versus key fires it reliably on both real hardware and
-//   Dolphin's Triforce JVS emulation. Race scene state 0x2a doesn't consume
-//   Versus press for anything, so using it for restart won't conflict.
-//   (See mkgp2_input_system.md for the full raw->game bit table.)
-//
-//   Note: we avoid bit 0x2000 even though prior docs suggested it was free —
-//   InputObj_ReadRawInput never sets 0x2000 from any JVS path, so the edge
-//   would never fire.
+// Hotkey: GC pad A + B held simultaneously (rising edge of the combo).
+//   Dolphin's Triforce JVS mapping for MKGP2 (MarioKartGP.cpp):
+//     GC A -> switch_inputs[1] bit 0x20 -> u16 raw 0x2000
+//            -> game mask 0x4000 (Item) + 0x2000 + 0x0001
+//     GC B -> switch_inputs[1] bit 0x02 -> u16 raw 0x0200
+//            -> game mask 0x8000 (Versus cancel) + 0x0400 (Coin jump)
+//   Combo condition: (held & 0xc000) == 0xc000  (both Item and Versus-cancel
+//   bits on in the same frame). Individual A or B presses still behave
+//   normally in race (fire item / cancel); only when both are held together
+//   does this edge detector fire, so there's no accidental restart during
+//   normal play. See mkgp2_input_system.md for the full raw->game bit table.
 
 typedef unsigned char  u8;
 typedef unsigned int   u32;
@@ -46,11 +45,13 @@ extern "C" void TryRaceRestart(void* scene) {
     if (!mgr || !*mgr) return;
 
     u32 held = *(u32*)((u8*)*mgr + 0x0c);
-    u32 pressed = held & ~s_prevHeld;
+    // GC A + B combo: both the Item bit (0x4000) and Versus-cancel bit (0x8000)
+    // held this frame, but not both held on the previous frame. See top-of-file.
+    u32 combo_now  = (held       & 0xc000) == 0xc000;
+    u32 combo_prev = (s_prevHeld & 0xc000) == 0xc000;
     s_prevHeld = held;
 
-    // 0x0800 = Versus button (green). See top-of-file comment.
-    if (pressed & 0x0800) {
+    if (combo_now && !combo_prev) {
         DebugPrintfSafe("MKGP2: race restart (scene=%p)\n", scene);
         RaceScene_Dtor(scene, 0);
         RaceScene_Init(scene);
