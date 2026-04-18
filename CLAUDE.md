@@ -1,0 +1,112 @@
+# MKGP2 Kamek パッチ開発ガイド
+
+MKGP2 (Mario Kart Arcade GP2, GNLJ82) への Kamek パッチ開発リポジトリ。
+GitHub: https://github.com/naari3/mkgp2-patch。ビルド: `bash build.sh`。
+
+## 関連リソース
+
+- **解析ドキュメント**: `~/src/github.com/dolphin-emu/dolphin/mkgp2docs/` — 関数アドレス・構造体レイアウト・HSD コース format 等の調査結果。新しい hook を設計する前に必ず参照。
+- **ライブメモリビューワ**: `~/src/github.com/naari3/mkgp2-view/` — Dolphin プロセスからアドレスを実時間読み取り。パッチ動作のデバッグに使用。MCPサーバー (`read_u32`, `get_game_state` 等) も提供。
+- **ISO 展開結果**: `C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files\` — コースモデル・コリジョン・テクスチャ等の全リソースが Dolphin dump + extract 済み。ファイル名命名規則の実物確認・没データ (test_course 等) 存在確認に使用。詳細は `mkgp2docs/mkgp2_iso_dump_location.md`。
+
+## 必須のセットアップ (MKGP2特有のハマりどころ)
+
+### 1. DBAT0 拡張
+
+MKGP2 の `__start` は DBAT0 を ~32MB しか張らない (IBAT0 は広い)。結果、パッチ領域 (0x806EDxxx 等) の**コードは実行できるがデータ読み書きが失敗する**。HLE や MMU の Host 系アクセスも全滅する。
+
+対策: 各機能のエントリで `EnsureDBATWidened()` (in `common/patch_common.h`) を呼ぶ。内部でフラグを見て一度だけ `WidenDBAT0_256M` を実行する。
+
+```cpp
+// features/xxx/xxx.cpp
+#include "patch_common.h"
+void MyFeatureEntry() {
+    EnsureDBATWidened();  // idempotent
+    ...
+}
+```
+
+Dolphin 側では `mtspr DBAT*` で `UpdateBATs` / `DBATUpdated` がトリガされ JIT キャッシュが無効化される。問題なし。
+
+### 2. ArenaLo 引き上げ
+
+`ArenaLo (0x80000030)` はゲームのヒープ開始位置。デフォルトではパッチ領域を上書きする。Riivolution の `<memory>` パッチで一度だけ書き込む。
+
+```cpp
+// common/patch_common.cpp
+kmWrite32(0x80000030, 0x806EF000);  // パッチ bin 末尾より上に設定
+```
+
+パッチ bin サイズが変わったら再計算すること (`patch_map.md` で bin サイズ確認可)。
+
+### 3. DebugPrintf HLE ヒューリスティック回避
+
+Dolphin の `HLE_GeneralDebugPrint` は `r3` が RAM アドレスで、かつ `*r3` も RAM アドレス (または NULL) なら `r3` を `this` ポインタと誤判定し、書式文字列を `r4` から読む。**パッチ領域の書式文字列が "MKGP" (0x4D4B4750) で始まると、PPC セグメントレジスタの identity mapping 経由で `HostIsRAMAddress(0x4D4B4750)` が true を返し、ヒューリスティック誤爆**。結果、書式が読めず空文字列または文字化け。
+
+**Dolphin 側を修正してはいけない** (ゲーム都合を emu に押し付けるため)。代わりに `common/patch_common.cpp` の `DebugPrintfSafe` (レジスタを1つシフトして r3=0 にする asm ラッパー) を使う:
+
+```cpp
+// features/xxx/xxx.cpp
+#include "patch_common.h"
+DebugPrintfSafe("MKGP2: value=%d\n", x);
+```
+
+`DebugPrintf` (元のゲームシンボル) も `patch_common.h` で extern 宣言済み。既存ゲームコードの `DebugPrintf` 呼び出しには影響なし (0x4D4B4750 始まりの書式文字列がそもそも存在しないため)。
+
+## externals.txt 検証
+
+`externals.txt` は Ghidra アドレスの手書き転記で、古い/誤った値が紛れる。新しいシンボルを追加する前、および疑わしい動作を見た際は **Ghidra の `list_globals` / `decompile_function` で必ず検証**する。
+
+実績: `g_courseId` が `0x806d1264` (誤) のまま残っていた。正しくは `0x806cf108`。検証手順:
+
+1. `mcp__ghidra__list_globals(filter="シンボル名", program="main.dol")` でアドレス取得
+2. 参照先関数を decompile してそのアドレスが意図どおり使われているか確認
+3. `mkgp2-view/src/dolphin.rs` の `addr::*` 定数とも照合 (こちらが運用中のため最新)
+
+## デバッグログの確認
+
+Dolphin の `HLE` / `OSREPORT_HLE` ログチャンネルが有効か確認 (デフォルトで無効)。`User\Logs\dolphin.log` を `tail`/`grep` してパッチ出力を確認する。
+
+## プロジェクト構成
+
+```
+mkgp2-patch/
+├── build.sh              # 自動discover: common/*.cpp + features/*/*.cpp
+├── externals.txt         # 共有シンボル (Ghidraで検証すること)
+├── common/
+│   ├── patch_common.{cpp,h}  # EnsureDBATWidened, DebugPrintfSafe, ArenaLo等
+├── features/
+│   └── joint_extend/
+│       ├── joint_extend.cpp
+│       ├── course_joints.yaml
+│       ├── gen_joints_header.py   # course_joints.yaml → generated_joints.h
+│       └── gen_mod_yaml.py
+├── tools/
+│   └── gen_patch_map.py  # 全kmBranch/kmWriteスキャン → patch_map.md
+└── patch_map.md          # 自動生成 (gitignore)
+```
+
+### 新機能追加フロー
+
+1. `features/my_feature/` を作成
+2. `.cpp` を1つ以上追加 (`#include "patch_common.h"` でインフラ呼べる)
+3. データが必要なら `gen_*.py` も同ディレクトリに置く (build.sh が自動実行)
+4. `bash build.sh` 実行 — `SOURCES=()` に自動追加、`patch_map.md` に hook が載る
+
+`build.sh` を編集する必要はない。
+
+### ビルド出力
+
+- `joint_extend.bin` — Kamek パッチバイナリ
+- `joint_extend.xml` — Riivolution 用ラップ済み XML (Dolphin の Load/Riivolution/riivolution/ にコピー済み)
+- `joint_extend_gecko.txt` — Gecko code 形式
+- `patch_map.md` — 全 hook の一覧 (feature 別)
+
+### 参考: Newer-Team/NewerSMBW
+
+`ghq get Newer-Team/NewerSMBW` で `~/src/github.com/Newer-Team/NewerSMBW/` にクローン。**旧 Python Kamek** ベースなので toolchain は違うが、yaml駆動の hook 管理・~100モジュール構成は大規模化時の参考になる。
+
+うちの方針 (新 Kamek.exe): yaml indirection は避け、`kmBranch` マクロをソースに直書き + feature-per-directory + `tools/gen_patch_map.py` で機械抽出。yaml 方式より:
+- hook がコードと同じファイル → IDE 補完/refactor/grep が効く
+- コンパイラが型チェック
+- yaml→code のジェネレータ不要
