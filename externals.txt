@@ -1,0 +1,30 @@
+# MKGP2 (GNLJ82) main.dol externals
+# From Ghidra analysis
+
+# HSD library
+HSD_ArchiveGetPublicAddress=0x802dc89c
+HSD_JObjLoadDesc=0x802cfedc
+
+# Course loading
+CourseScene_Load=0x800476d4
+GetJointNameTable=0x8009c57c
+GetCourseModelFilename=0x8009c418
+ResolveJointByName=0x80033e4c
+clNormal3D_Construct=0x80034798
+clNormal3D_Load=0x80034508
+clNormal3D_SetFlags=0x80030fa0
+clNormal3D_SetScale=0x80033918
+JObj_Show=0x800316b8
+JObj_Hide=0x800316e8
+FileLoader_Open=0x80034ec0
+Archive_GetCurrent=0x80034a8c
+
+# System
+DebugPrintf=0x8002ceec
+ProcessSystemTick=0x8009d5f8
+Alloc=0x8003b1fc
+
+# Globals
+g_courseId=0x806cf108
+g_isUraCourse=0x806d1268
+g_mirrorMode=0x806d1270

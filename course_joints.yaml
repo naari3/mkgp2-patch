@@ -1,0 +1,172 @@
+# MKGP2 Hardcoded Joint Table (18-slot)
+# Exact reproduction of main.dol 0x8040b44c-
+# This is the baseline for compatibility.
+
+MR_highway:
+  joints:
+    - MR_highway_share_road_joint  # slot 0: share_road_joint
+    - MR_highway_short_road_joint  # slot 1: short_road_joint
+    - MR_highway_long_road_joint  # slot 2: long_road_joint
+    - MR_highway_short_branch_joint  # slot 3: short_branch_joint
+    - MR_highway_long_branch_joint  # slot 4: long_branch_joint
+    - MR_highway_short_occlusion_joint  # slot 5: short_occlusion_joint
+    - MR_highway_long_occlusion_joint  # slot 6: long_occlusion_joint
+    - MR_highway_short_branch_joint  # slot 7: short_branch_joint
+    - MR_highway_long_branch_joint  # slot 8: long_branch_joint
+    - MR_highway_opac_joint  # slot 9: opac_joint
+    - MR_highway_alpha_joint  # slot 10: alpha_joint
+    - MR_highway_short_alpha_joint  # slot 11: short_alpha_joint
+    - MR_highway_long_alpha_joint  # slot 12: long_alpha_joint
+    - null  # slot 13: null
+    - MR_highway_short_normal_joint  # slot 14: short_normal_joint
+    - MR_highway_long_normal_joint  # slot 15: long_normal_joint
+    - MR_highway_short_reverse_joint  # slot 16: short_reverse_joint
+    - MR_highway_long_reverse_joint  # slot 17: long_reverse_joint
+
+DK_jungle:
+  joints:
+    - DK_jungle_share_road_joint  # slot 0: share_road_joint
+    - DK_jungle_short_road_joint  # slot 1: short_road_joint
+    - DK_jungle_long_road_joint  # slot 2: long_road_joint
+    - DK_jungle_short_branch_joint  # slot 3: short_branch_joint
+    - DK_jungle_long_branch_joint  # slot 4: long_branch_joint
+    - DK_jungle_short_occlusion_joint  # slot 5: short_occlusion_joint
+    - DK_jungle_long_occlusion_joint  # slot 6: long_occlusion_joint
+    - DK_jungle_short_branch_joint  # slot 7: short_branch_joint
+    - DK_jungle_long_branch_joint  # slot 8: long_branch_joint
+    - DK_jungle_opac_joint  # slot 9: opac_joint
+    - DK_jungle_alpha_joint  # slot 10: alpha_joint
+    - DK_jungle_short_alpha_joint  # slot 11: short_alpha_joint
+    - DK_jungle_long_alpha_joint  # slot 12: long_alpha_joint
+    - null  # slot 13: null
+    - DK_jungle_short_normal_joint  # slot 14: short_normal_joint
+    - DK_jungle_long_normal_joint  # slot 15: long_normal_joint
+    - DK_jungle_short_reverse_joint  # slot 16: short_reverse_joint
+    - DK_jungle_long_reverse_joint  # slot 17: long_reverse_joint
+
+WC_dcity:
+  joints:
+    - WC_dcity_share_road_joint  # slot 0: share_road_joint
+    - WC_dcity_short_road_joint  # slot 1: short_road_joint
+    - WC_dcity_long_road_joint  # slot 2: long_road_joint
+    - WC_dcity_short_branch_joint  # slot 3: short_branch_joint
+    - WC_dcity_long_branch_joint  # slot 4: long_branch_joint
+    - WC_dcity_short_occlusion_joint  # slot 5: short_occlusion_joint
+    - WC_dcity_long_occlusion_joint  # slot 6: long_occlusion_joint
+    - WC_dcity_short_branch_joint  # slot 7: short_branch_joint
+    - WC_dcity_long_branch_joint  # slot 8: long_branch_joint
+    - WC_dcity_opac_joint  # slot 9: opac_joint
+    - WC_dcity_alpha_joint  # slot 10: alpha_joint
+    - WC_dcity_short_alpha_joint  # slot 11: short_alpha_joint
+    - WC_dcity_long_alpha_joint  # slot 12: long_alpha_joint
+    - null  # slot 13: null
+    - WC_dcity_short_normal_joint  # slot 14: short_normal_joint
+    - WC_dcity_long_normal_joint  # slot 15: long_normal_joint
+    - WC_dcity_short_reverse_joint  # slot 16: short_reverse_joint
+    - WC_dcity_long_reverse_joint  # slot 17: long_reverse_joint
+
+PC_land:
+  joints:
+    - PC_land_share_road_joint  # slot 0: share_road_joint
+    - PC_land_short_road_joint  # slot 1: short_road_joint
+    - PC_land_long_road_joint  # slot 2: long_road_joint
+    - PC_land_short_branch_joint  # slot 3: short_branch_joint
+    - PC_land_long_branch_joint  # slot 4: long_branch_joint
+    - PC_land_short_occlusion_joint  # slot 5: short_occlusion_joint
+    - PC_land_long_occlusion_joint  # slot 6: long_occlusion_joint
+    - PC_land_short_branch_joint  # slot 7: short_branch_joint
+    - PC_land_long_branch_joint  # slot 8: long_branch_joint
+    - PC_land_opac_joint  # slot 9: opac_joint
+    - PC_land_alpha_joint  # slot 10: alpha_joint
+    - PC_land_short_alpha_joint  # slot 11: short_alpha_joint
+    - PC_land_long_alpha_joint  # slot 12: long_alpha_joint
+    - null  # slot 13: null
+    - PC_land_short_normal_joint  # slot 14: short_normal_joint
+    - PC_land_long_normal_joint  # slot 15: long_normal_joint
+    - PC_land_short_reverse_joint  # slot 16: short_reverse_joint
+    - PC_land_long_reverse_joint  # slot 17: long_reverse_joint
+
+KP_castle:
+  joints:
+    - KP_castle_share_road_joint  # slot 0: share_road_joint
+    - KP_castle_short_road_joint  # slot 1: short_road_joint
+    - KP_castle_long_road_joint  # slot 2: long_road_joint
+    - KP_castle_short_branch_joint  # slot 3: short_branch_joint
+    - KP_castle_long_branch_joint  # slot 4: long_branch_joint
+    - KP_castle_short_occlusion_joint  # slot 5: short_occlusion_joint
+    - KP_castle_long_occlusion_joint  # slot 6: long_occlusion_joint
+    - KP_castle_short_branch_joint  # slot 7: short_branch_joint
+    - KP_castle_long_branch_joint  # slot 8: long_branch_joint
+    - KP_castle_opac_joint  # slot 9: opac_joint
+    - KP_castle_alpha_joint  # slot 10: alpha_joint
+    - KP_castle_short_alpha_joint  # slot 11: short_alpha_joint
+    - KP_castle_long_alpha_joint  # slot 12: long_alpha_joint
+    - KP_castle_nofog_joint  # slot 13: nofog_joint
+    - KP_castle_short_normal_joint  # slot 14: short_normal_joint
+    - KP_castle_long_normal_joint  # slot 15: long_normal_joint
+    - KP_castle_short_reverse_joint  # slot 16: short_reverse_joint
+    - KP_castle_long_reverse_joint  # slot 17: long_reverse_joint
+
+RB_road:
+  joints:
+    - RB_road_share_road_joint  # slot 0: share_road_joint
+    - RB_road_short_road_joint  # slot 1: short_road_joint
+    - RB_road_long_road_joint  # slot 2: long_road_joint
+    - RB_road_short_branch_joint  # slot 3: short_branch_joint
+    - RB_road_long_branch_joint  # slot 4: long_branch_joint
+    - RB_road_short_occlusion_joint  # slot 5: short_occlusion_joint
+    - RB_road_long_occlusion_joint  # slot 6: long_occlusion_joint
+    - RB_road_short_branch_joint  # slot 7: short_branch_joint
+    - RB_road_long_branch_joint  # slot 8: long_branch_joint
+    - RB_road_opac_joint  # slot 9: opac_joint
+    - RB_road_alpha_joint  # slot 10: alpha_joint
+    - RB_road_short_alpha_joint  # slot 11: short_alpha_joint
+    - RB_road_long_alpha_joint  # slot 12: long_alpha_joint
+    - null  # slot 13: null
+    - RB_road_short_normal_joint  # slot 14: short_normal_joint
+    - RB_road_long_normal_joint  # slot 15: long_normal_joint
+    - RB_road_short_reverse_joint  # slot 16: short_reverse_joint
+    - RB_road_long_reverse_joint  # slot 17: long_reverse_joint
+
+YI_land:
+  joints:
+    - YI_land_share_road_joint  # slot 0: share_road_joint
+    - YI_land_short_road_joint  # slot 1: short_road_joint
+    - YI_land_long_road_joint  # slot 2: long_road_joint
+    - YI_land_short_branch_joint  # slot 3: short_branch_joint
+    - YI_land_long_branch_joint  # slot 4: long_branch_joint
+    - YI_land_short_occlusion_joint  # slot 5: short_occlusion_joint
+    - YI_land_long_occlusion_joint  # slot 6: long_occlusion_joint
+    - YI_land_short_branch_joint  # slot 7: short_branch_joint
+    - YI_land_long_branch_joint  # slot 8: long_branch_joint
+    - YI_land_opac_joint  # slot 9: opac_joint
+    - YI_land_alpha_joint  # slot 10: alpha_joint
+    - YI_land_short_alpha_joint  # slot 11: short_alpha_joint
+    - YI_land_long_alpha_joint  # slot 12: long_alpha_joint
+    - null  # slot 13: null
+    - YI_land_short_normal_joint  # slot 14: short_normal_joint
+    - YI_land_long_normal_joint  # slot 15: long_normal_joint
+    - YI_land_short_reverse_joint  # slot 16: short_reverse_joint
+    - YI_land_long_reverse_joint  # slot 17: long_reverse_joint
+
+DN_stadium:
+  joints:
+    - DN_stadium_share_road_joint  # slot 0: share_road_joint
+    - DN_stadium_short_road_joint  # slot 1: short_road_joint
+    - DN_stadium_long_road_joint  # slot 2: long_road_joint
+    - DN_stadium_short_branch_joint  # slot 3: short_branch_joint
+    - DN_stadium_long_branch_joint  # slot 4: long_branch_joint
+    - DN_stadium_short_occlusion_joint  # slot 5: short_occlusion_joint
+    - DN_stadium_long_occlusion_joint  # slot 6: long_occlusion_joint
+    - DN_stadium_short_branch_joint  # slot 7: short_branch_joint
+    - DN_stadium_long_branch_joint  # slot 8: long_branch_joint
+    - DN_stadium_opac_joint  # slot 9: opac_joint
+    - DN_stadium_alpha_joint  # slot 10: alpha_joint
+    - DN_stadium_short_alpha_joint  # slot 11: short_alpha_joint
+    - DN_stadium_long_alpha_joint  # slot 12: long_alpha_joint
+    - null  # slot 13: null
+    - DN_stadium_short_normal_joint  # slot 14: short_normal_joint
+    - DN_stadium_long_normal_joint  # slot 15: long_normal_joint
+    - DN_stadium_short_reverse_joint  # slot 16: short_reverse_joint
+    - DN_stadium_long_reverse_joint  # slot 17: long_reverse_joint
+
