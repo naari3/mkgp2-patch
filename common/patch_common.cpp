@@ -57,6 +57,18 @@ extern "C" void EnsureDBATWidened() {
     }
 }
 
-// Raise ArenaLo past our patch code. Update when patch bin grows:
-// current bin ends around 0x806EE9C8; 0x806EF000 leaves a margin.
-kmWrite32(0x80000030, 0x806EF000);
+// Raise ArenaLo past our patch code. Game's heap (Alloc) starts here.
+//
+// Patch bin is loaded at 0x806ED000 (see `-static=0x806ED000` in build.sh).
+// ArenaLo MUST be >= bin_end or the game's first Alloc() overwrites the tail
+// of our patch data (joint name tables, strings, pointer arrays). Symptom:
+// ResolveJointByName / path lookups receive garbage pointers → strcmp /
+// DVDConvertPathToEntrynum crash loops firing thousands of invalid reads
+// per frame.
+//
+// build.sh enforces `load_addr + bin_size <= ArenaLo` after linking. If it
+// fails, raise the value below to the next 0x10000 boundary above bin end
+// (the error message prints the required minimum). Don't shrink it below
+// 0x10000 of bin end — there's no allocation pressure that low in MEM1 and
+// headroom is free.
+kmWrite32(0x80000030, 0x806F0000);
