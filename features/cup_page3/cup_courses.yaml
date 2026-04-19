@@ -1,70 +1,55 @@
-# Cup ID assigned to each cursor slot on page 2 (the extra cup page added
-# by the cup_page3 feature). 8 entries, cursor 0..7. Each cup runs as 8
-# rounds (オモテ 0..3, ウラ 4..7) and selects per-round (long, reverse)
-# variant pairs.
+# Custom track definitions for the cup_page3 feature.
 #
-# Cup ID reference (from SetCourseParams param_1, mkgp2-view COURSE_NAMES):
-#   0  = (none) — the slot we hijack to host our custom GRD-based course
-#   1  = マリオカップ (track: MR_highway)
-#   2  = DKカップ (track: DK_jungle)
-#   3  = ワリオカップ (track: WC_dcity)
-#   4  = パックマンカップ (track: PC_land)
-#   5  = クッパカップ (track: KP_castle)
-#   6  = レインボーカップ (track: RB_road)
-#   7  = ヨッシーカップ (track: YI_land)
-#   8  = ワルイージカップ (track: DN_stadium)
+# `tracks` is an ordered list. Each entry becomes one playable course on the
+# CUP3 (page 2) cursor grid. The order also drives:
 #
-# Pages 0 / 1 keep their vanilla mapping (オモテ cups / ウラ cups).
+# - cupId assignment:
+#     * tracks[0]              -> cupId 0   (test_course slot, special-cased
+#                                            by PathData_GetByContext /
+#                                            RaceParamsHook etc.)
+#     * tracks[1..8]           -> cupId 9..16 (vanilla "generic" cup slots
+#                                              that share DAT_806d8ac0 BGM)
+#     * tracks[9..]            -> cupId 17.. (new slots; gen extends the
+#                                             WeatherSystem_Init dispatch)
+# - page2 cursor fill:
+#     * kCupPage2Courses[i] = tracks[i].cupId, i < len(tracks)
+#     * remainder filled with tracks[-1].cupId (the last track loops to fill
+#       8 slots — currently test_course in every slot)
+# - BGM ID assignment:
+#     * each track consumes ONE bgm_id (= L/R pair). bgm_l / bgm_r are passed
+#       straight to DVDOpen, no rodata dictionary lookup needed.
+#     * existing dsp filenames (e.g. "bgm01_demoL.dsp") work as-is because the
+#       file already lives in the ISO; gen just writes the string into patch
+#       rodata and indexes it from the relocated BGM table.
+#     * new dsp filenames must be placed under features/cup_page3/files/ so
+#       Riivolution copies them to the disc root.
+#
+# Per-track fields:
+#   collision_short:  filename for the short-lap collision .bin  (required)
+#   collision_long:   filename for the long-lap collision .bin   (required)
+#   line_bin:         filename for the AI path _line.bin          (required)
+#   laps:             g_totalLaps                       (int, 1..127)
+#   time:             g_raceTimeRemaining (seconds)     (float)
+#   bonus:            g_lapBonusTimeDelta (seconds)     (float)
+#   ai_lap_bonus:     AI_CalcLapSpeedBonus override     (float, double in C)
+#   bgm_l / bgm_r:    DSP filenames passed to ClStream  (strings)
+#
+# Voice announcer queue (DAT_80678d90, consumed by FUN_801b5e18) is left
+# enabled for all tracks; the vanilla dequeue guard (`iVar10 == -1 skip`)
+# is relaxed to `iVar10 < 0 skip` via a kmWrite32 patch in cup_page3.cpp,
+# which lets sentinel/garbage shorts like -2 pass through harmlessly.
+# The shared-SFX announcer lines (3-2-1 GO!, etc.) stay audible on every
+# cup including test_course because they ride the same queue and are
+# indexed by valid positive voice ids.
 
-page2:
-  - 0   # cursor 0
-  - 0   # cursor 1
-  - 0   # cursor 2
-  - 0   # cursor 3
-  - 0   # cursor 4
-  - 0   # cursor 5
-  - 0   # cursor 6
-  - 0   # cursor 7
-
-# cupId -> filename to inject into DAT_8032890c (_line.bin file table).
-# All 4 slots per cup (ccClass 0/1 × longRound 0/1) get the same pointer.
-# Filename is resolved via Riivolution at the ISO root.
-# Vanilla entries for unlisted cupIds are left untouched.
-line_bin:
-  0: test_course_short_line.bin
-
-# cupId -> race parameters consumed by RaceScene_Init (0x800a1d80).
-#   laps  : g_totalLaps (signed byte 1..127)
-#   time  : g_raceTimeRemaining (float, seconds; typically 100.0/120.0/150.0)
-#   bonus : g_lapBonusTimeDelta (float, seconds; typically 15.0/22.5/30.0/35.0)
-# Missing cupIds fall through to the vanilla table at 0x8040E7D0.
-# A ResolveRaceParams hook at 0x800a24ac replaces the table load so we can
-# safely provide values for cupId=0 where the vanilla table slot is
-# occupied by g_GameModeBaseVtable (writing there crashes).
-race_params:
-  0:
-    laps: 3
-    time: 120.0
+tracks:
+  - name: test_course
+    collision_short: grd_short.bin
+    collision_long:  grd_long.bin
+    line_bin:        test_course_short_line.bin
+    laps:  3
+    time:  120.0
     bonus: 15.0
-
-# cupId -> AI_CalcLapSpeedBonus return value (double, seconds bonus).
-# Vanilla walks a rule table indexed by (cupId-1); for unmapped cupIds
-# (e.g. 0) it dereferences garbage and floods invalid reads at
-# PC=0x801dd5c8 (~thousands per frame). Listed cupIds short-circuit to
-# the constant value below; unlisted cupIds run the vanilla walk.
-ai_lap_bonus:
-  0: 0.0
-
-# cupId -> collision filenames. The per-cup asset struct at (0x8040b90c +
-# cupId*0x228) holds 6 interleaved slots selected by GetCollisionFilename
-# (0x8009c51c) via (longRound*0x114 + reverseRound*0x70 + fileTypeIdx*4).
-# - longRound axis = round picks short(0) / long(1) variant
-# - reverseRound axis = round picks normal(0) / reverse / alt-route(1) variant
-# - fileTypeIdx selects asset kind: 0 = collision, 7 = AI-path Auto_R,
-#   8..14 = course DAT-A/B/C
-# We only override the collision slots here; Auto_R / DAT slots stay at
-# their vanilla pointers.
-collision_bin:
-  0:
-    short: grd_short.bin
-    long:  grd_long.bin
+    ai_lap_bonus: 0.0
+    bgm_l: bgm01_demoL.dsp
+    bgm_r: bgm01_demoR.dsp

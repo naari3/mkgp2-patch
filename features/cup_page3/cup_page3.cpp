@@ -337,3 +337,246 @@ override_path:
 }
 
 kmBranch(0x801dd480, AICalcLapBonusHook);
+
+// --------- WeatherSystem_Init: full replacement for custom-track BGM ----
+// Vanilla WeatherSystem_Init (0x8016c730) uses a jump table at 0x804910BC
+// keyed on g_cupId to populate the weather state's bgmIdList pointer
+// (state + 0x04). Slot 0 is unassigned and the follow-up `== 0` fallback
+// fails to fire because the heap garbage left there is rarely zero, so
+// cupId=0 races (test_course / any custom track) feed ClSound_PlayBgm-
+// Stream a junk pointer every frame.
+//
+// We branch the function entry to WeatherInitCustom, which:
+//   1. Replays the original prologue effect (state[0]=cupType,
+//      state[1]=WeatherSystem_PickVariant(-1)).
+//   2. Looks up our custom track table; if cupId matches, points
+//      state+4 at the per-track CustomBgmPair (kCustomBgmPairs).
+//   3. Otherwise falls back to the vanilla DAT_806d8a80..ac0 tables
+//      (so cupId 1..16 still play the right BGM under our hook).
+//   4. Replays the rest of vanilla state init (rain/wind/thunder
+//      fade floats, sentinels, DAT_806cfa28 = 1).
+// Exit point is 0x8016c84c (the trailing blr) so vanilla's epilogue is
+// skipped — our asm hook does its own frame teardown.
+extern "C" int WeatherSystem_PickVariant(int forcedId);
+
+extern "C" void* WeatherInitCustom(void* state, int cupType) {
+    EnsureDBATWidened();
+
+    *(u8*)state                   = (u8)cupType;
+    *((u8*)state + 1)             = (u8)WeatherSystem_PickVariant(-1);
+
+    u32 cupId = *(u32*)0x806cf108;
+    const void* bgmPair = 0;
+    for (u32 i = 0; i < kCustomTrackCount; ++i) {
+        if (kCustomTracks[i].cupId == cupId) {
+            bgmPair = (const void*)kCustomTracks[i].bgmPair;
+            break;
+        }
+    }
+    if (bgmPair == 0) {
+        // Vanilla fallback: cup 1..8 use per-cup tables at DAT_806d8a80+,
+        // cup 9..16 share DAT_806d8ac0, anything else gets the generic
+        // DAT_806d8ac8 (matches the original `== 0` fallback's intent).
+        if (cupId >= 1 && cupId <= 8) {
+            bgmPair = (const void*)(0x806d8a80u + (cupId - 1) * 8);
+        } else if (cupId >= 9 && cupId <= 16) {
+            bgmPair = (const void*)0x806d8ac0u;
+        } else {
+            bgmPair = (const void*)0x806d8ac8u;
+        }
+    }
+    *(const void**)((u8*)state + 4) = bgmPair;
+    // NOTE: do NOT touch DAT_806d175d here. That byte is the voice system's
+    // "init-done" sentinel read by FUN_801b6c94 (called later from
+    // RaceScene_Init); writing 1 prematurely makes that initializer skip
+    // queue reset / per-player state / DAT_806cfd38=-1 / per-cup DAT_806d1754
+    // setup, which silently kills FUN_801ad534's race event voices
+    // (early returns on DAT_806cfd38 == -1).
+
+    // Vanilla numeric init (FLOAT_806d8ad4 = 1.0, FLOAT_806d8ad8 = 0.0).
+    float one  = *(float*)0x806d8ad4u;
+    float zero = *(float*)0x806d8ad8u;
+    *(u32*)((u8*)state + 0x08)   = 0;
+    *(u32*)((u8*)state + 0x0C)   = 0;
+    *((u8*)state + 0x10)         = 0;
+    *(float*)((u8*)state + 0x14) = one;
+    *((u8*)state + 0x18)         = 0;
+    *(float*)((u8*)state + 0x1C) = one;
+    *(u32*)((u8*)state + 0x20)   = 0;
+    *(float*)((u8*)state + 0x24) = one;
+    *(float*)((u8*)state + 0x28) = zero;
+    *((u8*)state + 0x2C)         = 0;
+    *(u32*)((u8*)state + 0x30)   = 0xFFFFFFFFu;
+    *(u8*)0x806cfa28u            = 1;
+    return state;
+}
+
+asm void WeatherInitHook() {
+    nofralloc
+    stwu r1, -0x10(r1)
+    mflr r0
+    stw  r0, 0x14(r1)
+    bl   WeatherInitCustom
+    lwz  r0, 0x14(r1)
+    mtlr r0
+    addi r1, r1, 0x10
+    blr
+}
+
+kmBranch(0x8016c730, WeatherInitHook);
+kmPatchExitPoint(WeatherInitHook, 0x8016c84c);
+
+// --------- ClSound_PlayBgmStream: relocate the dsp pointer table -------
+// Vanilla reads `(&PTR_s_bgm01_demoL_dsp_8037ce1c)[bgm_id*2]` at
+// instruction sequence 0x80190c50..0x80190c5c:
+//   addi   r5, r31, 0x3d1c    ; r5 = 0x8037CE1C  (vanilla table base)
+//   rlwinm r0, r28, 3, 0, 28  ; r0 = bgm_id * 8
+//   add    r3, r5, r0         ; r3 = &table[bgm_id*2]
+//   lwz    r4, 4(r3)          ; r4 = R-channel pointer
+// We branch this 4-instruction span to BgmTableLookupHook, which loads
+// the patch's relocated kCustomBgmTable instead. Exit at 0x80190c60
+// (the `cmplwi r4, 0` immediately after) so the rest of the function
+// runs untouched, with r3/r4/r5/r0 all set up the same way.
+//
+// The vanilla 0x8037CE1C array sits 8 bytes below "clStream::setSpeed("
+// debug strings — extending it in place would clobber rodata, so we
+// instead hardcode all 21 vanilla entries into kCustomBgmTable plus the
+// per-track new entries. ClSound_PlayBgmStream's `cmplwi r28, 0x15`
+// upper bound is raised by a kmWrite32 emitted from generated_*.h.
+asm void BgmTableLookupHook() {
+    nofralloc
+    lis    r5, kCustomBgmTable@h
+    ori    r5, r5, kCustomBgmTable@l
+    rlwinm r0, r28, 3, 0, 28
+    add    r3, r5, r0
+    lwz    r4, 0x4(r3)
+    blr
+}
+
+kmBranch(0x80190c50, BgmTableLookupHook);
+kmPatchExitPoint(BgmTableLookupHook, 0x80190c60);
+
+// --------- ClStream_PlayMono: NULL-path defensive guard -----------------
+// Vanilla ClStream_PlayMono (0x80195050) trusts its `path` argument and
+// passes it straight to DVDOpen/DVDConvertPathToEntrynum. Several voice/
+// announcer drivers (FUN_801b5e18 etc.) iterate stream tables that, on
+// cupId=0, are never properly populated; they end up calling here with
+// a NULL or tiny garbage path (observed values: 0x00000000, 0x00010101)
+// once per frame, causing PC=0x80294F00 invalid reads.
+//
+// Hook replays the original prologue (frame allocate, save LR, save r27..
+// r31, copy args into r28/r29/r30) so the rest of the function stays
+// frame-correct, then bails out early when path (= r28) is NULL by
+// jumping into vanilla's epilogue at 0x801951a0 with r3 = -1 (matching
+// the function's "stream slot allocation failed" return convention).
+//
+// Kamek's PatchExit verifier rejects functions that contain a non-tail
+// blr/blrl, so the early exit uses bctr (branch via CTR) to reach the
+// epilogue — distinct opcode from blr, slips past the check.
+asm void ClStreamPlayMonoGuard() {
+    nofralloc
+    // Vanilla prologue (0x80195050..0x80195068)
+    stwu r1, -0x20(r1)
+    mflr r0
+    stw  r0, 0x24(r1)
+    stmw r27, 0xc(r1)
+    or   r28, r3, r3
+    or   r29, r4, r4
+    or   r30, r5, r5
+
+    cmplwi r28, 0
+    bne   normal
+    li    r3, -1
+    lis   r12, 0x8019
+    ori   r12, r12, 0x51a0     // vanilla epilogue: lmw/lwz/mtlr/addi/blr
+    mtctr r12
+    bctr
+normal:
+    blr                          // exit -> 0x8019506c
+}
+
+kmBranch(0x80195050, ClStreamPlayMonoGuard);
+kmPatchExitPoint(ClStreamPlayMonoGuard, 0x8019506c);
+
+// --------- Voice queue dequeue guard (FUN_801b5e18) ---------------------
+// The announcer queue at DAT_80678d90 holds 6-byte entries with a 16-bit
+// voice_id at +0. Vanilla dequeue at 0x801b6a98 handles voice_id == -1 by
+// jumping to skip_block (0x801b6b74) without advancing tail — correct for
+// the "queue empty" sentinel (tail==head path via `li r0,-1; b +0x10`)
+// but wrong for a -2 (or any other negative) value sitting at tail<head.
+// Observed: a -2 pushed into slot 3 while valid voices sit at slots 4..11;
+// vanilla code loops on slot 3 forever, never plays the rest.
+//
+// The first attempt (simple cmpwi/blt rewrite) skipped -2 without
+// advancing tail, leaving the queue permanently stuck.
+//
+// This hook replaces the vanilla cmpwi/beq pair with branching logic:
+//   * voice_id >= 0  -> fall through to 0x801b6aa0 (normal play path)
+//   * voice_id <  0  -> advance tail (with reset when tail>=head), then
+//                       bctr to 0x801b6b74 (skip_block); last_voice=-1 as
+//                       before. Tail advancement is the critical fix.
+//
+// Reset logic mirrors vanilla's 0x801b6b50..0x801b6b60: when the advanced
+// tail catches up to head, both are zeroed so the next push starts at
+// slot 0. This keeps the queue compact under normal operation.
+extern "C" void VoiceDequeueAdvanceTail() {
+    EnsureDBATWidened();
+    u32 tail = *(u32*)0x806d1740u;
+    u32 head = *(u32*)0x806d173cu;
+    if (tail >= head) return;      // empty queue, nothing to dequeue
+    tail += 1;
+    if (tail >= head) {
+        *(u32*)0x806d1740u = 0;
+        *(u32*)0x806d173cu = 0;
+    } else {
+        *(u32*)0x806d1740u = tail;
+    }
+}
+
+asm void VoiceDequeueGuard() {
+    nofralloc
+    cmpwi r27, 0
+    bge   continue_play
+    // negative voice_id: advance tail, then jump to skip_block
+    stwu r1, -0x10(r1)
+    mflr r0
+    stw  r0, 0x14(r1)
+    bl   VoiceDequeueAdvanceTail
+    lwz  r0, 0x14(r1)
+    mtlr r0
+    addi r1, r1, 0x10
+    lis  r12, 0x801b
+    ori  r12, r12, 0x6b74
+    mtctr r12
+    bctr
+continue_play:
+    blr                              // -> 0x801b6aa0 via kmPatchExitPoint
+}
+
+kmBranch(0x801b6a98, VoiceDequeueGuard);
+kmPatchExitPoint(VoiceDequeueGuard, 0x801b6aa0);
+
+// --------- Root-cause fix: -2 push in FUN_801b0af4 ---------------------
+// FUN_801b0af4 is the race-start voice intro pusher. After emitting three
+// fixed "welcome" voices (0x280, 0x189, 0x280), it computes a round-intro
+// voice id:
+//
+//     sVar6 = g_longRoundFlag + (g_cupId - 1) * 2
+//
+// The guard is `if (sVar6 != -1) push(sVar6, meta=0xFFFF)`. The formula
+// maps cupId 1..8 × longRoundFlag 0..1 onto voice ids 0..15 (round-intro
+// bank). For cupId=0 (test_course) the formula evaluates to -2, which is
+// NOT -1, so it slips past the filter and gets pushed. Downstream voice
+// dequeue then tries to play live_A01_dsp[-2 * 12] = garbage — the
+// original PC=0x80294F00 invalid read and the stuck-queue symptom.
+//
+// Two-instruction kmWrite32 changes the predicate from `!= -1` to
+// `>= 0`, eliminating the bogus push at its source. This is the proper
+// structural fix; the VoiceDequeueGuard above now only runs as a
+// defense-in-depth safety net (negative voice_ids should never reach the
+// queue once this predicate is tightened).
+//
+//   0x801b0c08: cmpwi r3, -1  (0x2C03FFFF) -> cmpwi r3, 0  (0x2C030000)
+//   0x801b0c0c: beq  +0xA8    (0x418200A8) -> blt  +0xA8    (0x418000A8)
+kmWrite32(0x801B0C08, 0x2C030000);
+kmWrite32(0x801B0C0C, 0x418000A8);

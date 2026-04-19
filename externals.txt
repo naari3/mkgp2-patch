@@ -60,3 +60,6 @@ clFlowCup_Dtor=0x801c88f4
 Sprite_SetupAnim=0x801a03dc
 Sprite_SetAnimParam=0x801a0374
 SetCourseParams=0x8009cbfc
+
+# Weather / BGM (cup_page3 WeatherInitHook)
+WeatherSystem_PickVariant=0x80193264  # picks weather variant byte; arg is "force this id" or -1 for random

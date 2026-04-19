@@ -1,5 +1,23 @@
 #!/usr/bin/env python3
-"""Generate generated_cup_courses.h from cup_courses.yaml."""
+"""Generate generated_cup_courses.h from cup_courses.yaml.
+
+Input: tracks-centric yaml (see cup_courses.yaml header for full schema).
+Output: a header that emits all the static data + Kamek records the
+patch needs:
+  - kCupPage2Courses[8]           — cursor -> cupId for the CUP3 page
+  - kCustomBgmTable[(21+N)*2]     — relocated BGM dsp pointer table
+                                    (vanilla 21 entries copied + N new)
+  - kCustomBgmPairs[N]            — per-track (long_id, short_id) BGM pair
+  - kCustomTracks[N]              — cupId -> *bgm pair, scanned by
+                                    WeatherInitCustom in cup_page3.cpp
+  - kCustomTotalBgmCount          — used by cup_page3.cpp to clip
+                                    ClSound_PlayBgmStream's `< 0x15` guard
+  - kCustomLineBin_*, kCustomCollisionShort_*, kCustomCollisionLong_*
+                                  — strings + kmWritePointer records into
+                                    the vanilla path-table / asset struct
+  - kRaceParamOverrides[]         — RaceParamsHook lookup
+  - kAILapBonusOverrides[]        — AICalcLapBonusHook lookup
+"""
 
 import re
 import sys
@@ -9,334 +27,365 @@ import yaml
 
 
 FILENAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+IDENT_RE    = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# ----- vanilla BGM table (PTR_s_bgm01_demoL_dsp_8037ce1c) -----------------
+# 21 BGM entries × L/R = 42 pointers, each pointing into vanilla rodata.
+# We hardcode them so the relocated kCustomBgmTable can preserve every
+# vanilla BGM id (0..20) without re-reading main.dol at gen time.
+VANILLA_BGM_COUNT = 21
+VANILLA_BGM_PTRS = [
+    # (id, L, R)
+    (0,  0x8037CAEC, 0x8037CAFC),  # bgm01_demoL  / bgm01_demoR
+    (1,  0x8037CB0C, 0x8037CB20),  # bgm03_sysSltL / bgm03_sysSltR
+    (2,  0x8037CB34, 0x8037CB48),  # bgm07_sysendL / bgm07_sysendR
+    (3,  0x8037CB5C, 0x8037CB70),  # bgm08_chasysL / bgm08_chasysR
+    (4,  0x8037CB84, 0x8037CB98),  # bgm09_chagamL / bgm09_chagamR
+    (5,  0x8037CBAC, 0x8037CBC0),  # bgm11_stg1_1L  / bgm11_stg1_1R   (cup1 long)
+    (6,  0x8037CBD4, 0x8037CBE8),  # bgm11_stg1_1sL / bgm11_stg1_1sR  (cup1 short)
+    (7,  0x8037CBFC, 0x8037CC10),  # cup2 long
+    (8,  0x8037CC24, 0x8037CC38),  # cup2 short
+    (9,  0x8037CC4C, 0x8037CC60),  # cup3 long
+    (10, 0x8037CC74, 0x8037CC88),  # cup3 short
+    (11, 0x8037CC9C, 0x8037CCB0),  # cup4 long
+    (12, 0x8037CCC4, 0x8037CCD8),  # cup4 short
+    (13, 0x8037CCEC, 0x8037CD00),  # cup5 long
+    (14, 0x8037CD14, 0x8037CD28),  # cup5 short
+    (15, 0x8037CD3C, 0x8037CD50),  # cup6 long
+    (16, 0x8037CD64, 0x8037CD78),  # cup6 short
+    (17, 0x8037CD8C, 0x8037CD9C),  # cup7 long
+    (18, 0x8037CDAC, 0x8037CDC0),  # cup7 short
+    (19, 0x8037CDD4, 0x8037CDE4),  # cup8 long
+    (20, 0x8037CDF4, 0x8037CE08),  # cup8 short
+]
+assert len(VANILLA_BGM_PTRS) == VANILLA_BGM_COUNT
 
 # DAT_8032890c is indexed by cupId*0x10 + ccClass*8, with +0 = normal
-# and +4 = ura. We overwrite all four slots (ccClass 0..1 x normal/ura) so
-# CourseData_LoadPathTable finds the custom filename regardless of class.
+# and +4 = ura. We overwrite all four slots (ccClass 0..1 x normal/ura).
 PATH_TABLE_BASE = 0x8032890C
 ROW_STRIDE = 0x10
 SLOT_OFFSETS = (0, 4, 8, 12)
 
-# Vanilla race-params table lives at 0x8040E7D0 and is indexed by
-# (cupId*0x48 + ccClass*0x18 + longRound*0xc) with fields at (-0x48: byte
-# laps, -0x44: float time, -0x40: float bonus). cupId=0's slots are
-# occupied by g_GameModeBaseVtable, so in-place writes crash with ISI.
-# Instead we hook RaceScene_Init's table load (cup_page3.cpp:RaceParamsHook)
-# and serve values from kRaceParamOverrides[] below, falling back to the
-# vanilla table for unlisted cupIds.
-VANILLA_RACE_TABLE_BASE = 0x8040E7D0
-
-# Per-course asset struct at (0x8040b90c + cupId*0x228). Slot layout
-# (per GetCollisionFilename @ 0x8009c51c):
-#   +0x84  = short-variant collision bin
-#   +0x198 = long-variant collision bin (+0x84 + 0x114)
-# Other offsets hold AI-path and C.dat pointers that we leave untouched.
+# Per-course asset struct at (0x8040b90c + cupId*0x228). +0x84 = short
+# collision, +0x198 = long collision.
 COLLISION_TABLE_BASE = 0x8040B90C
 COLLISION_COURSE_STRIDE = 0x228
-COLLISION_SHORT_COLLISION_OFFSET = 0x84
-COLLISION_LONG_COLLISION_OFFSET = 0x198
+COLLISION_SHORT_OFFSET = 0x84
+COLLISION_LONG_OFFSET  = 0x198
+
+
+def assign_cup_id(track_index: int) -> int:
+    """tracks 配列の index -> cupId. See yaml header comment for rules."""
+    if track_index == 0:
+        return 0          # test_course slot
+    if track_index <= 8:
+        return 8 + track_index   # 9..16 (vanilla "generic" cups)
+    return 8 + track_index       # 17, 18, ... (new cup ids; gen+cpp must
+                                 #              extend WeatherInit dispatch)
+
+
+def safe_ident(name: str) -> str:
+    if not IDENT_RE.match(name):
+        raise SystemExit(
+            f"error: track name {name!r} is not a valid C identifier suffix"
+        )
+    return name
+
+
+def safe_filename(field: str, value) -> str:
+    if not isinstance(value, str) or not FILENAME_RE.match(value):
+        raise SystemExit(
+            f"error: {field} must be a safe filename matching "
+            f"{FILENAME_RE.pattern!r}, got {value!r}"
+        )
+    return value
 
 
 def main() -> int:
     feature_dir = Path(__file__).parent
     yaml_path = feature_dir / "cup_courses.yaml"
-    out_path = feature_dir / "generated_cup_courses.h"
-    xml_path = feature_dir / "generated_riivolution.xml"
+    out_path  = feature_dir / "generated_cup_courses.h"
+    xml_path  = feature_dir / "generated_riivolution.xml"
 
     with open(yaml_path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    # --- page2: cursor -> cupId mapping (required, exactly 8) ---
-    page2 = data.get("page2") or []
-    if len(page2) != 8:
-        print(
-            f"error: page2 must have exactly 8 entries, got {len(page2)}",
-            file=sys.stderr,
-        )
-        return 1
-    for i, v in enumerate(page2):
-        if not isinstance(v, int) or v < 0 or v > 16:
-            print(
-                f"error: page2[{i}] must be int in 0..16, got {v!r}",
-                file=sys.stderr,
-            )
-            return 1
+    tracks = data.get("tracks") or []
+    if not tracks:
+        raise SystemExit("error: tracks: list is empty")
 
-    # --- line_bin: cupId -> filename mapping (optional) ---
-    line_bin = data.get("line_bin") or {}
-    if not isinstance(line_bin, dict):
-        print(
-            f"error: line_bin must be a mapping, got {type(line_bin).__name__}",
-            file=sys.stderr,
-        )
-        return 1
-    line_bin_items = []
-    for cup_id, filename in sorted(line_bin.items()):
-        if not isinstance(cup_id, int) or cup_id < 0 or cup_id > 16:
-            print(
-                f"error: line_bin key {cup_id!r} must be int in 0..16",
-                file=sys.stderr,
-            )
-            return 1
-        if not isinstance(filename, str) or not FILENAME_RE.match(filename):
-            print(
-                f"error: line_bin[{cup_id}] must be a safe filename "
-                f"matching {FILENAME_RE.pattern!r}, got {filename!r}",
-                file=sys.stderr,
-            )
-            return 1
-        line_bin_items.append((cup_id, filename))
+    # ----- validate + normalize -----
+    norm = []   # list of dict (with cup_id, ident, etc.)
+    for i, t in enumerate(tracks):
+        if not isinstance(t, dict):
+            raise SystemExit(f"error: tracks[{i}] must be a mapping")
+        name = t.get("name")
+        if not isinstance(name, str):
+            raise SystemExit(f"error: tracks[{i}].name must be string")
+        ident = safe_ident(name)
+        cup_id = assign_cup_id(i)
 
-    # --- collision_bin: cupId -> { short, long } (optional) ---
-    collision_bin = data.get("collision_bin") or {}
-    if not isinstance(collision_bin, dict):
-        print(
-            f"error: collision_bin must be a mapping, got {type(collision_bin).__name__}",
-            file=sys.stderr,
-        )
-        return 1
-    # Each item: (cup_id, short_filename_or_None, long_filename_or_None).
-    collision_bin_items = []
-    for cup_id, entry in sorted(collision_bin.items()):
-        if not isinstance(cup_id, int) or cup_id < 0 or cup_id > 16:
-            print(
-                f"error: collision_bin key {cup_id!r} must be int in 0..16",
-                file=sys.stderr,
-            )
-            return 1
-        if not isinstance(entry, dict):
-            print(
-                f"error: collision_bin[{cup_id}] must be a mapping with "
-                f"'short' and/or 'long' keys, got {type(entry).__name__}",
-                file=sys.stderr,
-            )
-            return 1
-        short_filename = entry.get("short")
-        long_filename = entry.get("long")
-        if short_filename is None and long_filename is None:
-            print(
-                f"error: collision_bin[{cup_id}] must specify at least "
-                f"one of 'short' / 'long'",
-                file=sys.stderr,
-            )
-            return 1
-        for label, fn in (("short", short_filename), ("long", long_filename)):
-            if fn is None:
-                continue
-            if not isinstance(fn, str) or not FILENAME_RE.match(fn):
-                print(
-                    f"error: collision_bin[{cup_id}].{label} must be a "
-                    f"safe filename matching {FILENAME_RE.pattern!r}, got {fn!r}",
-                    file=sys.stderr,
-                )
-                return 1
-        collision_bin_items.append((cup_id, short_filename, long_filename))
+        coll_s = safe_filename(f"tracks[{i}].collision_short",
+                               t.get("collision_short"))
+        coll_l = safe_filename(f"tracks[{i}].collision_long",
+                               t.get("collision_long"))
+        line   = safe_filename(f"tracks[{i}].line_bin", t.get("line_bin"))
+        bgm_l  = safe_filename(f"tracks[{i}].bgm_l",  t.get("bgm_l"))
+        bgm_r  = safe_filename(f"tracks[{i}].bgm_r",  t.get("bgm_r"))
 
-    # --- ai_lap_bonus: cupId -> double (optional) ---
-    ai_lap_bonus = data.get("ai_lap_bonus") or {}
-    if not isinstance(ai_lap_bonus, dict):
-        print(
-            f"error: ai_lap_bonus must be a mapping, got {type(ai_lap_bonus).__name__}",
-            file=sys.stderr,
-        )
-        return 1
-    ai_lap_bonus_items = []
-    for cup_id, value in sorted(ai_lap_bonus.items()):
-        if not isinstance(cup_id, int) or cup_id < 0 or cup_id > 16:
-            print(
-                f"error: ai_lap_bonus key {cup_id!r} must be int in 0..16",
-                file=sys.stderr,
-            )
-            return 1
-        if not isinstance(value, (int, float)):
-            print(
-                f"error: ai_lap_bonus[{cup_id}] must be number, got {value!r}",
-                file=sys.stderr,
-            )
-            return 1
-        ai_lap_bonus_items.append((cup_id, float(value)))
-
-    # --- race_params: cupId -> { laps, time, bonus } (optional) ---
-    race_params = data.get("race_params") or {}
-    if not isinstance(race_params, dict):
-        print(
-            f"error: race_params must be a mapping, got {type(race_params).__name__}",
-            file=sys.stderr,
-        )
-        return 1
-    race_params_items = []
-    for cup_id, params in sorted(race_params.items()):
-        if not isinstance(cup_id, int) or cup_id < 0 or cup_id > 16:
-            print(
-                f"error: race_params key {cup_id!r} must be int in 0..16",
-                file=sys.stderr,
-            )
-            return 1
-        if not isinstance(params, dict):
-            print(
-                f"error: race_params[{cup_id}] must be a mapping with keys "
-                f"laps/time/bonus, got {type(params).__name__}",
-                file=sys.stderr,
-            )
-            return 1
-        laps = params.get("laps")
-        time_s = params.get("time")
-        bonus_s = params.get("bonus")
+        laps = t.get("laps")
+        time_s = t.get("time")
+        bonus_s = t.get("bonus")
+        ai_lap_bonus = t.get("ai_lap_bonus")
         if not isinstance(laps, int) or laps < 1 or laps > 127:
-            print(
-                f"error: race_params[{cup_id}].laps must be int in 1..127, "
-                f"got {laps!r}",
-                file=sys.stderr,
+            raise SystemExit(
+                f"error: tracks[{i}].laps must be int in 1..127, got {laps!r}"
             )
-            return 1
         if not isinstance(time_s, (int, float)) or time_s < 0:
-            print(
-                f"error: race_params[{cup_id}].time must be number >= 0, "
-                f"got {time_s!r}",
-                file=sys.stderr,
+            raise SystemExit(
+                f"error: tracks[{i}].time must be number >= 0, got {time_s!r}"
             )
-            return 1
         if not isinstance(bonus_s, (int, float)) or bonus_s < 0:
-            print(
-                f"error: race_params[{cup_id}].bonus must be number >= 0, "
-                f"got {bonus_s!r}",
-                file=sys.stderr,
+            raise SystemExit(
+                f"error: tracks[{i}].bonus must be number >= 0, got {bonus_s!r}"
             )
-            return 1
-        race_params_items.append((cup_id, laps, float(time_s), float(bonus_s)))
+        if not isinstance(ai_lap_bonus, (int, float)):
+            raise SystemExit(
+                f"error: tracks[{i}].ai_lap_bonus must be number, "
+                f"got {ai_lap_bonus!r}"
+            )
 
-    # --- Emit header ---
-    lines = [
-        "// Auto-generated from cup_courses.yaml - do not edit",
-        "#ifndef GENERATED_CUP_COURSES_H",
-        "#define GENERATED_CUP_COURSES_H",
-        "",
-        "#include <kamek.h>",
-        "",
-        "static const int kCupPage2Courses[8] = {",
-    ]
+        # Each track gets one new BGM id, sitting after the vanilla 21:
+        bgm_id = VANILLA_BGM_COUNT + i
+
+        norm.append({
+            "index":   i,
+            "ident":   ident,
+            "cup_id":  cup_id,
+            "coll_s":  coll_s,
+            "coll_l":  coll_l,
+            "line":    line,
+            "laps":    laps,
+            "time":    float(time_s),
+            "bonus":   float(bonus_s),
+            "ai_bonus": float(ai_lap_bonus),
+            "bgm_l":   bgm_l,
+            "bgm_r":   bgm_r,
+            "bgm_id":  bgm_id,
+        })
+
+    n_tracks = len(norm)
+    total_bgm = VANILLA_BGM_COUNT + n_tracks
+
+    # ----- page2 fill -----
+    page2 = []
+    for i in range(8):
+        src = norm[i] if i < n_tracks else norm[-1]
+        page2.append(src["cup_id"])
+
+    # ----- emit header -----
+    L = []
+    L.append("// Auto-generated from cup_courses.yaml - do not edit")
+    L.append("#ifndef GENERATED_CUP_COURSES_H")
+    L.append("#define GENERATED_CUP_COURSES_H")
+    L.append("")
+    L.append("#include <kamek.h>")
+    L.append("")
+
+    # --- Page 2 cursor map ---
+    L.append("// CUP3 page cursor -> cupId. Filled in track order; remaining")
+    L.append("// slots clone the last track to keep the 8-slot grid populated.")
+    L.append("static const int kCupPage2Courses[8] = {")
     for i, v in enumerate(page2):
-        lines.append(f"    {v},   // cursor {i}")
-    lines += ["};", ""]
+        L.append(f"    {v},   // cursor {i}")
+    L.append("};")
+    L.append("")
 
-    # Filename strings. Kept in patch rodata; their final addresses are
-    # resolved by the Kamek linker, so kmWritePointer records below contain
-    # real absolute pointers by the time Riivolution applies the memory
-    # patches at game boot.
-    for cup_id, filename in line_bin_items:
-        lines.append(
-            f'static const char kCustomLineBin_{cup_id}[] = "{filename}";'
+    # --- Per-track DSP filename strings (for new BGM entries) ---
+    L.append("// DSP filenames for new BGM ids (strings live in patch rodata;")
+    L.append("// pointers feed the relocated kCustomBgmTable below).")
+    for t in norm:
+        L.append(
+            f'static const char kBgmDsp_{t["ident"]}_L[] = "{t["bgm_l"]}";'
         )
-    if line_bin_items:
-        lines.append("")
-    for cup_id, short_fn, long_fn in collision_bin_items:
-        if short_fn is not None:
-            lines.append(
-                f'static const char kCustomCollisionShort_{cup_id}[] = "{short_fn}";'
-            )
-        if long_fn is not None:
-            lines.append(
-                f'static const char kCustomCollisionLong_{cup_id}[] = "{long_fn}";'
-            )
-    if collision_bin_items:
-        lines.append("")
+        L.append(
+            f'static const char kBgmDsp_{t["ident"]}_R[] = "{t["bgm_r"]}";'
+        )
+    L.append("")
 
-    # kmWritePointer records install the path-table overrides at boot time,
-    # before any game code runs. This replaces the previous runtime-install
-    # path (which depended on a scene hook firing before course load — and
-    # in practice produced a silent no-op on test_course).
-    for cup_id, _ in line_bin_items:
-        row = PATH_TABLE_BASE + cup_id * ROW_STRIDE
+    # --- Relocated BGM pointer table ---
+    L.append("// Vanilla PTR_s_bgm01_demoL_dsp_8037ce1c (21 ids × L/R = 42)")
+    L.append("// + per-track new entries, packed identically (L,R,L,R,...).")
+    L.append("// BgmTableLookupHook in cup_page3.cpp redirects ClSound_Play-")
+    L.append("// BgmStream's table read at 0x80190c50 to this array, so")
+    L.append("// vanilla rodata is left untouched (0x8037CEC4 padding +")
+    L.append("// debug strings stay intact).")
+    L.append(f"static const void* const kCustomBgmTable[{total_bgm * 2}] = {{")
+    L.append("    // --- vanilla 21 entries (copied) ---")
+    for vid, ptr_l, ptr_r in VANILLA_BGM_PTRS:
+        L.append(
+            f"    (const void*)0x{ptr_l:08X}, "
+            f"(const void*)0x{ptr_r:08X},  // bgm_id {vid}"
+        )
+    if norm:
+        L.append("    // --- new entries (one per track) ---")
+        for t in norm:
+            L.append(
+                f"    kBgmDsp_{t['ident']}_L, kBgmDsp_{t['ident']}_R,  "
+                f"// bgm_id {t['bgm_id']} ({t['ident']}, cupId={t['cup_id']})"
+            )
+    L.append("};")
+    L.append("")
+    L.append(f"#define kCustomTotalBgmCount {total_bgm}u")
+    L.append("")
+
+    # --- BGM pair table (long/short share the same id by default) ---
+    L.append("// Per-track BGM id pair consumed by WeatherInitCustom.")
+    L.append("// pair[0] = long-lap variant id, pair[1] = short-lap variant id.")
+    L.append("// We currently use the same id for both (single dsp pair).")
+    L.append("struct CustomBgmPair { unsigned int long_id; unsigned int short_id; };")
+    L.append(f"static const struct CustomBgmPair kCustomBgmPairs[{n_tracks}] = {{")
+    for t in norm:
+        L.append(
+            f"    {{ {t['bgm_id']}u, {t['bgm_id']}u }},  "
+            f"// {t['ident']} (cupId={t['cup_id']})"
+        )
+    L.append("};")
+    L.append("")
+
+    # --- Track meta ---
+    L.append("// cupId -> bgm pair. WeatherInitCustom does a linear scan")
+    L.append("// (track count is tiny so the cost is irrelevant).")
+    L.append("struct CustomTrack {")
+    L.append("    unsigned int cupId;")
+    L.append("    const struct CustomBgmPair* bgmPair;")
+    L.append("};")
+    L.append(f"static const struct CustomTrack kCustomTracks[{n_tracks}] = {{")
+    for t in norm:
+        L.append(
+            f"    {{ {t['cup_id']}u, &kCustomBgmPairs[{t['index']}] }},  "
+            f"// {t['ident']}"
+        )
+    L.append("};")
+    L.append(f"static const unsigned int kCustomTrackCount = {n_tracks}u;")
+    L.append("")
+
+    # --- ClSound_PlayBgmStream upper-bound rewrite ---
+    # vanilla: cmplwi r28, 0x15  (encoding: 0x281C0015)
+    # patched: cmplwi r28, kCustomTotalBgmCount
+    cmpli_insn = 0x281C0000 | (total_bgm & 0xFFFF)
+    L.append("// Raise ClSound_PlayBgmStream's bgm_id upper bound from 21 to")
+    L.append(f"// {total_bgm} (vanilla `cmplwi r28, 0x15`).")
+    L.append(f"kmWrite32(0x80190B70, 0x{cmpli_insn:08X});")
+    L.append("")
+
+    # --- Per-track collision / line strings + kmWritePointer ---
+    L.append("// --- Per-track string assets ---")
+    for t in norm:
+        L.append(
+            f'static const char kCustomLineBin_{t["cup_id"]}[] '
+            f'= "{t["line"]}";'
+        )
+        L.append(
+            f'static const char kCustomCollisionShort_{t["cup_id"]}[] '
+            f'= "{t["coll_s"]}";'
+        )
+        L.append(
+            f'static const char kCustomCollisionLong_{t["cup_id"]}[] '
+            f'= "{t["coll_l"]}";'
+        )
+    L.append("")
+
+    L.append("// --- Path table (DAT_8032890c) line_bin overrides ---")
+    for t in norm:
+        row = PATH_TABLE_BASE + t["cup_id"] * ROW_STRIDE
         for off in SLOT_OFFSETS:
-            lines.append(
-                f"kmWritePointer(0x{row + off:08X}, kCustomLineBin_{cup_id});"
+            L.append(
+                f"kmWritePointer(0x{row + off:08X}, "
+                f"kCustomLineBin_{t['cup_id']});"
             )
-    if line_bin_items:
-        lines.append("")
+    L.append("")
 
-    # Race-params overrides consumed by RaceParamsHook. Listed cupIds
-    # apply uniformly across all ccClass/longRound combinations; unlisted ones
-    # pass through to the vanilla table read.
-    lines.append("struct RaceParamOverride { int cupId; int laps; float time; float bonus; };")
-    lines.append("static const struct RaceParamOverride kRaceParamOverrides[] = {")
-    for cup_id, laps, time_s, bonus_s in race_params_items:
-        lines.append(
-            f"    {{ {cup_id}, {laps}, {time_s!r}f, {bonus_s!r}f }},"
+    L.append("// --- Per-cup asset struct collision overrides ---")
+    for t in norm:
+        course_base = COLLISION_TABLE_BASE + t["cup_id"] * COLLISION_COURSE_STRIDE
+        L.append(
+            f"kmWritePointer(0x{course_base + COLLISION_SHORT_OFFSET:08X}, "
+            f"kCustomCollisionShort_{t['cup_id']});  "
+            f"// course={t['cup_id']} short collision"
         )
-    lines.append("};")
-    lines.append(
-        f"static const int kRaceParamOverrideCount = {len(race_params_items)};"
+        L.append(
+            f"kmWritePointer(0x{course_base + COLLISION_LONG_OFFSET:08X}, "
+            f"kCustomCollisionLong_{t['cup_id']});  "
+            f"// course={t['cup_id']} long collision"
+        )
+    L.append("")
+
+    # --- Race param + AI lap bonus overrides ---
+    L.append("struct RaceParamOverride { int cupId; int laps; "
+             "float time; float bonus; };")
+    L.append("static const struct RaceParamOverride kRaceParamOverrides[] = {")
+    for t in norm:
+        L.append(
+            f"    {{ {t['cup_id']}, {t['laps']}, "
+            f"{t['time']!r}f, {t['bonus']!r}f }},"
+        )
+    L.append("};")
+    L.append(
+        f"static const int kRaceParamOverrideCount = {n_tracks};"
     )
-    lines.append("")
+    L.append("")
 
-    # AI lap-speed bonus overrides consumed by AICalcLapBonusHook. Listed
-    # cupIds short-circuit AI_CalcLapSpeedBonus to a constant; unlisted
-    # cupIds let the vanilla rule-table walk run.
-    lines.append("struct AILapBonusOverride { int cupId; double value; };")
-    lines.append("static const struct AILapBonusOverride kAILapBonusOverrides[] = {")
-    for cup_id, value in ai_lap_bonus_items:
-        lines.append(f"    {{ {cup_id}, {value!r} }},")
-    lines.append("};")
-    lines.append(
-        f"static const int kAILapBonusOverrideCount = {len(ai_lap_bonus_items)};"
+    L.append("struct AILapBonusOverride { int cupId; double value; };")
+    L.append("static const struct AILapBonusOverride kAILapBonusOverrides[] = {")
+    for t in norm:
+        L.append(f"    {{ {t['cup_id']}, {t['ai_bonus']!r} }},")
+    L.append("};")
+    L.append(
+        f"static const int kAILapBonusOverrideCount = {n_tracks};"
     )
-    lines.append("")
+    L.append("")
 
-    # kmWritePointer records install collision filename pointers for the
-    # short and/or long variant collision slots of each listed cupId.
-    # Auto_R / C.dat slots are left at vanilla pointers.
-    any_collision_write = False
-    for cup_id, short_fn, long_fn in collision_bin_items:
-        course_base = COLLISION_TABLE_BASE + cup_id * COLLISION_COURSE_STRIDE
-        if short_fn is not None:
-            addr = course_base + COLLISION_SHORT_COLLISION_OFFSET
-            lines.append(
-                f"kmWritePointer(0x{addr:08X}, kCustomCollisionShort_{cup_id});"
-                f"  // course={cup_id} short collision"
-            )
-            any_collision_write = True
-        if long_fn is not None:
-            addr = course_base + COLLISION_LONG_COLLISION_OFFSET
-            lines.append(
-                f"kmWritePointer(0x{addr:08X}, kCustomCollisionLong_{cup_id});"
-                f"  // course={cup_id} long collision"
-            )
-            any_collision_write = True
-    if any_collision_write:
-        lines.append("")
+    L.append("#endif")
+    L.append("")
+    out_path.write_text("\n".join(L))
 
-    lines += [
-        "#endif",
-        "",
-    ]
-    out_path.write_text("\n".join(lines))
-
-    # Emit Riivolution <file> fragments for each line_bin / collision_bin
-    # entry so build.sh can splice them into the final XML. Files are
-    # served from /mkgp2_patch/<filename> on the Riivolution root
-    # (Dolphin's Load/Riivolution/mkgp2_patch/).
-    xml_lines = []
+    # --- Riivolution <file> fragments (de-duplicated by filename) ---
     seen = set()
-    all_filenames = [fn for _, fn in line_bin_items]
-    for _, short_fn, long_fn in collision_bin_items:
-        if short_fn is not None:
-            all_filenames.append(short_fn)
-        if long_fn is not None:
-            all_filenames.append(long_fn)
-    for filename in all_filenames:
-        if filename in seen:
-            continue
-        seen.add(filename)
-        xml_lines.append(
-            f'<file disc="/{filename}" '
-            f'external="/mkgp2_patch/{filename}" create="true"/>'
-        )
+    xml_lines = []
+    for t in norm:
+        for fn in (t["line"], t["coll_s"], t["coll_l"]):
+            if fn in seen:
+                continue
+            seen.add(fn)
+            xml_lines.append(
+                f'<file disc="/{fn}" '
+                f'external="/mkgp2_patch/{fn}" create="true"/>'
+            )
+        # BGM dsps: only emit a <file> if the track owner ships their own
+        # copy under features/cup_page3/files/. ISO-supplied vanilla dsps
+        # (e.g. bgm01_demoL.dsp) need no copy — DVDOpen finds them at the
+        # disc root either way. We can't easily distinguish here without a
+        # cross-check, so emit unconditionally; Riivolution treats a missing
+        # external file as a no-op when create="true" is set... actually it
+        # errors out, so we skip BGM files that aren't shipped in files/.
+        files_dir = feature_dir / "files"
+        for fn in (t["bgm_l"], t["bgm_r"]):
+            if fn in seen:
+                continue
+            if not (files_dir / fn).exists():
+                # not shipped → assume it's a vanilla ISO dsp, skip <file>
+                continue
+            seen.add(fn)
+            xml_lines.append(
+                f'<file disc="/{fn}" '
+                f'external="/mkgp2_patch/{fn}" create="true"/>'
+            )
     xml_path.write_text("\n".join(xml_lines) + ("\n" if xml_lines else ""))
 
     print(
-        f"Generated {out_path.name}: page2={page2}, "
-        f"line_bin={len(line_bin_items)}, collision_bin={len(collision_bin_items)}, "
-        f"race_params={len(race_params_items)}, ai_lap_bonus={len(ai_lap_bonus_items)}"
+        f"Generated {out_path.name}: {n_tracks} track(s), "
+        f"page2={page2}, total_bgm={total_bgm}"
     )
     return 0
 
