@@ -31,8 +31,44 @@
 #   laps:             g_totalLaps                       (int, 1..127)
 #   time:             g_raceTimeRemaining (seconds)     (float)
 #   bonus:            g_lapBonusTimeDelta (seconds)     (float)
-#   ai_lap_bonus:     AI_CalcLapSpeedBonus override     (float, double in C)
 #   bgm_l / bgm_r:    DSP filenames passed to ClStream  (strings)
+#
+#   ai_lap_bonus_rules:
+#     Optional list of AILapBonusRule entries (vanilla AI_CalcLapSpeedBonus
+#     semantics). Walked top-to-bottom; first matching rule wins. Trailing
+#     sentinel (ccClass=-100) is appended automatically by gen.
+#     Per-rule fields (all optional, default in parentheses):
+#       ccClass         (-1)  match g_ccClass exactly, or -1 = wildcard
+#       subMode         (-1)  match g_roundIndex (lower byte) exactly
+#       kartIdx         (-1)  match the AI kart index, or -1 = wildcard
+#       position        (-1)  matched against (remainingLaps + 1).
+#                             position=1 -> final lap (remaining=0).
+#                             position=2 -> last-but-one lap, etc.
+#       lapDiffMin       (0)  inclusive lower bound of (lapDifference vs leader)
+#       lapDiffMax      (99)  inclusive upper bound
+#       excludePosition (-1)  skip rule when (race position) matches; -1 = never
+#       bonus           required; km/h added to AI base target speed.
+#     Omit the whole list to leave AI_CalcLapSpeedBonus on its vanilla path
+#     (cupId=0 / 9+ trigger off-by-one and need at least one override here).
+#
+#   base_speed:
+#     Optional per-ccClass base AI target speed table (RACE mode). Each entry
+#     is { lo: float, hi: float } in km/h. lo <= hi. Applied to all 8 round
+#     indices unless overridden by base_speed_rounds.
+#       "50cc"  -> ccClass 0
+#       "100cc" -> ccClass 1
+#       "150cc" -> ccClass 2
+#     Omit to leave GetBaseSpeedMax/Min on their vanilla path (cupId=0 / 9+
+#     fall back to entry[0] = 50cc Mario round0).
+#
+#   base_speed_rounds:
+#     Optional per-ccClass per-round override on top of base_speed. Map of
+#     ccClass -> { round_index: { lo, hi } }. round_index in 0..7
+#     (0..3 = オモテ, 4..7 = ウラ).
+#     Example:
+#       base_speed_rounds:
+#         "150cc":
+#           4: { lo: 255.0, hi: 275.0 }   # ウラ round 0
 #
 # Voice announcer queue (DAT_80678d90, consumed by FUN_801b5e18) is left
 # enabled for all tracks; the vanilla dequeue guard (`iVar10 == -1 skip`)
@@ -50,6 +86,14 @@ tracks:
     laps:  3
     time:  120.0
     bonus: 15.0
-    ai_lap_bonus: 0.0
     bgm_l: bgm01_demoL.dsp
     bgm_r: bgm01_demoR.dsp
+
+    ai_lap_bonus_rules:
+      - { position: 1, bonus: 60.0 }   # final lap: 1位以外に+60 km/h
+      - { bonus: 20.0 }                 # default catch-up
+
+    base_speed:
+      "50cc":  { lo: 145.0, hi: 160.0 }
+      "100cc": { lo: 200.0, hi: 220.0 }
+      "150cc": { lo: 250.0, hi: 270.0 }

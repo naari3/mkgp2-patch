@@ -36,9 +36,15 @@ RaceScene_Init=0x800a1d80
 RaceScene_Dtor=0x800a1a1c
 RaceMode_FrameUpdate=0x800a0ef4
 AI_CalcLapSpeedBonus=0x801dd480
+GetBaseSpeedMax=0x801de664   # AI base target-speed +0 float (lo). Indexed
+GetBaseSpeedMin=0x801de5e8   # AI base target-speed +4 float (hi). by
+                             # (cupId-1)*0x18 + ccClass*8 + roundIndex (RACE)
+                             # or (cupId-1) + ccClass*8 (Battle/TA). cupId<1
+                             # or >8 forces idx=0 -> Mario 50cc round0.
 
 # Globals (race params)
 g_ccClass=0x806d12cc
+g_gameMode=0x806d1294   # 0=RACE (GP/VS), 1=BATTLE, 2=TIME_ATTACK
 
 # Input
 GetInputManager=0x8003907c

@@ -291,28 +291,60 @@ kmBranch(0x800a24ac, RaceParamsHook);
 kmPatchExitPoint(RaceParamsHook, 0x800a24b8);
 
 // --------- AI lap-speed bonus override ---------------------------------
-// AI_CalcLapSpeedBonus (0x801dd480) walks a per-cup rule table indexed
-// by (cupId-1). For unmapped cupIds (0=test_course, 9+) it
-// dereferences (&PTR_DAT_803bcbac)[-1] = adjacent rodata as a rule-entry
-// pointer and walks 0x14-byte strides until hitting sentinel -100. In
-// practice it never finds the sentinel and floods PC=0x801dd5c8 with
-// invalid reads (~thousands per frame on test_course).
+// AI_CalcLapSpeedBonus (0x801dd480) walks a per-cup AILapBonusRule table
+// indexed by (cupId-1). For unmapped cupIds (0=test_course, 9+) it
+// dereferences (&kAILapBonusRuleTable_RaceCourse)[-1] = adjacent rodata
+// as a rule-entry pointer and walks 0x14-byte strides until hitting
+// sentinel -100. In practice it never finds the sentinel and floods
+// PC=0x801dd5c8 with invalid reads (~thousands per frame on test_course).
 //
 // Hook flow at function entry (0x801dd480):
-//   1. Lookup g_cupId in kAILapBonusOverrides[]
-//   2. If hit: return the override (double) directly to the caller
-//   3. If miss: execute the original `stwu r1,-0x20(r1)` and bctr to
-//      the function body at 0x801dd484 so the vanilla walk still runs
-extern "C" int AILapBonusLookup(double* outValue) {
+//   1. If g_cupId is in kCustomTracks AND the entry has lapBonusRules:
+//      walk the per-track rules with the same matching logic as vanilla
+//      and write the matched bonus to *outValue. No match -> 0.0.
+//   2. If miss (cupId not in our list): re-execute the displaced
+//      `stwu r1,-0x20(r1)` and bctr to vanilla 0x801dd484 so the vanilla
+//      walk still runs for cupId 1..8.
+//
+// The walker's match conditions mirror vanilla AI_CalcLapSpeedBonus:
+//   ccClass / subMode / kartIdx / position fields take -1 as wildcard;
+//   `position` is matched against (remainingLaps + 1), so position=1
+//   targets the final lap (remaining == 0). lapDiff must lie in
+//   [lapDiffMin, lapDiffMax] inclusive. excludePosition (when not -1)
+//   skips the rule if (race position == excludePosition - 1).
+extern "C" int AILapBonusLookup(int kartIdx, int remainingLaps,
+                                 int lapDiff, int excludePos,
+                                 double* outValue) {
     EnsureDBATWidened();
-    u32 cupId = *(u32*)0x806cf108;  // g_cupId
-    for (int i = 0; i < kAILapBonusOverrideCount; ++i) {
-        if ((u32)kAILapBonusOverrides[i].cupId == cupId) {
-            *outValue = kAILapBonusOverrides[i].value;
+    u32 cupId   = *(u32*)0x806cf108;  // g_cupId
+    int ccClass = (int)*(u32*)0x806d12cc;
+    int subMode = (int)(signed char)*(u32*)0x806d1298;  // (char)g_roundIndex
+
+    for (unsigned int i = 0; i < kCustomTrackCount; ++i) {
+        if (kCustomTracks[i].cupId != cupId) continue;
+        const AILapBonusRule* rules = kCustomTracks[i].lapBonusRules;
+        if (!rules) return 0;  // no override -> defer to vanilla
+        for (; rules->ccClass != -100; ++rules) {
+            if (rules->ccClass != -1 &&
+                (signed char)ccClass != rules->ccClass) continue;
+            if (rules->subMode != -1 &&
+                (signed char)subMode != rules->subMode) continue;
+            if (rules->kartIdx != -1 && kartIdx != -1 &&
+                (signed char)kartIdx != rules->kartIdx) continue;
+            if (rules->position != -1 &&
+                remainingLaps != rules->position - 1) continue;
+            if (lapDiff < rules->lapDiffMin) continue;
+            if (lapDiff > rules->lapDiffMax) continue;
+            if (rules->excludePosition != -1 &&
+                excludePos == rules->excludePosition - 1) continue;
+            *outValue = (double)rules->bonusValue;
             return 1;
         }
+        // No rule matched: vanilla returns FLOAT_806da2a4 = 0.0.
+        *outValue = 0.0;
+        return 1;
     }
-    return 0;
+    return 0;  // cupId not in our list -> fall through to vanilla.
 }
 
 asm void AICalcLapBonusHook() {
@@ -324,7 +356,9 @@ asm void AICalcLapBonusHook() {
     stw  r4, 0x14(r1)
     stw  r5, 0x18(r1)
     stw  r6, 0x1C(r1)
-    addi r3, r1, 0x8
+    // r3..r6 already hold (kartIdx, remainingLaps, lapDiff, excludePos);
+    // pass &outValue as the 5th arg in r7.
+    addi r7, r1, 0x8
     bl   AILapBonusLookup
     cmpwi r3, 0
     bne  override_path
@@ -349,6 +383,76 @@ override_path:
 }
 
 kmBranch(0x801dd480, AICalcLapBonusHook);
+
+// --------- AI base target speed override -------------------------------
+// GetBaseSpeedMax (0x801de664) and GetBaseSpeedMin (0x801de5e8) read
+// kAIBaseSpeedTable_Race @ 0x803a01e8 (or BattleTimeAttack @ 0x803a07e8)
+// indexed by (cupId-1)*0x18 + ccClass*8 + roundIndex (RACE) or
+// (cupId-1) + ccClass*8 (Battle/TA). cupId<1 or >8 forces idx=0, which
+// returns Mario 50cc round0 (145/160 km/h) and ignores both ccClass and
+// roundIndex — that is why test_course AI feels stuck around 50cc speed
+// regardless of the player's selected ccClass.
+//
+// We replace the function entry with a kmBranch to a C function that
+// looks up our per-track override (kCustomTracks[i].baseSpeedTable, a
+// CupSpeedEntry[ccClass*8 + round]) for RACE mode. On miss (not in our
+// list, or no table for that track, or non-RACE mode) we replicate the
+// vanilla logic inline so cupId 1..8 still resolve correctly.
+extern "C" const CupSpeedEntry* CustomBaseSpeedLookup(int cupId,
+                                                      int roundIndex) {
+    u32 ccClass  = *(u32*)0x806d12cc;
+    u32 gameMode = *(u32*)0x806d1294;
+    if (gameMode != 0) return 0;       // only override RACE mode for now
+    if (roundIndex < 0 || roundIndex >= 8) return 0;
+    if (ccClass >= 3) return 0;
+    for (unsigned int i = 0; i < kCustomTrackCount; ++i) {
+        if (kCustomTracks[i].cupId != (u32)cupId) continue;
+        const CupSpeedEntry* tbl = kCustomTracks[i].baseSpeedTable;
+        if (!tbl) return 0;
+        return &tbl[ccClass * 8 + roundIndex];
+    }
+    return 0;
+}
+
+static inline int VanillaBaseSpeedIndex(int cupId, int roundIndex,
+                                        u32 ccClass, u32 gameMode) {
+    if (cupId < 1 || cupId > 8) return 0;
+    if (gameMode == 0) {
+        return (cupId - 1) * 0x18 + (int)ccClass * 8 + roundIndex;
+    }
+    return cupId + (int)ccClass * 8 - 1;
+}
+
+extern "C" double CustomGetBaseSpeedMax(void* enemyParam, int cupId,
+                                         int roundIndex) {
+    EnsureDBATWidened();
+    const CupSpeedEntry* e = CustomBaseSpeedLookup(cupId, roundIndex);
+    if (e) return (double)e->lo;
+    u32 ccClass  = *(u32*)0x806d12cc;
+    u32 gameMode = *(u32*)0x806d1294;
+    int idx = VanillaBaseSpeedIndex(cupId, roundIndex, ccClass, gameMode);
+    const float* tbl = (gameMode == 0)
+        ? (const float*)0x803a01e8
+        : (const float*)0x803a07e8;
+    return (double)tbl[idx * 2];
+}
+
+extern "C" double CustomGetBaseSpeedMin(void* enemyParam, int cupId,
+                                         int roundIndex) {
+    EnsureDBATWidened();
+    const CupSpeedEntry* e = CustomBaseSpeedLookup(cupId, roundIndex);
+    if (e) return (double)e->hi;
+    u32 ccClass  = *(u32*)0x806d12cc;
+    u32 gameMode = *(u32*)0x806d1294;
+    int idx = VanillaBaseSpeedIndex(cupId, roundIndex, ccClass, gameMode);
+    const float* tbl = (gameMode == 0)
+        ? (const float*)0x803a01e8
+        : (const float*)0x803a07e8;
+    return (double)tbl[idx * 2 + 1];
+}
+
+kmBranch(0x801de664, CustomGetBaseSpeedMax);
+kmBranch(0x801de5e8, CustomGetBaseSpeedMin);
 
 // --------- WeatherSystem_Init: full replacement for custom-track BGM ----
 // Vanilla WeatherSystem_Init (0x8016c730) uses a jump table at 0x804910BC

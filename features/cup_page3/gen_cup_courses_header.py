@@ -8,15 +8,19 @@ patch needs:
   - kCustomBgmTable[(21+N)*2]     — relocated BGM dsp pointer table
                                     (vanilla 21 entries copied + N new)
   - kCustomBgmPairs[N]            — per-track (long_id, short_id) BGM pair
-  - kCustomTracks[N]              — cupId -> *bgm pair, scanned by
-                                    WeatherInitCustom in cup_page3.cpp
+  - kCustomAILapBonusRules_<i>    — per-track AILapBonusRule[] (sentinel
+                                    appended) for AICalcLapBonusHook
+  - kCustomBaseSpeed_<i>          — per-track CupSpeedEntry[24]
+                                    (ccClass=3 × round=8) for the AI
+                                    GetBaseSpeedMax/Min hooks
+  - kCustomTracks[N]              — cupId -> *bgm pair / *rules / *speed,
+                                    scanned by hooks in cup_page3.cpp
   - kCustomTotalBgmCount          — used by cup_page3.cpp to clip
                                     ClSound_PlayBgmStream's `< 0x15` guard
   - kCustomLineBin_*, kCustomCollisionShort_*, kCustomCollisionLong_*
                                   — strings + kmWritePointer records into
                                     the vanilla path-table / asset struct
   - kRaceParamOverrides[]         — RaceParamsHook lookup
-  - kAILapBonusOverrides[]        — AICalcLapBonusHook lookup
 """
 
 import re
@@ -41,7 +45,7 @@ VANILLA_BGM_PTRS = [
     (2,  0x8037CB34, 0x8037CB48),  # bgm07_sysendL / bgm07_sysendR
     (3,  0x8037CB5C, 0x8037CB70),  # bgm08_chasysL / bgm08_chasysR
     (4,  0x8037CB84, 0x8037CB98),  # bgm09_chagamL / bgm09_chagamR
-    (5,  0x8037CBAC, 0x8037CBC0),  # bgm11_stg1_1L  / bgm11_stg1_1R   (cup1 long)
+    (5,  0x8037CBAC, 0x8037CBC0),  # bgm11_stg1_1L  / bgm11_stg1_1sR  (cup1 long)
     (6,  0x8037CBD4, 0x8037CBE8),  # bgm11_stg1_1sL / bgm11_stg1_1sR  (cup1 short)
     (7,  0x8037CBFC, 0x8037CC10),  # cup2 long
     (8,  0x8037CC24, 0x8037CC38),  # cup2 short
@@ -73,6 +77,21 @@ COLLISION_COURSE_STRIDE = 0x228
 COLLISION_SHORT_OFFSET = 0x84
 COLLISION_LONG_OFFSET  = 0x198
 
+# AI base speed table: ccClass (0..2) × round (0..7), 24 entries per track.
+BASE_SPEED_CC_KEYS = ("50cc", "100cc", "150cc")
+BASE_SPEED_ROUND_COUNT = 8
+
+# AILapBonusRule defaults (per-rule fields user can omit).
+RULE_FIELD_DEFAULTS = {
+    "ccClass":         -1,
+    "subMode":         -1,
+    "kartIdx":         -1,
+    "position":        -1,
+    "lapDiffMin":       0,
+    "lapDiffMax":      99,
+    "excludePosition": -1,
+}
+
 
 def assign_cup_id(track_index: int) -> int:
     """tracks 配列の index -> cupId. See yaml header comment for rules."""
@@ -99,6 +118,126 @@ def safe_filename(field: str, value) -> str:
             f"{FILENAME_RE.pattern!r}, got {value!r}"
         )
     return value
+
+
+def normalize_lap_bonus_rules(field: str, value):
+    """Validate ai_lap_bonus_rules list. Returns list of fully-populated
+    rule dicts (with all default fields filled in), or None if absent."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise SystemExit(f"error: {field} must be a list")
+    norm_rules = []
+    for j, rule in enumerate(value):
+        if not isinstance(rule, dict):
+            raise SystemExit(f"error: {field}[{j}] must be a mapping")
+        bonus = rule.get("bonus")
+        if not isinstance(bonus, (int, float)):
+            raise SystemExit(
+                f"error: {field}[{j}].bonus required (number), got {bonus!r}"
+            )
+        rec = {"bonus": float(bonus)}
+        for k, default in RULE_FIELD_DEFAULTS.items():
+            v = rule.get(k, default)
+            if not isinstance(v, int):
+                raise SystemExit(
+                    f"error: {field}[{j}].{k} must be int, got {v!r}"
+                )
+            rec[k] = v
+        # Sanity-check: 1-byte fields must fit in signed char range.
+        for k in ("ccClass", "subMode", "kartIdx", "position", "excludePosition"):
+            if not -128 <= rec[k] <= 127:
+                raise SystemExit(
+                    f"error: {field}[{j}].{k} out of signed-char range"
+                )
+        # Reject the user-supplied sentinel; gen appends it.
+        if rec["ccClass"] == -100:
+            raise SystemExit(
+                f"error: {field}[{j}].ccClass == -100 is the sentinel; "
+                "drop the rule (gen appends the sentinel automatically)"
+            )
+        norm_rules.append(rec)
+    return norm_rules
+
+
+def normalize_base_speed(field: str, base_value, rounds_value):
+    """Resolve base_speed + base_speed_rounds into a 24-entry [ccClass=3]
+    × [round=8] list of (lo, hi) tuples, or None if base_speed absent."""
+    if base_value is None and rounds_value is None:
+        return None
+    if base_value is None:
+        raise SystemExit(
+            f"error: {field}_rounds requires {field} as the per-cc default"
+        )
+    if not isinstance(base_value, dict):
+        raise SystemExit(f"error: {field} must be a mapping of cc -> {{lo,hi}}")
+    table = []
+    for cc_idx, cc_key in enumerate(BASE_SPEED_CC_KEYS):
+        if cc_key not in base_value:
+            raise SystemExit(
+                f"error: {field} missing entry for {cc_key!r}"
+            )
+        entry = base_value[cc_key]
+        if not isinstance(entry, dict):
+            raise SystemExit(f"error: {field}[{cc_key!r}] must be mapping")
+        lo = entry.get("lo")
+        hi = entry.get("hi")
+        if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)):
+            raise SystemExit(
+                f"error: {field}[{cc_key!r}] requires numeric lo + hi"
+            )
+        if lo > hi:
+            raise SystemExit(
+                f"error: {field}[{cc_key!r}].lo > .hi ({lo} > {hi})"
+            )
+        for _ in range(BASE_SPEED_ROUND_COUNT):
+            table.append((float(lo), float(hi)))
+
+    # Per-round overrides on top of the defaults above.
+    if rounds_value is not None:
+        if not isinstance(rounds_value, dict):
+            raise SystemExit(
+                f"error: {field}_rounds must be mapping of cc -> {{round: {{lo,hi}}}}"
+            )
+        for cc_key, per_round in rounds_value.items():
+            if cc_key not in BASE_SPEED_CC_KEYS:
+                raise SystemExit(
+                    f"error: {field}_rounds[{cc_key!r}] unknown cc; "
+                    f"expected one of {BASE_SPEED_CC_KEYS}"
+                )
+            if not isinstance(per_round, dict):
+                raise SystemExit(
+                    f"error: {field}_rounds[{cc_key!r}] must be mapping"
+                )
+            cc_idx = BASE_SPEED_CC_KEYS.index(cc_key)
+            for r_key, entry in per_round.items():
+                if not isinstance(r_key, int) or not 0 <= r_key < BASE_SPEED_ROUND_COUNT:
+                    raise SystemExit(
+                        f"error: {field}_rounds[{cc_key!r}][{r_key!r}] "
+                        f"round index must be 0..{BASE_SPEED_ROUND_COUNT - 1}"
+                    )
+                if not isinstance(entry, dict):
+                    raise SystemExit(
+                        f"error: {field}_rounds[{cc_key!r}][{r_key!r}] must be mapping"
+                    )
+                lo = entry.get("lo")
+                hi = entry.get("hi")
+                if (not isinstance(lo, (int, float))
+                        or not isinstance(hi, (int, float))):
+                    raise SystemExit(
+                        f"error: {field}_rounds[{cc_key!r}][{r_key!r}] requires lo + hi"
+                    )
+                if lo > hi:
+                    raise SystemExit(
+                        f"error: {field}_rounds[{cc_key!r}][{r_key!r}] "
+                        f"lo > hi ({lo} > {hi})"
+                    )
+                table[cc_idx * BASE_SPEED_ROUND_COUNT + r_key] = (
+                    float(lo), float(hi)
+                )
+
+    assert len(table) == len(BASE_SPEED_CC_KEYS) * BASE_SPEED_ROUND_COUNT
+    return table
 
 
 def main() -> int:
@@ -136,7 +275,6 @@ def main() -> int:
         laps = t.get("laps")
         time_s = t.get("time")
         bonus_s = t.get("bonus")
-        ai_lap_bonus = t.get("ai_lap_bonus")
         if not isinstance(laps, int) or laps < 1 or laps > 127:
             raise SystemExit(
                 f"error: tracks[{i}].laps must be int in 1..127, got {laps!r}"
@@ -149,11 +287,22 @@ def main() -> int:
             raise SystemExit(
                 f"error: tracks[{i}].bonus must be number >= 0, got {bonus_s!r}"
             )
-        if not isinstance(ai_lap_bonus, (int, float)):
+
+        if "ai_lap_bonus" in t:
             raise SystemExit(
-                f"error: tracks[{i}].ai_lap_bonus must be number, "
-                f"got {ai_lap_bonus!r}"
+                f"error: tracks[{i}].ai_lap_bonus (scalar) is removed; "
+                "use ai_lap_bonus_rules: [...] instead"
             )
+        lap_bonus_rules = normalize_lap_bonus_rules(
+            f"tracks[{i}].ai_lap_bonus_rules",
+            t.get("ai_lap_bonus_rules"),
+        )
+
+        base_speed_table = normalize_base_speed(
+            f"tracks[{i}].base_speed",
+            t.get("base_speed"),
+            t.get("base_speed_rounds"),
+        )
 
         # Each track gets one new BGM id, sitting after the vanilla 21:
         bgm_id = VANILLA_BGM_COUNT + i
@@ -168,7 +317,8 @@ def main() -> int:
             "laps":    laps,
             "time":    float(time_s),
             "bonus":   float(bonus_s),
-            "ai_bonus": float(ai_lap_bonus),
+            "lap_bonus_rules": lap_bonus_rules,
+            "base_speed":      base_speed_table,
             "bgm_l":   bgm_l,
             "bgm_r":   bgm_r,
             "bgm_id":  bgm_id,
@@ -253,17 +403,89 @@ def main() -> int:
     L.append("};")
     L.append("")
 
+    # --- Per-track AILapBonusRule arrays ---
+    L.append("// AILapBonusRule struct must match vanilla (0x14 bytes,")
+    L.append("// sentinel ccClass == -100). Walked by AICalcLapBonusHook.")
+    L.append("struct AILapBonusRule {")
+    L.append("    signed char ccClass;")
+    L.append("    signed char subMode;")
+    L.append("    signed char kartIdx;")
+    L.append("    signed char position;")
+    L.append("    int  lapDiffMin;")
+    L.append("    int  lapDiffMax;")
+    L.append("    signed char excludePosition;")
+    L.append("    signed char pad[3];")
+    L.append("    float bonusValue;")
+    L.append("};")
+    L.append("")
+
+    for t in norm:
+        rules = t["lap_bonus_rules"]
+        if rules is None:
+            continue
+        sym = f"kCustomLapBonusRules_{t['cup_id']}"
+        L.append(
+            f"static const struct AILapBonusRule {sym}[{len(rules) + 1}] = {{"
+        )
+        for r in rules:
+            L.append(
+                f"    {{ {r['ccClass']}, {r['subMode']}, {r['kartIdx']}, "
+                f"{r['position']}, {r['lapDiffMin']}, {r['lapDiffMax']}, "
+                f"{r['excludePosition']}, {{0,0,0}}, {r['bonus']!r}f }},"
+            )
+        # Sentinel ccClass=-100 ends iteration in vanilla walker.
+        L.append("    { -100, 0, 0, 0, 0, 0, 0, {0,0,0}, 0.0f },")
+        L.append("};")
+    L.append("")
+
+    # --- Per-track AI base speed tables (ccClass × round) ---
+    L.append("// Per-track AI base target speed table for the RACE-mode")
+    L.append("// GetBaseSpeedMax/Min hooks. Layout matches vanilla:")
+    L.append("//   entry[ccClass * 8 + round] = { lo, hi }  (km/h)")
+    L.append("// Vanilla file: kAIBaseSpeedTable_Race @ 0x803a01e8.")
+    L.append("struct CupSpeedEntry { float lo; float hi; };")
+    L.append("")
+
+    for t in norm:
+        tbl = t["base_speed"]
+        if tbl is None:
+            continue
+        sym = f"kCustomBaseSpeed_{t['cup_id']}"
+        n_entries = len(BASE_SPEED_CC_KEYS) * BASE_SPEED_ROUND_COUNT
+        L.append(f"static const struct CupSpeedEntry {sym}[{n_entries}] = {{")
+        for cc_idx, cc_key in enumerate(BASE_SPEED_CC_KEYS):
+            for r in range(BASE_SPEED_ROUND_COUNT):
+                lo, hi = tbl[cc_idx * BASE_SPEED_ROUND_COUNT + r]
+                L.append(
+                    f"    {{ {lo!r}f, {hi!r}f }},  // {cc_key} round {r}"
+                )
+        L.append("};")
+    L.append("")
+
     # --- Track meta ---
-    L.append("// cupId -> bgm pair. WeatherInitCustom does a linear scan")
-    L.append("// (track count is tiny so the cost is irrelevant).")
+    L.append("// cupId -> bgm pair / lap-bonus rules / base-speed table.")
+    L.append("// Hooks in cup_page3.cpp do a linear scan (track count is tiny).")
+    L.append("// NULL pointers leave the corresponding subsystem on its")
+    L.append("// vanilla path for that cupId.")
     L.append("struct CustomTrack {")
     L.append("    unsigned int cupId;")
     L.append("    const struct CustomBgmPair* bgmPair;")
+    L.append("    const struct AILapBonusRule* lapBonusRules;")
+    L.append("    const struct CupSpeedEntry* baseSpeedTable;")
     L.append("};")
     L.append(f"static const struct CustomTrack kCustomTracks[{n_tracks}] = {{")
     for t in norm:
+        rules_ptr = (
+            f"kCustomLapBonusRules_{t['cup_id']}"
+            if t["lap_bonus_rules"] is not None else "0"
+        )
+        speed_ptr = (
+            f"kCustomBaseSpeed_{t['cup_id']}"
+            if t["base_speed"] is not None else "0"
+        )
         L.append(
-            f"    {{ {t['cup_id']}u, &kCustomBgmPairs[{t['index']}] }},  "
+            f"    {{ {t['cup_id']}u, &kCustomBgmPairs[{t['index']}], "
+            f"{rules_ptr}, {speed_ptr} }},  "
             f"// {t['ident']}"
         )
     L.append("};")
@@ -321,7 +543,7 @@ def main() -> int:
         )
     L.append("")
 
-    # --- Race param + AI lap bonus overrides ---
+    # --- Race param overrides ---
     L.append("struct RaceParamOverride { int cupId; int laps; "
              "float time; float bonus; };")
     L.append("static const struct RaceParamOverride kRaceParamOverrides[] = {")
@@ -333,16 +555,6 @@ def main() -> int:
     L.append("};")
     L.append(
         f"static const int kRaceParamOverrideCount = {n_tracks};"
-    )
-    L.append("")
-
-    L.append("struct AILapBonusOverride { int cupId; double value; };")
-    L.append("static const struct AILapBonusOverride kAILapBonusOverrides[] = {")
-    for t in norm:
-        L.append(f"    {{ {t['cup_id']}, {t['ai_bonus']!r} }},")
-    L.append("};")
-    L.append(
-        f"static const int kAILapBonusOverrideCount = {n_tracks};"
     )
     L.append("")
 
