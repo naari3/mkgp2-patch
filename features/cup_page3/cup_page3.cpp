@@ -257,21 +257,33 @@ extern "C" void ResolveRaceParams(int* outLap, float* outTime, float* outBonus) 
     *outBonus = *(const float*)(vp + 8);
 }
 
+// Vanilla RaceScene_Init sets r3/r4/r5 BEFORE this block and reuses them
+// afterwards: r3 = ProcessSystemTick string arg (0x800a24a4), r5 = -2 that
+// 0x800a24d0 stores into g_raceResultCode. Our hook clobbers those regs to
+// pass stack pointers into ResolveRaceParams, so we must save/restore them
+// or the vanilla `stw r5, -0x7bb4(r13)` writes a stack address into
+// g_raceResultCode and breaks the race-end gate (`g_raceResultCode == -2`).
 asm void RaceParamsHook() {
     nofralloc
-    stwu r1, -0x30(r1)
+    stwu r1, -0x40(r1)
     mflr r11
-    stw  r11, 0x34(r1)
+    stw  r11, 0x44(r1)
+    stw  r3,  0x30(r1)
+    stw  r4,  0x34(r1)
+    stw  r5,  0x38(r1)
     addi r3, r1, 0x20
     addi r4, r1, 0x24
     addi r5, r1, 0x28
     bl   ResolveRaceParams
-    lwz  r11, 0x34(r1)
+    lwz  r11, 0x44(r1)
     mtlr r11
     lwz  r0,  0x20(r1)
     lfs  f1,  0x24(r1)
     lfs  f0,  0x28(r1)
-    addi r1,  r1, 0x30
+    lwz  r3,  0x30(r1)
+    lwz  r4,  0x34(r1)
+    lwz  r5,  0x38(r1)
+    addi r1,  r1, 0x40
     blr
 }
 
