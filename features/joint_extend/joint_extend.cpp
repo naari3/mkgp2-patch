@@ -10,9 +10,9 @@ void JObj_Hide(int archive, int jobjIdx, int flags);
 void clNormal3D_SetFlags(int archive, int flags);
 const char** GetJointNameTable();
 
-extern int g_courseId;
-extern int g_isUraCourse;
-extern int g_mirrorMode;
+extern int g_cupId;
+extern int g_longRoundFlag;
+extern int g_reverseRoundFlag;
 
 }
 
@@ -54,21 +54,21 @@ static Visibility ClassifyJoint(const char* name) {
     return VIS_ALWAYS;
 }
 
-static int ShouldShow(Visibility vis, int isUra, int isMirror) {
-    int isShort = !isUra;
+static int ShouldShow(Visibility vis, int isLong, int isReverse) {
+    int isShort = !isLong;
     switch (vis) {
     case VIS_ALWAYS:       return 1;
     case VIS_SHORT_ONLY:   return isShort;
     case VIS_LONG_ONLY:    return !isShort;
-    case VIS_NORMAL_ONLY:  return isMirror == 0;
-    case VIS_REVERSE_ONLY: return isMirror != 0;
+    case VIS_NORMAL_ONLY:  return isReverse == 0;
+    case VIS_REVERSE_ONLY: return isReverse != 0;
     }
     return 1;
 }
 
-static const char** GetJointsForCourse(int courseId) {
-    for (int i = 0; sCourseJointDefs[i].courseId != -1; i++) {
-        if (sCourseJointDefs[i].courseId == courseId)
+static const char** GetJointsForCup(int cupId) {
+    for (int i = 0; sCourseJointDefs[i].cupId != -1; i++) {
+        if (sCourseJointDefs[i].cupId == cupId)
             return sCourseJointDefs[i].joints;
     }
     return 0;
@@ -78,7 +78,7 @@ static const char** GetJointsForCourse(int courseId) {
 //   - 18 ResolveJointByName calls storing results in state[0..0x12]
 //   - uVar2 (short_occlusion) / uVar7 (long_occlusion) returned via outShort/outLong
 //     (assembler wrapper places them into r28/r29 for code after exit point)
-//   - Show/Hide dispatch per isUra × isMirror
+//   - Show/Hide dispatch per (long round, reverse round) variant
 //   - Appends YAML custom joints with suffix-based visibility
 extern "C" void CourseJointLoadImpl(int* state, int* outShort, int* outLong) {
     EnsureDBATWidened();
@@ -126,10 +126,10 @@ extern "C" void CourseJointLoadImpl(int* state, int* outShort, int* outLong) {
     // Show/Hide logic
     if (state[0] != 0) clNormal3D_SetFlags(archive, 0x4000000);
 
-    int isUra    = g_isUraCourse;
-    int isMirror = g_mirrorMode;
+    int isLong    = g_longRoundFlag;
+    int isReverse = g_reverseRoundFlag;
 
-    if (isUra == 0) {
+    if (isLong == 0) {
         if (state[1] != 0)    clNormal3D_SetFlags(archive, 0x4000000);
         if (state[6] != 0)    JObj_Show(archive, state[6], 0x10);
         if (state[1] != 0)    JObj_Show(archive, state[1], 0x10);
@@ -139,7 +139,7 @@ extern "C" void CourseJointLoadImpl(int* state, int* outShort, int* outLong) {
         if (state[2] != 0)    JObj_Hide(archive, state[2], 0x10);
         if (state[0xd] != 0)  JObj_Hide(archive, state[0xd], 0x10);
         if (state[9] != 0)    JObj_Hide(archive2, state[9], 0x10);
-        if (isMirror == 0) {
+        if (isReverse == 0) {
             if (state[0xe] != 0)  JObj_Show(archive, state[0xe], 0x10);
             if (state[0xf] != 0)  JObj_Hide(archive, state[0xf], 0x10);
             if (state[0x10] != 0) JObj_Hide(archive, state[0x10], 0x10);
@@ -160,7 +160,7 @@ extern "C" void CourseJointLoadImpl(int* state, int* outShort, int* outLong) {
         if (state[1] != 0)    JObj_Hide(archive, state[1], 0x10);
         if (state[0xc] != 0)  JObj_Hide(archive, state[0xc], 0x10);
         if (state[8] != 0)    JObj_Show(archive2, state[8], 0x10);
-        if (isMirror == 0) {
+        if (isReverse == 0) {
             if (state[0xe] != 0)  JObj_Hide(archive, state[0xe], 0x10);
             if (state[0xf] != 0)  JObj_Show(archive, state[0xf], 0x10);
             if (state[0x10] != 0) JObj_Hide(archive, state[0x10], 0x10);
@@ -174,13 +174,13 @@ extern "C" void CourseJointLoadImpl(int* state, int* outShort, int* outLong) {
     }
 
     // YAML custom joints: suffix-based visibility for names beyond the hardcoded 18
-    const char** joints = GetJointsForCourse(g_courseId);
+    const char** joints = GetJointsForCup(g_cupId);
     if (joints != 0) {
         for (int i = 0; joints[i] != 0; i++) {
             int idx = ResolveJointByName(archive, joints[i]);
             if (idx == 0) continue;
             Visibility vis = ClassifyJoint(joints[i]);
-            if (ShouldShow(vis, isUra, isMirror)) {
+            if (ShouldShow(vis, isLong, isReverse)) {
                 JObj_Show(archive, idx, 0x10);
             } else {
                 JObj_Hide(archive, idx, 0x10);
@@ -188,8 +188,8 @@ extern "C" void CourseJointLoadImpl(int* state, int* outShort, int* outLong) {
         }
     }
 
-    DebugPrintfSafe("MKGP2: joints loaded course=%d ura=%d mirror=%d occShort=%d occLong=%d\n",
-                    g_courseId, isUra, isMirror, *outShort, *outLong);
+    DebugPrintfSafe("MKGP2: joints loaded cup=%d long=%d reverse=%d occShort=%d occLong=%d\n",
+                    g_cupId, isLong, isReverse, *outShort, *outLong);
 }
 
 // Hook: replaces 0x80047BB0-0x80048080. Exits into 0x80048080 via kmPatchExitPoint.

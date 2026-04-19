@@ -21,19 +21,42 @@ Archive_GetCurrent=0x80034a8c
 
 # System
 DebugPrintf=0x8002ceec
+DebugOutput_Stub=0x8002ce9c
 ProcessSystemTick=0x8009d5f8
 Alloc=0x8003b1fc
+
+# Panic / exception path (see features/panic_log)
+OSPanic_SpinForever=0x80255800
+OSDumpContext=0x80257848
+OSUnhandledException=0x80257f00
+g_DebugPrintfEnable=0x80598a8a
 
 # Race mode
 RaceScene_Init=0x800a1d80
 RaceScene_Dtor=0x800a1a1c
 RaceMode_FrameUpdate=0x800a0ef4
+AI_CalcLapSpeedBonus=0x801dd480
+
+# Globals (race params)
+g_ccClass=0x806d12cc
 
 # Input
 GetInputManager=0x8003907c
 InputMgr_GetPlayer=0x80039020
 
-# Globals
-g_courseId=0x806cf108
-g_isUraCourse=0x806d1268
-g_mirrorMode=0x806d1270
+# Globals (cup / round state)
+# 1 cup = 1 base track played across 8 rounds (omote 0..3, ura 4..7).
+# Within a cup each round selects a (long, reverse) variant pair. ウラカップ
+# is round_index >= 4 (= second 4-round set per cup).
+g_cupId=0x806cf108           # cupId 1..8 = race cups, 9..16 = challenge modes
+g_longRoundFlag=0x806d1268   # round picks short(0) or long(1) variant
+g_reverseRoundFlag=0x806d1270 # round picks normal(0) or reverse / alt-route(1) variant
+g_roundIndex=0x806d1298      # round 0..7 within cup (>=4 = ウラカップ)
+
+# Cup selection scene (clFlowCup)
+clFlowCup_Init=0x801c8ab4
+clFlowCup_Update=0x801c772c
+clFlowCup_Dtor=0x801c88f4
+Sprite_SetupAnim=0x801a03dc
+Sprite_SetAnimParam=0x801a0374
+SetCourseParams=0x8009cbfc

@@ -39,15 +39,15 @@ def main():
         lines.append("};")
         lines.append("")
 
-    # Course lookup table
+    # Cup lookup table
     lines.append("struct CourseJointDef {")
-    lines.append("    int courseId;")
+    lines.append("    int cupId;")
     lines.append("    const char** joints;")
     lines.append("    int count;")
     lines.append("};")
     lines.append("")
 
-    course_ids = {
+    cup_ids = {
         "MR_highway": 1, "DK_jungle": 2, "WC_dcity": 3, "PC_land": 4,
         "KP_castle": 5, "RB_road": 6, "YI_land": 7, "DN_stadium": 8,
     }
@@ -61,7 +61,7 @@ def main():
             if j is not None and j != "null" and j not in seen:
                 seen.add(j)
                 count += 1
-        cid = course_ids.get(course, -1)
+        cid = cup_ids.get(course, -1)
         lines.append(f"    {{ {cid}, sJoints_{course}, {count} }},")
     lines.append("    { -1, 0, 0 }")
     lines.append("};")

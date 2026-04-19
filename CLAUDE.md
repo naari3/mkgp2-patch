@@ -57,7 +57,7 @@ DebugPrintfSafe("MKGP2: value=%d\n", x);
 
 `externals.txt` は Ghidra アドレスの手書き転記で、古い/誤った値が紛れる。新しいシンボルを追加する前、および疑わしい動作を見た際は **Ghidra の `list_globals` / `decompile_function` で必ず検証**する。
 
-実績: `g_courseId` が `0x806d1264` (誤) のまま残っていた。正しくは `0x806cf108`。検証手順:
+実績: `g_cupId` (旧 `g_courseId`) が `0x806d1264` (誤) のまま残っていた。正しくは `0x806cf108`。検証手順:
 
 1. `mcp__ghidra__list_globals(filter="シンボル名", program="main.dol")` でアドレス取得
 2. 参照先関数を decompile してそのアドレスが意図どおり使われているか確認
