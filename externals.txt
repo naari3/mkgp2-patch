@@ -44,11 +44,16 @@ GetBaseSpeedMin=0x801de5e8   # AI base target-speed +4 float (hi). by
 
 # Globals (race params)
 g_ccClass=0x806d12cc
-g_gameMode=0x806d1294   # 0=RACE (GP/VS), 1=BATTLE, 2=TIME_ATTACK
+g_gameMode=0x806d1294   # 0=RACE (GP), 1=TIME_ATTACK, 2=BATTLE (minigame/VS系、実体要追加調査)
+# Note: Ghidra の旧 enum (BATTLE=1, TIME_ATTACK=2) は動的解析で誤りと判明し入れ替え済 (2026-04-20)。
+# 対戦キャンセル長押し+CC 確定で g_gameMode=1 にトグル → ゲーム UI「タイムアタックモード」表示確認。
 
 # Input
 GetInputManager=0x8003907c
 InputMgr_GetPlayer=0x80039020
+
+# Scene state
+g_currentSceneState=0x806cf114  # SetSyncTarget の write 先、MenuScene_Dispatch の scene 管理
 
 # Globals (cup / round state)
 # 1 cup = 1 base track played across 8 rounds (omote 0..3, ura 4..7).

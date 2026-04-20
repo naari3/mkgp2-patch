@@ -9,6 +9,10 @@ GitHub: https://github.com/naari3/mkgp2-patch。ビルド: `bash build.sh`。
 - **ライブメモリビューワ**: `~/src/github.com/naari3/mkgp2-view/` — Dolphin プロセスからアドレスを実時間読み取り。パッチ動作のデバッグに使用。MCPサーバー (`read_u32`, `get_game_state` 等) も提供。
 - **ISO 展開結果**: `C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files\` — コースモデル・コリジョン・テクスチャ等の全リソースが Dolphin dump + extract 済み。ファイル名命名規則の実物確認・没データ (test_course 等) 存在確認に使用。詳細は `mkgp2docs/mkgp2_iso_dump_location.md`。
 
+## 関連MCP
+
+- Ghidraによる解析を行う場合 /ghidra-mcp スキルのロードを激しく推奨する。
+
 ## 必須のセットアップ (MKGP2特有のハマりどころ)
 
 ### 1. DBAT0 拡張
