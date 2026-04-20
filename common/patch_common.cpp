@@ -71,4 +71,4 @@ extern "C" void EnsureDBATWidened() {
 // (the error message prints the required minimum). Don't shrink it below
 // 0x10000 of bin end — there's no allocation pressure that low in MEM1 and
 // headroom is free.
-kmWrite32(0x80000030, 0x806F0000);
+kmWrite32(0x80000030, 0x80700000);
