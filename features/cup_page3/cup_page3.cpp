@@ -28,6 +28,16 @@ extern "C" {
     // Vanilla signature: writes (cupId, longRoundFlag, courseVariantIdx, reverseRoundFlag)
     // to globals (g_cupId, g_longRoundFlag, g_courseVariantIdx, g_reverseRoundFlag).
     int  SetCourseParams(int cupId, int longRound, int variantIdx, int reverseRound);
+
+    // Vanilla data tables (resolved via externals.txt).
+    extern const unsigned char kRaceParamsTable[];        // RaceParamsEntry[48] base
+    extern const float kAIBaseSpeedTable_Race[];          // CupSpeedEntry[192] as flat floats
+    extern const float kAIBaseSpeedTable_BattleTimeAttack[];
+    extern const unsigned char kBgmIdList_Cup1[];         // BgmIdList per-cup, stride 8
+    extern const unsigned char kBgmIdList_CupsExtra[];    // BgmIdList shared for cup 9..16
+    extern const unsigned char kBgmIdList_DefaultFallback[];
+    extern const float kWeatherInitFloatA;                // 18.0f (rain/wind/thunder init)
+    extern const float kWeatherInitFloatB;                // 0.0f  (fade sentinel init)
 }
 
 // Scene field offsets (clFlowCup struct, 0x158 bytes total).
@@ -249,9 +259,8 @@ extern "C" void ResolveRaceParams(int* outLap, float* outTime, float* outBonus) 
         }
     }
 
-    const unsigned char* vp = (const unsigned char*)(
-        0x8040E7D0u + cupId * 0x48u + ccClass * 0x18u + longRound * 0xcu - 0x48u
-    );
+    const unsigned char* vp =
+        kRaceParamsTable + cupId * 0x48u + ccClass * 0x18u + longRound * 0xcu - 0x48u;
     *outLap   = (signed char)vp[0];
     *outTime  = *(const float*)(vp + 4);
     *outBonus = *(const float*)(vp + 8);
@@ -432,8 +441,8 @@ extern "C" double CustomGetBaseSpeedMax(void* enemyParam, int cupId,
     u32 gameMode = *(u32*)0x806d1294;
     int idx = VanillaBaseSpeedIndex(cupId, roundIndex, ccClass, gameMode);
     const float* tbl = (gameMode == 0)
-        ? (const float*)0x803a01e8
-        : (const float*)0x803a07e8;
+        ? kAIBaseSpeedTable_Race
+        : kAIBaseSpeedTable_BattleTimeAttack;
     return (double)tbl[idx * 2];
 }
 
@@ -446,8 +455,8 @@ extern "C" double CustomGetBaseSpeedMin(void* enemyParam, int cupId,
     u32 gameMode = *(u32*)0x806d1294;
     int idx = VanillaBaseSpeedIndex(cupId, roundIndex, ccClass, gameMode);
     const float* tbl = (gameMode == 0)
-        ? (const float*)0x803a01e8
-        : (const float*)0x803a07e8;
+        ? kAIBaseSpeedTable_Race
+        : kAIBaseSpeedTable_BattleTimeAttack;
     return (double)tbl[idx * 2 + 1];
 }
 
@@ -494,11 +503,11 @@ extern "C" void* WeatherInitCustom(void* state, int cupType) {
         // cup 9..16 share DAT_806d8ac0, anything else gets the generic
         // DAT_806d8ac8 (matches the original `== 0` fallback's intent).
         if (cupId >= 1 && cupId <= 8) {
-            bgmPair = (const void*)(0x806d8a80u + (cupId - 1) * 8);
+            bgmPair = (const void*)(kBgmIdList_Cup1 + (cupId - 1) * 8);
         } else if (cupId >= 9 && cupId <= 16) {
-            bgmPair = (const void*)0x806d8ac0u;
+            bgmPair = (const void*)kBgmIdList_CupsExtra;
         } else {
-            bgmPair = (const void*)0x806d8ac8u;
+            bgmPair = (const void*)kBgmIdList_DefaultFallback;
         }
     }
     *(const void**)((u8*)state + 4) = bgmPair;
@@ -509,9 +518,11 @@ extern "C" void* WeatherInitCustom(void* state, int cupType) {
     // setup, which silently kills FUN_801ad534's race event voices
     // (early returns on DAT_806cfd38 == -1).
 
-    // Vanilla numeric init (FLOAT_806d8ad4 = 1.0, FLOAT_806d8ad8 = 0.0).
-    float one  = *(float*)0x806d8ad4u;
-    float zero = *(float*)0x806d8ad8u;
+    // Vanilla numeric init (FloatA @0x806d8ad4 = 18.0f, FloatB @0x806d8ad8 = 0.0f).
+    // Historical naming `one`/`zero` is retained for readability — vanilla code
+    // uses FloatA as the rain/wind/thunder scale and FloatB as the fade sentinel.
+    float one  = kWeatherInitFloatA;
+    float zero = kWeatherInitFloatB;
     *(u32*)((u8*)state + 0x08)   = 0;
     *(u32*)((u8*)state + 0x0C)   = 0;
     *((u8*)state + 0x10)         = 0;

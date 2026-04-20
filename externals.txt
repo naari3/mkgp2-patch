@@ -34,7 +34,7 @@ g_DebugPrintfEnable=0x80598a8a
 # Race mode
 RaceScene_Init=0x800a1d80
 RaceScene_Dtor=0x800a1a1c
-RaceMode_FrameUpdate=0x800a0ef4
+RaceScene_FrameUpdate=0x800a0ef4
 AI_CalcLapSpeedBonus=0x801dd480
 GetBaseSpeedMax=0x801de664   # AI base target-speed +0 float (lo). Indexed
 GetBaseSpeedMin=0x801de5e8   # AI base target-speed +4 float (hi). by
@@ -69,3 +69,15 @@ SetCourseParams=0x8009cbfc
 
 # Weather / BGM (cup_page3 WeatherInitHook)
 WeatherSystem_PickVariant=0x80193264  # picks weather variant byte; arg is "force this id" or -1 for random
+
+# Data tables (struct types applied in Ghidra — see patch_map / mkgp2docs)
+kRaceParamsTable=0x8040e7d0               # RaceParamsEntry[48] = [cup 1..8][ccClass 0..2][longRound 0..1]
+kAIBaseSpeedTable_Race=0x803a01e8         # CupSpeedEntry[192] = [cup 1..8][ccClass 0..2][round 0..7]
+kAIBaseSpeedTable_BattleTimeAttack=0x803a07e8  # CupSpeedEntry[24]  = [ccClass 0..2][cup 1..8]
+kBgmDspFilenameTable=0x8037ce1c           # char *[42] (21 bgmId × L/R stereo pair)
+kBgmIdList_Cup1=0x806d8a80                # BgmIdList per-cup base; stride 8 bytes for cup 1..8
+kBgmIdList_CupsExtra=0x806d8ac0           # BgmIdList shared for cup 9..16
+kBgmIdList_DefaultFallback=0x806d8ac8     # BgmIdList last-resort (cupId out of 1..16)
+kWeatherInitFloatA=0x806d8ad4             # 18.0f (WeatherSystem_Init rain/wind/thunder init)
+kWeatherInitFloatB=0x806d8ad8             # 0.0f  (fade sentinel init)
+kWeatherInitJumpTable=0x804910bc          # void *[17] (g_cupId 0..16 jump table for vanilla WeatherSystem_Init)

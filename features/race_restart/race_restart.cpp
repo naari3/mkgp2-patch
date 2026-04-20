@@ -9,7 +9,7 @@
 //   in place. This is the exact boot path, so the lakitu countdown replays
 //   and every global flag / timer / path-entry is reset cleanly.
 //
-// Hook: RaceMode_FrameUpdate (0x800a0ef4) entry via kmBranch.
+// Hook: RaceScene_FrameUpdate (0x800a0ef4) entry via kmBranch.
 //   Running the restart before this frame's update begins avoids dangling
 //   references to about-to-be-freed sub-objects on the caller's stack.
 //
