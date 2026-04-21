@@ -38,6 +38,24 @@ extern "C" {
     extern const unsigned char kBgmIdList_DefaultFallback[];
     extern const float kWeatherInitFloatA;                // 18.0f (rain/wind/thunder init)
     extern const float kWeatherInitFloatB;                // 0.0f  (fade sentinel init)
+
+    // Internal vanilla helpers used by CourseDataLoadCustom (kept unrenamed).
+    void* FUN_8003b120(unsigned int size);                // MemoryManager alloc
+    int   FUN_8007e344(const char* filename);             // DVD file-size query
+    int   FUN_8007dfe4(const char* filename, void* buf,
+                       unsigned int size, int p4, int p5);  // DVD load
+    int   Path_CountWaypointsAndSnapGround(int* waypointArray);
+    void  FUN_8007c56c(void* header, int zero);              // CourseSetupCallback dispatcher
+}
+
+// ---------- Custom track lookup helpers ----------
+// kCustomTracks[] and its cupId/field plumbing live in
+// generated_cup_courses.h (emitted from cup_courses.yaml).
+static const struct CustomTrack* FindCustomTrack(unsigned int cupId) {
+    for (unsigned int i = 0; i < kCustomTrackCount; ++i) {
+        if (kCustomTracks[i].cupId == cupId) return &kCustomTracks[i];
+    }
+    return 0;
 }
 
 // Scene field offsets (clFlowCup struct, 0x158 bytes total).
@@ -220,15 +238,160 @@ asm void CupSelectHook() {
 kmBranch(0x801c80f4, CupSelectHook);
 kmPatchExitPoint(CupSelectHook, 0x801c81f4);
 
-// --------- Allow cupId=0 (test_course) in PathData_GetByContext --------
-// Vanilla guard at 0x801dc528 is `cmpwi r0, 1` followed by `blt dummy` at
-// 0x801dc530, which rejects cupId < 1 and returns a 1-point dummy path.
-// For test_course (cupId=0) this causes every kart's pathFollower to
-// read the dummy, marking progress as already complete -> immediate goal.
-// Relax the bound to `cmpwi r0, 0` so 0..8 are all accepted.
-//   old: 0x2C000001  (cmpwi r0, 1)
-//   new: 0x2C000000  (cmpwi r0, 0)
-kmWrite32(0x801dc528, 0x2c000000);
+// --------- Widen cupId range in SetCourseParams ------------------------
+// SetCourseParams (0x8009cbfc) validates `0 <= cupId <= 16` via:
+//   0x8009cc20: cmpwi r3, 0x11    // 17
+//   0x8009cc24: blt  0x8009cc30   // accept if < 17
+// On failure it returns 0 and LEAVES g_cupId UNCHANGED. Our CupSelectDispatch
+// passes cupId=17 for custom tracks, which silently no-ops and lets
+// whatever stale g_cupId from the previous scene bleed into the round
+// select / race path (observed: scene replays Yoshi round 4).
+//
+// Widen the cap to 0x80 (128) so cupId 17+ passes through and g_cupId
+// is updated correctly.
+//   0x8009cc20: cmpwi r3, 0x11  (0x2C030011) -> cmpwi r3, 0x80 (0x2C030080)
+kmWrite32(0x8009CC20, 0x2C030080);
+
+// --------- Widen cupId range in PathData_GetByContext ------------------
+// Vanilla enforces `1 <= cupId <= 8` via two adjacent checks:
+//   0x801dc528: cmpwi r0, 1  + blt dummy  (at 0x801dc530)
+//   0x801dc534: cmpwi r0, 9  + blt accept (at 0x801dc538)
+// Out-of-range -> returns kDummyOnePointPath, which pathFollower reads
+// as "goal already reached" -> instant race finish. We widen both bounds
+// so custom cupIds (17+) pass through. Accepted range becomes 0..127.
+//
+// PathData_GetByContext itself doesn't index by cupId — it just reads
+// g_courseData and calls CourseData_GetPath. Our custom CourseData_LoadPathTable
+// hook populates g_courseData for custom cupIds, so widening the gate
+// here is all that's needed; no per-track data bleed.
+//
+//   0x801dc528: cmpwi r0, 1   (0x2C000001) -> cmpwi r0, 0   (0x2C000000)
+//   0x801dc534: cmpwi r0, 9   (0x2C000009) -> cmpwi r0, 128 (0x2C000080)
+kmWrite32(0x801dc528, 0x2C000000);
+kmWrite32(0x801dc534, 0x2C000080);
+
+// --------- Widen cupId range in CourseScene_Load -----------------------
+// CourseScene_Load (0x800476d4) carries the same 0x10 upper-bound guard as
+// SetCourseParams:
+//   0x80047700: cmpwi r4, 0x11   (0x2C040011)
+//   0x80047704: blt   continue
+// Out-of-range (cupId >= 17) early-returns, skipping the mainArchive /
+// collision / WarpDashMgr_GetOrCreate pipeline. The skipped
+// WarpDashMgr_GetOrCreate leaves PTR_806cf238 NULL, so the next frame
+// WarpDashMgr_GetInstance -> WarpZone_FindContaining reads 0x18(NULL)
+// and traps (observed: Invalid read 0x00000018 @ PC 0x800a91a0).
+//
+// Widen to 0x80 so custom cupIds fall through to the normal load path.
+// CourseScene_Load doesn't index vanilla tables by cupId directly — the
+// per-asset pickers do, and we already hook all of those.
+//   0x80047700: cmpwi r4, 0x11  (0x2C040011) -> cmpwi r4, 0x80 (0x2C040080)
+kmWrite32(0x80047700, 0x2C040080);
+
+// --------- Skip PTR_DAT_80324b10 dispatcher for custom cupIds ----------
+// CourseScene_Load does an inline table lookup at 0x800480e0..0x800480e8:
+//   lwzx r3, r3, r0              ; r3 = (&PTR_DAT_80324b10)[cupId*2 + longRound]
+//   bl FUN_8007c56c              ; calls with (table_entry, 0)
+// The table has 34 entries (cupId 0..16 × longRound 0..1). Immediately after
+// sits rodata float constants (0x80324BA0 = 1.0f, 0x80324BA4 = 0.7f). For
+// cupId=17, the lookup reads 0x80324B98 and hits 0x3F800000 (1.0f), then
+// passes that as a pointer to FUN_8007c56c -> FUN_8007b878 which
+// dereferences `param_2[1]` and crashes (observed: Invalid read from
+// 0x3f800004 @ PC 0x8007b8ac).
+//
+// The table entries are course-setup callback headers of the form
+// (data_ptr, count) at 0x806cf1c0..0x806cf1e8. We have no equivalent data
+// for custom tracks, and the default vanilla entry at 0x806cf1e0 is a
+// "no-op" struct (used by most cups), so the cleanest fix is to skip the
+// FUN_8007c56c call entirely when cupId is in our custom list.
+//
+// Intercept the bl at 0x800480e8 via kmCall; the wrapper re-checks cupId
+// and either forwards or returns. Note the OOB read still happens (lwzx at
+// 0x800480e4) — but lwzx into r3 with r3=0x80324B98 just reads a valid
+// rodata word (1.0f). The value is harmless as long as we don't pass it
+// downstream, which is what this guard prevents.
+extern "C" void CourseSetupCallbackGuard(void* header, int zero) {
+    EnsureDBATWidened();
+    unsigned int cupId = *(unsigned int*)0x806cf108u;
+    if (FindCustomTrack(cupId)) return;   // skip OOB'd header for custom
+    FUN_8007c56c(header, zero);
+}
+kmCall(0x800480e8, CourseSetupCallbackGuard);
+
+// --------- WarpDashMgr_Init: skip cupId-indexed table reads for custom ----
+// WarpDashMgr_Init (0x800a8d34) looks up two 17-entry cupId-indexed tables:
+//   &DAT_80328310[cupId*8 + uVar4]   (warp table)
+//   &DAT_80328398[cupId*8 + uVar4]   (dash table, 0x88 bytes = 17 cups later)
+// Each table entry points at a (warpEntry*, count) pair; the function
+// Reserves + populates the output vector from those entries.
+//
+// For cupId=17 the second read (0x80328398 + 0x88 + uVar4) lands at
+// 0x80328420 — the rodata string "create warp offset...", which starts
+// with bytes `63 72 65 61` = 0x63726561 ("crea"). The code then treats
+// that string as an (entry*, count) pointer and dereferences — observed:
+//   Invalid read from 0x63726561, PC = 0x800a8e94.   (first table loop)
+//   Invalid read from 0x63726565, PC = 0x800a8e9c.
+//
+// NULL-returning the manager would re-introduce the earlier
+// WarpDashMgr_GetInstance -> WarpZone_FindContaining NULL deref crash.
+// Instead we substitute an EMPTY init: zero the warp/dash vectors and set
+// the init-done flag. All downstream queries see "no warps, no dashes".
+//
+// Hook flow:
+//   1. Wrapper saves args (r3..r7), calls WarpDashMgrInit_MaybeCustom.
+//   2. If custom -> C did the empty init, wrapper returns.
+//   3. If vanilla -> replay displaced stwu and bctr to 0x800a8d38.
+extern "C" int WarpDashMgrInit_MaybeCustom(unsigned int* param_1, int param_2) {
+    EnsureDBATWidened();
+    if (!FindCustomTrack((unsigned int)param_2)) return 0;
+    // Zero-init WarpDashMgr (same first 7 words as vanilla prologue).
+    param_1[0] = 0;
+    param_1[1] = 0;
+    param_1[2] = 0;
+    param_1[3] = 0;
+    param_1[4] = 0;
+    param_1[5] = 0;
+    *(unsigned char*)(param_1 + 6) = 1;   // init-done sentinel
+    return 1;
+}
+
+asm void WarpDashMgrInitHook() {
+    nofralloc
+    stwu r1, -0x30(r1)
+    mflr r0
+    stw  r0, 0x34(r1)
+    stw  r3, 0x10(r1)
+    stw  r4, 0x14(r1)
+    stw  r5, 0x18(r1)
+    stw  r6, 0x1c(r1)
+    stw  r7, 0x20(r1)
+    // r3 = param_1 (out manager), r4 = cupId — both already in place.
+    bl   WarpDashMgrInit_MaybeCustom
+    cmpwi r3, 0
+    bne  custom_handled
+    // vanilla path: restore args, tear down wrapper, replay prologue, bctr.
+    lwz  r3, 0x10(r1)
+    lwz  r4, 0x14(r1)
+    lwz  r5, 0x18(r1)
+    lwz  r6, 0x1c(r1)
+    lwz  r7, 0x20(r1)
+    lwz  r0, 0x34(r1)
+    mtlr r0
+    addi r1, r1, 0x30
+    stwu r1, -0xe0(r1)            // vanilla's displaced first instruction
+    lis  r12, 0x800a
+    ori  r12, r12, 0x8d38         // vanilla + 4
+    mtctr r12
+    bctr
+custom_handled:
+    // Return param_1 as vanilla does.
+    lwz  r3, 0x10(r1)
+    lwz  r0, 0x34(r1)
+    mtlr r0
+    addi r1, r1, 0x30
+    blr
+}
+
+kmBranch(0x800a8d34, WarpDashMgrInitHook);
 
 // --------- Race-params hook: override RaceScene_Init's table load ---------
 // Vanilla reads three fields from the 0x8040E7D0-based table:
@@ -625,6 +788,377 @@ normal:
 kmBranch(0x80195050, ClStreamPlayMonoGuard);
 kmPatchExitPoint(ClStreamPlayMonoGuard, 0x8019506c);
 
+// --------- CourseData_LoadPathTable hook: custom line_bin path ----------
+// Vanilla (0x800abae8) reads line-bin filenames from kCup0LineBinTable
+// @ 0x8032890c, which has 9 cup slots before the embedded-line-data table
+// (DAT_8032899c) takes over at 0x8032899c. Writing kmWritePointer to
+// cupId>=9 would corrupt vanilla embedded data, so custom tracks are
+// served entirely by this hook instead.
+//
+// Hook flow:
+//   1. If courseId is in kCustomTracks AND the entry has a non-null lineBin,
+//      perform the custom load (skip embedded-table lookup entirely — vanilla
+//      DAT_8032899c would OOB-read into adjacent rodata for cupId>=9) and
+//      return. g_courseData + vtable init mirrors vanilla's prologue.
+//   2. Else fall through to vanilla by re-executing the displaced
+//      `stwu r1, -0x30(r1)` and bctr'ing to 0x800abaec, so cupId 0..8
+//      keep their embedded-or-file behaviour intact.
+//
+// Kamek note: the "bctr to vanilla+4" pattern is used here (not a simple
+// blr) because our hook replaces vanilla's first instruction, so we must
+// replay it after deciding not to handle the call.
+//
+// Vtable constant:
+//   0x80419db0 = &PTR_PTR_80419db0 (CourseData method table; first `stw`
+//   in vanilla stores it into *courseData, immediately overwriting a
+//   prior write of 0x80419dbc that appears dead to us).
+extern "C" int CourseDataLoadCustom(
+    int* courseData, int courseId, int ccClass, int isUraCourse
+) {
+    EnsureDBATWidened();
+
+    const struct CustomTrack* track = FindCustomTrack((unsigned int)courseId);
+    if (track == 0 || track->lineBin == 0) {
+        return 0;  // not a custom cup -> defer to vanilla
+    }
+
+    // Replay vanilla prologue init (0x800abb1c..0x800abb30 block).
+    *(u32*)courseData        = 0x80419db0u;           // courseData vtable
+    *(u32*)0x806d1058u       = (u32)courseData;       // g_courseData = self
+    courseData[1]            = 0;                     // data buffer slot clear
+
+    // Load the line_bin file. Mirrors vanilla's "usedEmbedded == false"
+    // branch at 0x800abc98..0x800abd64 (file size + alloc + DVD read +
+    // per-path offset fixup + waypoint count).
+    const char* filename = track->lineBin;
+    int rawSize = FUN_8007e344(filename);
+    if (rawSize < 0) {
+        DebugPrintfSafe("MKGP2: line_bin '%s' DVDOpen failed (cupId=%d)\n",
+                        filename, courseId);
+        return 1;  // still treat as handled; pathFollower will fail gracefully
+    }
+    unsigned int padSize = ((unsigned int)rawSize + 0x1fu) & ~0x1fu;
+    void* buf = FUN_8003b120(padSize);
+    courseData[1] = (int)buf;
+    FUN_8007dfe4(filename, buf, padSize, 0, 0);
+
+    // Count path-offset slots (list terminated by 0).
+    int* ptr = (int*)buf;
+    int count = 0;
+    while (*ptr != 0) { ++ptr; ++count; }
+
+    // Allocate per-path waypoint-count array (4 bytes per path).
+    int* waypointCounts = (int*)FUN_8003b120((unsigned int)(count << 2));
+    courseData[2] = (int)waypointCounts;
+
+    // Fix up path offsets (relative -> absolute) and count waypoints per path.
+    int* pathSlot = (int*)buf;
+    for (int i = 0; i < count; ++i) {
+        *pathSlot = (int)buf + *pathSlot;
+        int wpCount = Path_CountWaypointsAndSnapGround((int*)*pathSlot);
+        waypointCounts[i] = wpCount;
+        ++pathSlot;
+    }
+
+    DebugPrintfSafe("MKGP2: custom line_bin '%s' loaded (cupId=%d, paths=%d)\n",
+                    filename, courseId, count);
+    return 1;  // handled
+}
+
+asm void CourseDataLoadPathTableHook() {
+    nofralloc
+    // Wrapper frame: save args + LR.
+    stwu r1, -0x20(r1)
+    mflr r0
+    stw  r0, 0x24(r1)
+    stw  r3, 0x10(r1)          // courseData
+    stw  r4, 0x14(r1)          // courseId
+    stw  r5, 0x18(r1)          // ccClass
+    stw  r6, 0x1c(r1)          // isUraCourse
+    bl   CourseDataLoadCustom
+    cmpwi r3, 0
+    bne  handled
+    // Not custom: restore args, tear down wrapper frame, replay vanilla prologue.
+    lwz  r3, 0x10(r1)
+    lwz  r4, 0x14(r1)
+    lwz  r5, 0x18(r1)
+    lwz  r6, 0x1c(r1)
+    lwz  r0, 0x24(r1)
+    mtlr r0
+    addi r1, r1, 0x20
+    stwu r1, -0x30(r1)         // vanilla's displaced first instruction
+    lis  r12, 0x800a
+    ori  r12, r12, 0xbaec      // vanilla + 4 (past the displaced insn)
+    mtctr r12
+    bctr
+handled:
+    // Custom handled. Return courseData (arg 1) as vanilla does.
+    lwz  r3, 0x10(r1)
+    lwz  r0, 0x24(r1)
+    mtlr r0
+    addi r1, r1, 0x20
+    blr
+}
+
+kmBranch(0x800abae8, CourseDataLoadPathTableHook);
+
+// --------- GetCollisionFilename hook (0x8009c51c) -----------------------
+// Vanilla reads `(&PTR_DAT_8040b990)[variantIdx + reverse*0x1c + long*0x45
+// + cupId*0x8a]`. The base is slot[cupId=0, long=0, reverse=0, variant=0]
+// and the array packs 138 pointers (0x8a) per cupId. Custom cupIds >= 17
+// index OOB of the vanilla allocation (8 cups populated), so we fully
+// replace the function.
+//
+// Custom track's CustomTrack has one short + one long collision filename;
+// variantIdx and reverseRoundFlag are ignored (custom tracks don't yet
+// carry per-variant collision meshes). For non-custom cupIds we replay the
+// vanilla lookup, preserving cup 1..8 exactly.
+extern "C" const char* GetCollisionFilenameHook() {
+    EnsureDBATWidened();
+    unsigned int cupId    = *(unsigned int*)0x806cf108u;   // g_cupId
+    int longRound         = *(int*)0x806d1268u;            // g_longRoundFlag
+    int reverseRound      = *(int*)0x806d1270u;            // g_reverseRoundFlag
+    int variantIdx        = *(int*)0x806d126cu;            // g_courseVariantIdx
+
+    const struct CustomTrack* t = FindCustomTrack(cupId);
+    if (t != 0) {
+        const char* fn = (longRound == 1) ? t->collisionLong : t->collisionShort;
+        if (fn != 0) return fn;
+        // Fall through to vanilla with cupId aliased to 0 (test_course slot).
+        cupId = 0;
+    }
+
+    if ((int)cupId < 0) return 0;
+    if (longRound < 0) return 0;
+    return ((const char**)0x8040b990u)[
+        variantIdx + reverseRound * 0x1c + longRound * 0x45 + (int)cupId * 0x8a
+    ];
+}
+
+kmBranch(0x8009c51c, GetCollisionFilenameHook);
+
+// --------- FUN_8009c238: coin spawn table lookup -----------------------
+// Base 0x8040b218, stride **8 pointers (32 bytes)** per cupId indexed by
+// `(cupId - 1) * 8 + longRound * 4 + reverseRound * 2`. This does NOT
+// match the 0x228 / 0x8a pattern the other 12 getters share, which is
+// why the earlier automated scan missed it. CoinSystem_Init calls
+// FUN_8009c238() to get a coin/item spawn table pointer and then walks
+// it with IsSpawnTableTerminator — with cupId=17 (-1 = 16) the index
+// lands 512 bytes past the 8-cup table and returns garbage, producing
+// the observed `Invalid read from 0x5000000c @ PC 0x8005f5cc`.
+//
+// Time-attack mode adds a ccClass-derived bit (uVar1 >> 5) to the index;
+// we mirror that. Other callers: CoinSystem_Init, any caller that
+// passes NULL as spawnTable to CoinSystem_Init, etc.
+extern "C" void* FUN_8009c238_Hook() {
+    EnsureDBATWidened();
+    int cupId        = (int)*(unsigned int*)0x806cf108u;
+    int longRound    = *(int*)0x806d1268u;
+    int reverseRound = *(int*)0x806d1270u;
+    int ccClass      = *(int*)0x806d12ccu;
+    unsigned int gameMode = *(unsigned int*)0x806d1294u;
+
+    // Custom cupIds: return NULL (no coin/item spawn table). This mirrors
+    // the vanilla cupId=0 behaviour (iVar2 = -1 failed the `< 0` guard and
+    // returned NULL, leaving test_course without coins). Aliasing to cupId=1
+    // would spawn Yoshi cup coins at test_course positions — misleading.
+    if (FindCustomTrack((unsigned int)cupId)) return 0;
+
+    int iVar2 = cupId - 1;
+    if (iVar2 < 0) return 0;
+    if (longRound < 0) return 0;
+    if (reverseRound < 0) return 0;
+    int idx = iVar2 * 8 + longRound * 4 + reverseRound * 2;
+    if (gameMode == 1u /* TIME_ATTACK */) {
+        // Replicate vanilla `countLeadingZeros(2 - ccClass) >> 5`:
+        // for ccClass == 2, (2-cc) == 0, cntlzw = 32, >> 5 = 1 -> +1
+        // for ccClass 0..1, cntlzw < 32, >> 5 = 0 -> +0
+        if (ccClass >= 2) idx += 1;
+    }
+    return ((void**)0x8040b218u)[idx];
+}
+kmBranch(0x8009c238, FUN_8009c238_Hook);
+
+// --------- Remaining cup-indexed asset getters (10 functions) ----------
+// Each hook fully replaces the vanilla function. For custom cupIds, the
+// cupId is aliased to 0 (vanilla test_course slot) so the getter returns
+// the cupId=0 rodata entry — which for every listed getter is either
+// safe default data or the vanilla test_course asset (since cupId=0 is
+// where MKGP2 kept the dev-leftover test_course material).
+//
+// The 6 Group-A getters (stride 0x8a pointer arrays) and 5 Group-B getters
+// (stride 0x228 byte-indexed + sub-flags) all share the prologue:
+//   cupId remap -> null-guards on cupId/longRound -> vanilla index math.
+//
+// None of these hooks add CustomTrack fields yet. When a future custom
+// track needs distinct model / joint / object data, extend CustomTrack and
+// prefer the struct field here before falling back to the cupId=0 alias.
+//
+// Hook addresses: taken from the 12-function family at 0x8009c1d0..0x8009c688
+// (see patch_map / the stride-0x228 Ghidra scan that originally mapped them).
+
+// Group A: stride 0x8a pointer arrays -------------------------------------
+
+// FUN_8009c3c4: stride 0x8a pointer array, base 0x8040b930, no variantIdx.
+extern "C" const char* FUN_8009c3c4_Hook() {
+    EnsureDBATWidened();
+    int cupId        = (int)*(unsigned int*)0x806cf108u;
+    int longRound    = *(int*)0x806d1268u;
+    int reverseRound = *(int*)0x806d1270u;
+    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (cupId < 0) return 0;
+    if (longRound < 0) return 0;
+    return ((const char**)0x8040b930u)[reverseRound * 0x1c + longRound * 0x45 + cupId * 0x8a];
+}
+kmBranch(0x8009c3c4, FUN_8009c3c4_Hook);
+
+// GetCourseModelFilename: stride 0x8a, 2 alternate bases selected by
+// DAT_806d127c (0 = road @ 0x8040b940, nonzero = mesh @ 0x8040b950).
+extern "C" const char* GetCourseModelFilenameHook() {
+    EnsureDBATWidened();
+    int cupId        = (int)*(unsigned int*)0x806cf108u;
+    int longRound    = *(int*)0x806d1268u;
+    int reverseRound = *(int*)0x806d1270u;
+    int variantIdx   = *(int*)0x806d126cu;
+    unsigned int meshFlag = *(unsigned int*)0x806d127cu;
+    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (cupId < 0) return 0;
+    if (longRound < 0) return 0;
+    int idx = variantIdx + reverseRound * 0x1c + longRound * 0x45 + cupId * 0x8a;
+    return ((const char**)(meshFlag == 0 ? 0x8040b940u : 0x8040b950u))[idx];
+}
+kmBranch(0x8009c418, GetCourseModelFilenameHook);
+
+// GetJointNameTable: stride 0x8a, base 0x8040b910, no reverseRoundFlag.
+extern "C" void* GetJointNameTableHook() {
+    EnsureDBATWidened();
+    int cupId      = (int)*(unsigned int*)0x806cf108u;
+    int longRound  = *(int*)0x806d1268u;
+    int variantIdx = *(int*)0x806d126cu;
+    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (cupId < 0) return 0;
+    if (longRound < 0) return 0;
+    return ((void**)0x8040b910u)[variantIdx + longRound * 0x45 + cupId * 0x8a];
+}
+kmBranch(0x8009c57c, GetJointNameTableHook);
+
+// GetCollisionBinFilename: stride 0x8a, base 0x8040b920, no reverseRoundFlag.
+extern "C" const char* GetCollisionBinFilenameHook() {
+    EnsureDBATWidened();
+    int cupId      = (int)*(unsigned int*)0x806cf108u;
+    int longRound  = *(int*)0x806d1268u;
+    int variantIdx = *(int*)0x806d126cu;
+    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (cupId < 0) return 0;
+    if (longRound < 0) return 0;
+    if (variantIdx < 0) return 0;
+    return ((const char**)0x8040b920u)[variantIdx + longRound * 0x45 + cupId * 0x8a];
+}
+kmBranch(0x8009c5d0, GetCollisionBinFilenameHook);
+
+// GetStartPosition: (slot, *x, *y, *z) -> int. Base 0x8040b934, stride 0x8a,
+// no variantIdx. Each slot is a 12-byte vec3.
+extern "C" int GetStartPositionHook(int slot, int* outX, int* outY, int* outZ) {
+    EnsureDBATWidened();
+    int cupId        = (int)*(unsigned int*)0x806cf108u;
+    int longRound    = *(int*)0x806d1268u;
+    int reverseRound = *(int*)0x806d1270u;
+    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    int* base = 0;
+    if (slot >= 0 && cupId >= 0 && longRound >= 0) {
+        base = ((int**)0x8040b934u)
+            [reverseRound * 0x1c + longRound * 0x45 + cupId * 0x8a];
+    }
+    if (base == 0) return 0;
+    int* pos = (int*)((unsigned char*)base + slot * 0xc);
+    if (outX) *outX = pos[0];
+    if (outY) *outY = pos[1];
+    if (outZ) *outZ = pos[2];
+    return 1;
+}
+kmBranch(0x8009c688, GetStartPositionHook);
+
+// Group B: stride 0x228 raw-byte layout (with sub-indexing) --------------
+// Shared macro-style body inlined per function since each has a distinct
+// (base, reverse-present, variant-present) signature.
+
+// FUN_8009c1d0: base 0x8040b93c, reverse yes, variant no.
+extern "C" unsigned int FUN_8009c1d0_Hook() {
+    EnsureDBATWidened();
+    int cupId        = (int)*(unsigned int*)0x806cf108u;
+    int longRound    = *(int*)0x806d1268u;
+    int reverseRound = *(int*)0x806d1270u;
+    int variantIdx   = *(int*)0x806d126cu;
+    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (cupId < 0) return 0;
+    if (longRound < 0) return 0;
+    if (variantIdx < 0) return 0;
+    return *(unsigned int*)(cupId * 0x228 + longRound * 0x114
+                            + reverseRound * 0x70 + 0x8040b93cu);
+}
+kmBranch(0x8009c1d0, FUN_8009c1d0_Hook);
+
+// GetCourseBgmEntry: base 0x8040b970, reverse yes, variant yes (*4 stride).
+extern "C" unsigned int GetCourseBgmEntryHook() {
+    EnsureDBATWidened();
+    int cupId        = (int)*(unsigned int*)0x806cf108u;
+    int longRound    = *(int*)0x806d1268u;
+    int reverseRound = *(int*)0x806d1270u;
+    int variantIdx   = *(int*)0x806d126cu;
+    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (cupId < 0) return 0;
+    if (longRound < 0) return 0;
+    if (variantIdx < 0) return 0;
+    return *(unsigned int*)(cupId * 0x228 + longRound * 0x114
+                            + reverseRound * 0x70 + variantIdx * 4 + 0x8040b970u);
+}
+kmBranch(0x8009c2f0, GetCourseBgmEntryHook);
+
+// FUN_8009c360: base 0x8040ba10, reverse no, variant yes.
+extern "C" unsigned int FUN_8009c360_Hook() {
+    EnsureDBATWidened();
+    int cupId      = (int)*(unsigned int*)0x806cf108u;
+    int longRound  = *(int*)0x806d1268u;
+    int variantIdx = *(int*)0x806d126cu;
+    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (cupId < 0) return 0;
+    if (longRound < 0) return 0;
+    if (variantIdx < 0) return 0;
+    return *(unsigned int*)(cupId * 0x228 + longRound * 0x114
+                            + variantIdx * 4 + 0x8040ba10u);
+}
+kmBranch(0x8009c360, FUN_8009c360_Hook);
+
+// GetCourseObjectTable: base 0x8040b960, reverse yes, variant yes.
+extern "C" unsigned int GetCourseObjectTableHook() {
+    EnsureDBATWidened();
+    int cupId        = (int)*(unsigned int*)0x806cf108u;
+    int longRound    = *(int*)0x806d1268u;
+    int reverseRound = *(int*)0x806d1270u;
+    int variantIdx   = *(int*)0x806d126cu;
+    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (cupId < 0) return 0;
+    if (longRound < 0) return 0;
+    return *(unsigned int*)(cupId * 0x228 + longRound * 0x114
+                            + reverseRound * 0x70 + variantIdx * 4 + 0x8040b960u);
+}
+kmBranch(0x8009c4bc, GetCourseObjectTableHook);
+
+// GetCourseStartYaw: base 0x8040b938, reverse yes, variant no. Float return.
+// Fallback is FLOAT_806d4790 (the "missing context" default yaw).
+extern "C" float GetCourseStartYawHook() {
+    EnsureDBATWidened();
+    int cupId        = (int)*(unsigned int*)0x806cf108u;
+    int longRound    = *(int*)0x806d1268u;
+    int reverseRound = *(int*)0x806d1270u;
+    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (cupId < 0) return *(float*)0x806d4790u;
+    if (longRound < 0) return *(float*)0x806d4790u;
+    return *(float*)(cupId * 0x228 + longRound * 0x114
+                     + reverseRound * 0x70 + 0x8040b938u);
+}
+kmBranch(0x8009c634, GetCourseStartYawHook);
+
 // --------- Voice queue dequeue guard (FUN_801b5e18) ---------------------
 // The announcer queue at DAT_80678d90 holds 6-byte entries with a 16-bit
 // voice_id at +0. Vanilla dequeue at 0x801b6a98 handles voice_id == -1 by
@@ -683,27 +1217,30 @@ continue_play:
 kmBranch(0x801b6a98, VoiceDequeueGuard);
 kmPatchExitPoint(VoiceDequeueGuard, 0x801b6aa0);
 
-// --------- Root-cause fix: -2 push in FUN_801b0af4 ---------------------
+// --------- Root-cause fix: OOB voice_id push in FUN_801b0af4 -----------
 // FUN_801b0af4 is the race-start voice intro pusher. After emitting three
 // fixed "welcome" voices (0x280, 0x189, 0x280), it computes a round-intro
 // voice id:
 //
 //     sVar6 = g_longRoundFlag + (g_cupId - 1) * 2
 //
-// The guard is `if (sVar6 != -1) push(sVar6, meta=0xFFFF)`. The formula
-// maps cupId 1..8 × longRoundFlag 0..1 onto voice ids 0..15 (round-intro
-// bank). For cupId=0 (test_course) the formula evaluates to -2, which is
-// NOT -1, so it slips past the filter and gets pushed. Downstream voice
-// dequeue then tries to play live_A01_dsp[-2 * 12] = garbage — the
-// original PC=0x80294F00 invalid read and the stuck-queue symptom.
+// Vanilla predicate: `if (sVar6 != -1) push(sVar6, meta=0xFFFF)`. The
+// formula maps cupId 1..8 × longRoundFlag 0..1 onto voice ids 0..15 (the
+// round-intro bank). Breakage modes we fix:
 //
-// Two-instruction kmWrite32 changes the predicate from `!= -1` to
-// `>= 0`, eliminating the bogus push at its source. This is the proper
-// structural fix; the VoiceDequeueGuard above now only runs as a
-// defense-in-depth safety net (negative voice_ids should never reach the
-// queue once this predicate is tightened).
+//   - cupId=0 (test_course) -> sVar6 = -2, NOT -1, slips through the
+//     `!= -1` filter. Downstream dequeue reads live_A01_dsp[-2 * 12] =
+//     garbage (original PC=0x80294F00 ISR).
+//   - cupId >= 17 (custom tracks) -> sVar6 = 32..33+, past the 16-entry
+//     voice bank. Dequeue plays garbage (different ISR address).
 //
-//   0x801b0c08: cmpwi r3, -1  (0x2C03FFFF) -> cmpwi r3, 0  (0x2C030000)
-//   0x801b0c0c: beq  +0xA8    (0x418200A8) -> blt  +0xA8    (0x418000A8)
-kmWrite32(0x801B0C08, 0x2C030000);
-kmWrite32(0x801B0C0C, 0x418000A8);
+// Tighten the predicate to `0 <= sVar6 <= 15`:
+//   0x801b0c08: cmplwi r3, 15   (0x2803000F) — unsigned, negative becomes huge
+//   0x801b0c0c: bgt   +0xA8     (0x418100A8) — skip when > 15
+//
+// Unsigned compare catches both ends: negative sVar6 wraps to a large
+// unsigned value (still > 15 -> skipped), and cupId>8 values fall off
+// the top (> 15 -> skipped). The VoiceDequeueGuard above still runs as
+// a defensive safety net.
+kmWrite32(0x801B0C08, 0x2803000F);   // cmplwi r3, 15
+kmWrite32(0x801B0C0C, 0x418100A8);   // bgt cr0, +0xA8

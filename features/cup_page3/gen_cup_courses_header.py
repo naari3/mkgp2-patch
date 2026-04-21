@@ -64,14 +64,15 @@ VANILLA_BGM_PTRS = [
 ]
 assert len(VANILLA_BGM_PTRS) == VANILLA_BGM_COUNT
 
-# DAT_8032890c is indexed by cupId*0x10 + ccClass*8, with +0 = normal
-# and +4 = ura. We overwrite all four slots (ccClass 0..1 x normal/ura).
-PATH_TABLE_BASE = 0x8032890C
-ROW_STRIDE = 0x10
-SLOT_OFFSETS = (0, 4, 8, 12)
-
 # Per-course asset struct at (0x8040b90c + cupId*0x228). +0x84 = short
 # collision, +0x198 = long collision.
+#
+# NOTE: the old DAT_8032890c (kCup0LineBinTable) path has been retired —
+# the array only holds 9 cup slots (cupId 0..8, 144 bytes) and is immediately
+# followed by DAT_8032899c (the embedded-line-data table, stride 0x20 per
+# cupId). Writing to cupId>=9 via kmWritePointer corrupted that adjacent
+# table. line_bin is now served by a runtime hook on CourseData_LoadPathTable
+# in cup_page3.cpp, fed directly from kCustomTracks[i].lineBin.
 COLLISION_TABLE_BASE = 0x8040B90C
 COLLISION_COURSE_STRIDE = 0x228
 COLLISION_SHORT_OFFSET = 0x84
@@ -94,13 +95,13 @@ RULE_FIELD_DEFAULTS = {
 
 
 def assign_cup_id(track_index: int) -> int:
-    """tracks 配列の index -> cupId. See yaml header comment for rules."""
-    if track_index == 0:
-        return 0          # test_course slot
-    if track_index <= 8:
-        return 8 + track_index   # 9..16 (vanilla "generic" cups)
-    return 8 + track_index       # 17, 18, ... (new cup ids; gen+cpp must
-                                 #              extend WeatherInit dispatch)
+    """tracks 配列の index -> cupId.
+
+    Custom tracks occupy cupId >= 17. Slots 0 (test_course dev leftover)
+    and 9..16 (vanilla minigame / challenge modes) are intentionally skipped
+    so new custom content never collides with vanilla semantics. See
+    cup_courses.yaml header for the rationale."""
+    return 17 + track_index
 
 
 def safe_ident(name: str) -> str:
@@ -462,13 +463,41 @@ def main() -> int:
         L.append("};")
     L.append("")
 
+    # --- Per-track string assets (emitted here so kCustomTracks can reference them) ---
+    L.append("// --- Per-track string assets (pointed to by kCustomTracks) ---")
+    for t in norm:
+        L.append(
+            f'static const char kCustomLineBin_{t["cup_id"]}[] '
+            f'= "{t["line"]}";'
+        )
+        L.append(
+            f'static const char kCustomCollisionShort_{t["cup_id"]}[] '
+            f'= "{t["coll_s"]}";'
+        )
+        L.append(
+            f'static const char kCustomCollisionLong_{t["cup_id"]}[] '
+            f'= "{t["coll_l"]}";'
+        )
+    L.append("")
+
     # --- Track meta ---
-    L.append("// cupId -> bgm pair / lap-bonus rules / base-speed table.")
-    L.append("// Hooks in cup_page3.cpp do a linear scan (track count is tiny).")
-    L.append("// NULL pointers leave the corresponding subsystem on its")
-    L.append("// vanilla path for that cupId.")
+    L.append("// cupId -> bgm pair / lap-bonus rules / base-speed table / asset")
+    L.append("// filenames. Hooks in cup_page3.cpp do a linear scan (track count")
+    L.append("// is tiny). NULL pointers leave the corresponding subsystem on")
+    L.append("// its vanilla path for that cupId.")
+    L.append("//")
+    L.append("// `lineBin` is returned by the CourseData_LoadPathTable hook for")
+    L.append("// any (ccClass, ura) combination - custom tracks carry a single")
+    L.append("// filename per cup, not the full 4-slot vanilla array.")
+    L.append("//")
+    L.append("// `collisionShort` / `collisionLong` are selected by the")
+    L.append("// GetCollisionFilename hook based on g_longRoundFlag; variantIdx")
+    L.append("// and g_reverseRoundFlag are ignored for custom tracks.")
     L.append("struct CustomTrack {")
     L.append("    unsigned int cupId;")
+    L.append("    const char* lineBin;")
+    L.append("    const char* collisionShort;")
+    L.append("    const char* collisionLong;")
     L.append("    const struct CustomBgmPair* bgmPair;")
     L.append("    const struct AILapBonusRule* lapBonusRules;")
     L.append("    const struct CupSpeedEntry* baseSpeedTable;")
@@ -484,7 +513,10 @@ def main() -> int:
             if t["base_speed"] is not None else "0"
         )
         L.append(
-            f"    {{ {t['cup_id']}u, &kCustomBgmPairs[{t['index']}], "
+            f"    {{ {t['cup_id']}u, kCustomLineBin_{t['cup_id']}, "
+            f"kCustomCollisionShort_{t['cup_id']}, "
+            f"kCustomCollisionLong_{t['cup_id']}, "
+            f"&kCustomBgmPairs[{t['index']}], "
             f"{rules_ptr}, {speed_ptr} }},  "
             f"// {t['ident']}"
         )
@@ -501,45 +533,28 @@ def main() -> int:
     L.append(f"kmWrite32(0x80190B70, 0x{cmpli_insn:08X});")
     L.append("")
 
-    # --- Per-track collision / line strings + kmWritePointer ---
-    L.append("// --- Per-track string assets ---")
-    for t in norm:
-        L.append(
-            f'static const char kCustomLineBin_{t["cup_id"]}[] '
-            f'= "{t["line"]}";'
-        )
-        L.append(
-            f'static const char kCustomCollisionShort_{t["cup_id"]}[] '
-            f'= "{t["coll_s"]}";'
-        )
-        L.append(
-            f'static const char kCustomCollisionLong_{t["cup_id"]}[] '
-            f'= "{t["coll_l"]}";'
-        )
+    # NOTE: All line_bin and collision pointers are served by kmBranch hooks
+    # (CourseDataLoadCustom / GetCollisionFilenameHook) in cup_page3.cpp that
+    # read directly from kCustomTracks[]. The legacy kmWritePointer-into-
+    # vanilla-rodata approach has been retired: kCup0LineBinTable is capped
+    # at 9 cups (cupId 0..8) before DAT_8032899c takes over, and the
+    # collision pointer array at 0x8040b990 is similarly bounded. Writing
+    # at cupId>=9 in either would corrupt adjacent vanilla data.
+    L.append("// Line_bin + collision lookups are hook-served from")
+    L.append("// kCustomTracks[]; no rodata writes are emitted here.")
     L.append("")
 
-    L.append("// --- Path table (DAT_8032890c) line_bin overrides ---")
+    L.append("// --- (removed) Per-cup asset struct collision overrides ---")
     for t in norm:
-        row = PATH_TABLE_BASE + t["cup_id"] * ROW_STRIDE
-        for off in SLOT_OFFSETS:
-            L.append(
-                f"kmWritePointer(0x{row + off:08X}, "
-                f"kCustomLineBin_{t['cup_id']});"
-            )
-    L.append("")
-
-    L.append("// --- Per-cup asset struct collision overrides ---")
-    for t in norm:
+        L.append(
+            f"// cupId={t['cup_id']} ({t['ident']}): "
+            f"collisionShort/Long served via GetCollisionFilename hook"
+        )
+        # historical addresses preserved in a comment for traceability
         course_base = COLLISION_TABLE_BASE + t["cup_id"] * COLLISION_COURSE_STRIDE
         L.append(
-            f"kmWritePointer(0x{course_base + COLLISION_SHORT_OFFSET:08X}, "
-            f"kCustomCollisionShort_{t['cup_id']});  "
-            f"// course={t['cup_id']} short collision"
-        )
-        L.append(
-            f"kmWritePointer(0x{course_base + COLLISION_LONG_OFFSET:08X}, "
-            f"kCustomCollisionLong_{t['cup_id']});  "
-            f"// course={t['cup_id']} long collision"
+            f"// (was kmWritePointer 0x{course_base + COLLISION_SHORT_OFFSET:08X}, "
+            f"0x{course_base + COLLISION_LONG_OFFSET:08X})"
         )
     L.append("")
 

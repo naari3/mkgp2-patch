@@ -15,3 +15,12 @@ mod_joints.yaml
 
 # Local tooling config (user-specific absolute paths)
 .mcp.json
+
+# FST dump is derived from the user's local ISO extract; regenerate with
+# tools/fst_lookup.py (reads sys/fst.bin from the Dolphin extract dir).
+tools/fst_dump.txt
+tools/tpl_index.txt
+tools/tpl_png/
+tools/*.decompressed.bin
+tools/resource_table.txt
+tools/__pycache__/

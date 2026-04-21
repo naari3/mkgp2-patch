@@ -4,13 +4,14 @@
 # CUP3 (page 2) cursor grid. The order also drives:
 #
 # - cupId assignment:
-#     * tracks[0]              -> cupId 0   (test_course slot, special-cased
-#                                            by PathData_GetByContext /
-#                                            RaceParamsHook etc.)
-#     * tracks[1..8]           -> cupId 9..16 (vanilla "generic" cup slots
-#                                              that share DAT_806d8ac0 BGM)
-#     * tracks[9..]            -> cupId 17.. (new slots; gen extends the
-#                                             WeatherSystem_Init dispatch)
+#     * tracks[i]  -> cupId = 17 + i
+#
+#   cupId 0 (vanilla test_course dev leftover) and 9..16 (vanilla minigame /
+#   challenge modes) are intentionally skipped. Every asset-getter path now
+#   routes custom cupIds through the kCustomTracks table + cupId=0 alias
+#   (see the hook family in cup_page3.cpp starting at CourseDataLoadCustom)
+#   so cupId >= 17 is safe to extend indefinitely without touching vanilla
+#   table layouts.
 # - page2 cursor fill:
 #     * kCupPage2Courses[i] = tracks[i].cupId, i < len(tracks)
 #     * remainder filled with tracks[-1].cupId (the last track loops to fill

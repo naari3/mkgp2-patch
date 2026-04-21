@@ -24,6 +24,14 @@ DebugPrintf=0x8002ceec
 DebugOutput_Stub=0x8002ce9c
 ProcessSystemTick=0x8009d5f8
 Alloc=0x8003b1fc
+FUN_8003b120=0x8003b120   # MemoryManager alloc (takes size, returns ptr; panics on init/empty)
+FUN_8007e344=0x8007e344   # DVD file-size query (DVDOpen + sector-size, returns size or -1)
+FUN_8007dfe4=0x8007dfe4   # DVD synchronous load (filename, buf, size, progressArg, cb)
+Path_CountWaypointsAndSnapGround=0x800461f0  # walk waypoints, snap Y to terrain
+FUN_8007c56c=0x8007c56c   # CourseSetupCallback dispatcher. Consumes a (data*, count) header
+                          #   struct from PTR_DAT_80324b10[cupId*2+longRound] and calls
+                          #   FUN_8007b878 to populate a per-cup obj list. Indexed table —
+                          #   hook the `bl` at 0x800480e8 for custom cupIds.
 
 # Panic / exception path (see features/panic_log)
 OSPanic_SpinForever=0x80255800
