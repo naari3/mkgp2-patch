@@ -30,9 +30,20 @@ struct CustomResourceEntry {
     u8    pad_tail[3];
 };
 
+// Vanilla resource id remapper. Applied in every getter hook before lookup.
+// cup_id = -1 acts as a wildcard; otherwise matched against g_cupId.
+struct CupBinding {
+    s16 cupId;          // -1 = wildcard
+    u16 fromId;         // vanilla resource id to intercept
+    u16 toId;           // replacement id (may be >= CUSTOM_ID_BASE)
+    u16 pad;
+};
+
 extern "C" {
     extern const CustomResourceEntry kCustomResourceTable[];
-    extern const u32                 kCustomResourceCount;
+    extern const unsigned int        kCustomResourceCount;
+    extern const CupBinding          kBindings[];
+    extern const unsigned int        kBindingCount;
 
     const CustomResourceEntry* CustomResource_Lookup(int resourceId);
 }

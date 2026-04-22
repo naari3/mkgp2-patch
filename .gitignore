@@ -4,6 +4,7 @@
 !features/*/files/*.bin
 generated_joints.h
 generated_cup_courses.h
+generated_custom_assets.h
 generated_riivolution.xml
 mkgp2_patch.xml
 mkgp2_patch_gecko.txt

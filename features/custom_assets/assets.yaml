@@ -1,0 +1,34 @@
+# Custom resource entries. Each defines a ResourceEntry-compatible record
+# served for a specific resource id (>= 0x9000). The getter hooks in
+# custom_assets.cpp route custom IDs to this table.
+#
+# group_key routes to a TPL filename via vanilla kResourcePathTable (0x80350508).
+# Reuse a vanilla group_key to share an already-loaded TPL (atlas crops are
+# picked by offset/size within the TPL).
+#
+# Required:
+#   id         - custom resource id (>= 0x9000, unique)
+#   group_key  - routes to TPL filename; reuse vanilla or extend elsewhere
+#   size       - [w, h] in pixels (UV crop extent)
+#
+# Optional (defaults shown):
+#   slot_index - 0
+#   next_id    - -1  (chain terminator; set to a vanilla alpha-mask id to
+#                     preserve the vanilla sibling preload)
+#   flags      - 4
+#   offset     - [0.0, 0.0]
+#   scale      - [1.0, 1.0]
+
+assets:
+  - id: 0x9000
+    # PoC phase B: reuse vanilla JP_sp_CUPname.tpl (groupKey=0x0441). offset
+    # (0,0) in the atlas = Yoshi slice. scale_x=2.0 is consumed by
+    # FUN_801217e8 and produces a visible horizontal stretch as proof that
+    # custom dispatch reaches the renderer.
+    group_key: 0x0441
+    slot_index: 0
+    next_id: 0x1736           # preserve vanilla alpha mask chain
+    offset: [0.0, 0.0]
+    size:   [256.0, 46.0]
+    scale:  [2.0, 1.0]
+    flags:  4

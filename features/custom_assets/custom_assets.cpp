@@ -51,27 +51,12 @@ extern "C" {
 }
 
 // --------- Binding layer (vanilla ID → other ID remap) -------------------
-
-struct CupBinding {
-    s16 cupId;      // -1 = wildcard (apply regardless of g_cupId)
-    u16 fromId;     // vanilla resource ID to intercept
-    u16 toId;       // replacement ID (may be custom >= CUSTOM_ID_BASE)
-    u16 pad;
-};
+// CupBinding struct + kBindings[] / kBindingCount come from
+// generated_custom_assets.h (emitted by gen_custom_assets_header.py from
+// bindings/*.yaml).
 
 // Externals via externals.txt (g_cupId=0x806cf108).
 extern "C" unsigned int g_cupId;
-
-// PoC test binding: unconditionally swap Yoshi cup name (0x1729) with our
-// custom entry (0x9000). Custom entry reuses vanilla groupKey=0x0441 (same
-// TPL), offset=(0,0) (Yoshi slice), scale_x=2.0 — expected visual: Yoshi
-// name, stretched 2x horizontally (scale hint is mostly not used by the
-// sprite setter, so width stretch may not show; the critical signal is the
-// glyph choice remaining Yoshi after our custom entry supplies offset).
-static const CupBinding kBindings[] = {
-    { /*cupId*/ -1, /*from*/ 0x1729, /*to*/ 0x9000, 0 },
-};
-static const u32 kBindingCount = sizeof(kBindings) / sizeof(kBindings[0]);
 
 static int s_bindingLogCount = 0;
 static const int kBindingLogMax = 5;
@@ -79,7 +64,7 @@ static const int kBindingLogMax = 5;
 static inline int ApplyBinding(int resourceId) {
     if (kBindingCount == 0) return resourceId;
     int cup = (int)g_cupId;
-    for (u32 i = 0; i < kBindingCount; ++i) {
+    for (unsigned int i = 0; i < kBindingCount; ++i) {
         const CupBinding& b = kBindings[i];
         if ((b.cupId == -1 || (int)b.cupId == cup) &&
             (int)(u16)b.fromId == resourceId) {
@@ -243,29 +228,8 @@ kmBranch(0x80122808, GetSlotIndex_Hook);
 kmBranch(0x80122ac4, GetGroupKey_Hook);
 kmBranch(0x801229c4, GetFilePathPtr_Hook);
 
-// --------- PoC entry: reuse vanilla Yoshi cup name TPL with altered scale ---
-// Vanilla 0x1729 (Yoshi cup name): groupKey=0x0441, slotIndex=0, offset=(0,0),
-//   size=(256,46), scale=(1,1), nextId=0x1736 (chain to alpha mask).
-// Our 0x9000 mirrors those EXCEPT scale_x=2.0 — horizontal stretch to give a
-// visible signal that the custom entry is live while reusing the vanilla TPL
-// (no new asset needed).
-const CustomResourceEntry kCustomResourceTable[] = {
-    {
-        /* self_id    */ 0x9000,
-        /* pad_02     */ 0,
-        /* offset_x   */ 0.0f,
-        /* offset_y   */ 0.0f,
-        /* size_x     */ 256.0f,
-        /* size_y     */ 46.0f,
-        /* slot_index */ 0,
-        /* group_key  */ 0x0441,   // vanilla JP_sp_CUPname.tpl groupKey
-        /* next_id    */ 0x1736,   // preserve vanilla alpha mask chain
-        /* pad_1a     */ 0,
-        /* scale_x    */ 2.0f,     // <-- horizontal stretch, visible marker
-        /* scale_y    */ 1.0f,
-        /* flags      */ 4,
-        /* pad_tail   */ {0,0,0},
-    },
-};
-const u32 kCustomResourceCount = sizeof(kCustomResourceTable)
-                               / sizeof(kCustomResourceTable[0]);
+// --------- Data tables: kCustomResourceTable[] + kBindings[] ---------------
+// Generated from assets.yaml + bindings/*.yaml by gen_custom_assets_header.py.
+// Included at the bottom so the definitions participate in this translation
+// unit and satisfy the extern declarations in custom_assets.h.
+#include "generated_custom_assets.h"
