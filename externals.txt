@@ -94,3 +94,7 @@ kBgmIdList_DefaultFallback=0x806d8ac8     # BgmIdList last-resort (cupId out of 
 kWeatherInitFloatA=0x806d8ad4             # 18.0f (WeatherSystem_Init rain/wind/thunder init)
 kWeatherInitFloatB=0x806d8ad8             # 0.0f  (fade sentinel init)
 kWeatherInitJumpTable=0x804910bc          # void *[17] (g_cupId 0..16 jump table for vanilla WeatherSystem_Init)
+
+# Resource system
+kResourcePathTable=0x80350508             # char *[]; indexed by ResourceEntry.groupKey (id<0x2b00)
+kExtendedResourcePathTable=0x8034a418     # char *[]; indexed by raw resourceId*4 (id>=0x2b00)
