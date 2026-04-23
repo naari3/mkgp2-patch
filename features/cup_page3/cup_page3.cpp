@@ -250,6 +250,68 @@ asm void CupSelectHook() {
 kmBranch(0x801c80f4, CupSelectHook);
 kmPatchExitPoint(CupSelectHook, 0x801c81f4);
 
+// --------- Cursor-update hook: page-aware SetCourseParams on hover -------
+// FUN_801c64dc (called from clFlowCup_Update's cursor-change branch AND
+// from clFlowCup_Init) has the same 8-way SetCourseParams dispatch as the
+// confirm path (Part A, 0x801c64f0..0x801c65ec). Vanilla writes g_cupId =
+// CUP_COURSE_BY_CURSOR[cursor] every time the cursor moves — on page 2 this
+// silently clobbers the g_cupId=17 we installed via CupForceGates, and the
+// sprite render later in the same frame sees the vanilla cupId instead, so
+// the 8 tiles briefly render with their position-native vanilla cups before
+// next frame's CupForceGates restores 17. That is the observed 1-frame flash
+// on cursor movement through page 3.
+//
+// We fix it with the minimal partial-reimpl: replace JUST Part A with a
+// page-aware C dispatch, then bctr to Part B (0x801c65f0) which handles
+// trophy unlock flags + cup label glyph — both independent of g_cupId.
+//
+//   Part A  : 0x801c64dc..0x801c65ec (stwu + 8x SetCourseParams)    — replaced
+//   Part B  : 0x801c65f0..0x801c672c (activeRowIdx + cupLabelGlyph) — unchanged
+//   Epilogue: 0x801c6730..0x801c6740 (lmw + blr)                    — unchanged
+//
+// The wrapper re-plays the vanilla prologue (r27=scene + frame) before
+// bctr'ing to Part B since Part B relies on both.
+extern "C" void CupCursorUpdateDispatch(void* scene) {
+    EnsureDBATWidened();
+    if (!scene) return;
+    i32 cursor = I32(scene, OFF_CURSOR);
+    u8  flag   = U8(scene, OFF_PAGE_FLAG);
+    if (cursor < 0 || cursor >= 8) return;
+    int cupId = (flag == 2) ? kCupPage2Courses[cursor]
+                            : CUP_COURSE_BY_CURSOR[cursor];
+    SetCourseParams(cupId, 0, 0, 0);
+}
+
+asm void CupCursorUpdateHook() {
+    nofralloc
+    // Our own C-call frame.
+    stwu r1, -0x20(r1)
+    mflr r0
+    stw  r0, 0x24(r1)
+    stw  r3, 0x10(r1)        // save scene (vanilla passes it in r3)
+    bl   CupCursorUpdateDispatch
+    // Tear down our frame, restore scene in r3.
+    lwz  r3, 0x10(r1)
+    lwz  r0, 0x24(r1)
+    mtlr r0
+    addi r1, r1, 0x20
+    // Replay vanilla prologue (0x801c64dc..0x801c64ec) so Part B sees the
+    // frame + r27 it expects. We REPLACED the stwu at 0x801c64dc, so we
+    // must execute the whole prologue here before jumping to Part B.
+    stwu r1, -0x30(r1)
+    mflr r0
+    stw  r0, 0x34(r1)
+    stmw r23, 0xc(r1)
+    or   r27, r3, r3
+    // bctr to Part B start.
+    lis  r12, 0x801c
+    ori  r12, r12, 0x65f0
+    mtctr r12
+    bctr
+}
+
+kmBranch(0x801c64dc, CupCursorUpdateHook);
+
 // --------- Widen cupId range in SetCourseParams ------------------------
 // SetCourseParams (0x8009cbfc) validates `0 <= cupId <= 16` via:
 //   0x8009cc20: cmpwi r3, 0x11    // 17
