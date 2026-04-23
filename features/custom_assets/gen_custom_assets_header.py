@@ -1,28 +1,78 @@
 #!/usr/bin/env python3
-"""Generate generated_custom_assets.h from assets.yaml + bindings/*.yaml.
+"""Generate generated_custom_assets.h + custom TPL files + Riivolution XML
+fragment from features/cups.yaml.
 
-Output (included once from custom_assets.cpp):
-  - kCustomResourceTable[]  CustomResourceEntry records (40 bytes each)
-  - kCustomResourceCount
-  - kBindings[]             CupBinding records (8 bytes each)
-  - kBindingCount
+Reads the same cup-centric yaml as gen_cup_courses_header.py. For each cup
+that declares an `assets:` section, emits:
+  - CustomResourceEntry rows in kCustomResourceTable[]
+  - CupBinding rows in kBindings[] (g_cupId match → replace vanilla id w/ custom id)
+  - PNG → TPL (RGBA32) under files/<stem>.tpl
+  - <file> records in generated_riivolution.xml so Riivolution copies the TPL
+    into the disc tree
 
-Schemas are documented in assets.yaml / bindings/*.yaml headers.
+Custom resource id allocation per cup:
+  base = 0x9000 + cup_index * 8
+  + 0  -> icon          (CUPsel02 atlas tile)
+  + 1  -> name          (CUPname banner)
+  + 2  -> trophy_locked (trophy_01_locked atlas)
+  + 3  -> banner        (CUPsel01_a banner slot — NOT cup-indexed)
+  + 4..7 -> reserved (course thumb / additional banners)
+Cup index = position in cups[] (NOT cup_id), so removing/reordering cups
+shifts ids — but bindings are recomputed from the same yaml so vanilla
+sees no change.
+
+Vanilla resource ids that get replaced:
+  icon          -> 0x1777 + K   (K in 0..7, all map to custom icon)
+  name          -> 0x1729 + K   (same)
+  trophy_locked -> 0x1EA2 + K   (same)
+  banner        -> 0x175E       (NOT cup-indexed; single global id)
+For cup-indexed slots we emit 8 bindings (one per vanilla cup position)
+because the custom cup is displayed as a full "page 3" grid whose tiles
+still render from position-native ids. `display_alias_cup` is retained in
+yaml as documentation of the atlas crop position but no longer controls
+binding selection.
+
+Bindings are gated on g_cupId == cup.cup_id. cup_page3 writes
+g_cupId = cup.cup_id on page 2 entry (CupForwardTransition 1->2) and
+resets to 0 on page 2 exit / cup-select scene init, so the binding only
+fires while the player is actually looking at page 3 or racing the cup.
+
+Custom group_keys (>= 0x9000) route through kCustomPathTable to the
+freshly-encoded TPLs — vanilla path table (PTR_s_adjust_tpl_80350508) is
+not touched.
 """
 
+import struct
 import sys
+import zlib
 from pathlib import Path
 
 import yaml
+from PIL import Image
 
 
 FEATURE_DIR = Path(__file__).resolve().parent
-ASSETS_YAML = FEATURE_DIR / "assets.yaml"
-BINDINGS_DIR = FEATURE_DIR / "bindings"
-OUTPUT = FEATURE_DIR / "generated_custom_assets.h"
+CUPS_YAML   = FEATURE_DIR.parent / "cups.yaml"   # features/cups.yaml
+FILES_DIR   = FEATURE_DIR / "files"
+OUTPUT_H    = FEATURE_DIR / "generated_custom_assets.h"
+OUTPUT_XML  = FEATURE_DIR / "generated_riivolution.xml"
 
-CUSTOM_ID_BASE = 0x9000
+CUSTOM_ID_BASE       = 0x9000
+CUSTOM_GROUPKEY_BASE = 0x9000   # must match custom_assets.h
 U16_MAX = 0xFFFF
+
+# Per-slot meta. (yaml key, vanilla resource id base, atlas size, slot offset
+# inside a cup's reserved 8-id block, cup_indexed flag).
+# cup_indexed = True   -> binding.from = vanilla_base + K for K in 0..7
+# cup_indexed = False  -> binding.from = vanilla_base (single global id; the
+#                         cup_id gate still scopes which cup triggers it).
+ASSET_SLOTS = [
+    # key    , vanilla_base, default_size, slot_off, cup_indexed
+    ("icon"  , 0x1777, (128.0, 128.0), 0, True),
+    ("name"  , 0x1729, (256.0,  46.0), 1, True),
+    ("trophy", 0x1EA2, ( 92.0,  86.0), 2, True),
+    ("banner", 0x175E, (301.0, 125.0), 3, False),
+]
 
 
 def fatal(msg):
@@ -30,129 +80,199 @@ def fatal(msg):
     sys.exit(1)
 
 
-def require_u16(name, value):
-    if not isinstance(value, int):
-        fatal(f"{name}: expected int, got {type(value).__name__} ({value!r})")
-    if not (0 <= value <= U16_MAX):
-        fatal(f"{name}: 0x{value:x} out of u16 range")
-    return value
+# ---- TPL encoder (RGBA32 format 6, single image, no mipmaps) --------------
+
+def _rgba32_encode(rgba_bytes, w, h):
+    """Pack row-major RGBA (w*h*4 bytes) into tiled 4x4 RGBA32.
+
+    Each 4x4 tile = 64 bytes: first 32 = AR pairs (a[0..15], r[0..15]
+    interleaved 2 bytes per pixel), then 32 = GB pairs. Tiles arranged
+    left-to-right, top-to-bottom. Dimensions padded up to multiple of 4;
+    padding pixels contribute transparent black.
+    """
+    pad_w = (w + 3) & ~3
+    pad_h = (h + 3) & ~3
+    out = bytearray()
+    for ty in range(0, pad_h, 4):
+        for tx in range(0, pad_w, 4):
+            ar = bytearray(32)
+            gb = bytearray(32)
+            for py in range(4):
+                for px in range(4):
+                    x = tx + px
+                    y = ty + py
+                    if x < w and y < h:
+                        off = (y * w + x) * 4
+                        r, g, b, a = rgba_bytes[off:off + 4]
+                    else:
+                        r = g = b = a = 0
+                    k = (py * 4 + px) * 2
+                    ar[k], ar[k + 1] = a, r
+                    gb[k], gb[k + 1] = g, b
+            out.extend(ar)
+            out.extend(gb)
+    return bytes(out)
 
 
-def require_xy(name, value, default=None):
-    if value is None:
-        if default is None:
-            fatal(f"{name}: required")
-        return default
-    if not (isinstance(value, (list, tuple)) and len(value) == 2):
-        fatal(f"{name}: expected [x, y], got {value!r}")
-    return (float(value[0]), float(value[1]))
+def _build_tpl_rgba32(w, h, rgba_bytes):
+    """Return raw (uncompressed) TPL bytes for a single RGBA32 image."""
+    img_off = 0x14
+    data_off = 0x40
+    pixel_bytes = _rgba32_encode(rgba_bytes, w, h)
+    hdr = bytearray()
+    hdr += struct.pack(">I", 0x0020AF30)   # magic
+    hdr += struct.pack(">I", 1)            # num_images
+    hdr += struct.pack(">I", 0x0C)         # tbl_off
+    hdr += struct.pack(">II", img_off, 0)  # image table entry: img_off, pal_off
+    hdr += struct.pack(">HH", h, w)        # height, width
+    hdr += struct.pack(">I",  6)           # format: RGBA32
+    hdr += struct.pack(">I",  data_off)
+    hdr += struct.pack(">I",  1)           # wrap_s = repeat
+    hdr += struct.pack(">I",  1)           # wrap_t = repeat
+    hdr += struct.pack(">I",  1)           # min_filter (linear)
+    hdr += struct.pack(">I",  1)           # mag_filter (linear)
+    hdr += struct.pack(">f",  0.0)         # lod_bias
+    hdr += struct.pack(">BBBB", 0, 0, 0, 0)
+    # 12 (outer) + 8 (img table entry) + 36 (image descriptor) = 56 bytes.
+    # data_off=0x40 (64) leaves 8 bytes of zero padding before pixel data.
+    assert len(hdr) == 56, f"header size {len(hdr)} != 56"
+    hdr += b"\x00" * (data_off - len(hdr))
+    return bytes(hdr) + pixel_bytes
 
 
-def load_assets():
-    if not ASSETS_YAML.exists():
-        fatal(f"missing {ASSETS_YAML}")
-    doc = yaml.safe_load(ASSETS_YAML.read_text(encoding="utf-8")) or {}
-    raw = doc.get("assets") or []
-    if not isinstance(raw, list):
-        fatal("assets.yaml: 'assets' must be a list")
-    seen_ids = {}
-    out = []
-    for i, a in enumerate(raw):
-        loc = f"assets.yaml#assets[{i}]"
-        if not isinstance(a, dict):
-            fatal(f"{loc}: entry must be a mapping")
-        rid = a.get("id")
-        if rid is None:
-            fatal(f"{loc}: 'id' required")
-        rid = require_u16(f"{loc}.id", rid)
-        if rid < CUSTOM_ID_BASE:
-            fatal(f"{loc}.id=0x{rid:x}: custom ids must be >= 0x{CUSTOM_ID_BASE:x}")
-        if rid in seen_ids:
-            fatal(f"{loc}.id=0x{rid:x}: duplicate (also at {seen_ids[rid]})")
-        seen_ids[rid] = loc
-
-        gk = a.get("group_key")
-        if gk is None:
-            fatal(f"{loc}: 'group_key' required")
-        gk = require_u16(f"{loc}.group_key", gk)
-
-        size = require_xy(f"{loc}.size", a.get("size"))
-        offset = require_xy(f"{loc}.offset", a.get("offset"), default=(0.0, 0.0))
-        scale  = require_xy(f"{loc}.scale",  a.get("scale"),  default=(1.0, 1.0))
-        slot_index = a.get("slot_index", 0)
-        if not (-0x8000 <= slot_index <= 0x7FFF):
-            fatal(f"{loc}.slot_index={slot_index} out of s16 range")
-        next_id = a.get("next_id", -1)
-        if not (-0x8000 <= next_id <= 0x7FFF):
-            fatal(f"{loc}.next_id={next_id} out of s16 range")
-        flags = a.get("flags", 4)
-        if not (0 <= flags <= 0xFF):
-            fatal(f"{loc}.flags={flags} out of u8 range")
-
-        out.append({
-            "id":         rid,
-            "group_key":  gk,
-            "slot_index": slot_index,
-            "next_id":    next_id,
-            "flags":      flags,
-            "offset":     offset,
-            "size":       size,
-            "scale":      scale,
-        })
-    return out
+def _wrap_tpl_envelope(raw_tpl):
+    """Wrap in the (u32 LE uncomp_size, u32 pad, zlib stream) envelope the
+    MKGP2 DVD loader expects."""
+    payload = zlib.compress(raw_tpl, 9)
+    return struct.pack("<II", len(raw_tpl), 0) + payload
 
 
-def load_bindings():
-    out = []
-    if not BINDINGS_DIR.exists():
-        return out
-    files = sorted(BINDINGS_DIR.glob("*.yaml"))
-    for f in files:
-        doc = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
-        cup_id = doc.get("cup_id")
-        if cup_id is None:
-            cup_s16 = -1
-        else:
-            if not isinstance(cup_id, int) or not (-0x8000 <= cup_id <= 0x7FFF):
-                fatal(f"{f.name}: cup_id={cup_id} out of s16 range")
-            cup_s16 = cup_id
-        reps = doc.get("replacements") or []
-        if not isinstance(reps, list):
-            fatal(f"{f.name}: replacements must be a list")
-        for i, r in enumerate(reps):
-            loc = f"{f.name}#replacements[{i}]"
-            if not isinstance(r, dict) or "from" not in r or "to" not in r:
-                fatal(f"{loc}: expected {{from, to}}")
-            frm = require_u16(f"{loc}.from", r["from"])
-            to  = require_u16(f"{loc}.to",   r["to"])
-            out.append({"cup_id": cup_s16, "from": frm, "to": to, "source": f.name})
-    # Sanity: duplicate (cup_id, from) means an ambiguous binding.
-    seen = {}
-    for b in out:
-        key = (b["cup_id"], b["from"])
-        if key in seen:
-            fatal(f"duplicate binding cup_id={b['cup_id']} from=0x{b['from']:x}: "
-                  f"{seen[key]} and {b['source']}")
-        seen[key] = b["source"]
-    return out
+def encode_png_to_tpl(png_path, out_path):
+    img = Image.open(png_path).convert("RGBA")
+    w, h = img.size
+    rgba = img.tobytes()
+    raw_tpl = _build_tpl_rgba32(w, h, rgba)
+    out_bytes = _wrap_tpl_envelope(raw_tpl)
+    out_path.write_bytes(out_bytes)
+    return w, h
 
 
-def emit(assets, bindings):
+# ---- yaml driver ----------------------------------------------------------
+
+def collect_assets(cups):
+    """Walk cups[] and produce flat lists for asset entries + bindings + tpl
+    encodes. Returns (assets, bindings, custom_paths)."""
+    assets = []
+    bindings = []
+    custom_paths = []   # index = group_key - CUSTOM_GROUPKEY_BASE
+    next_gk = CUSTOM_GROUPKEY_BASE
+
+    for cup_idx, cup in enumerate(cups):
+        cup_loc = f"cups[{cup_idx}]"
+        if not isinstance(cup, dict):
+            fatal(f"{cup_loc}: must be a mapping")
+        cup_ident = cup.get("id") or cup_loc
+        cup_id = cup.get("cup_id")
+        if not isinstance(cup_id, int):
+            fatal(f"{cup_loc}.cup_id required (int)")
+        alias = cup.get("display_alias_cup", 0)
+        if not isinstance(alias, int) or not (0 <= alias <= 7):
+            fatal(f"{cup_loc}.display_alias_cup must be int 0..7, got {alias!r}")
+
+        a_section = cup.get("assets")
+        if a_section is None:
+            continue
+        if not isinstance(a_section, dict):
+            fatal(f"{cup_loc}.assets must be a mapping")
+
+        for key, vanilla_base, default_size, slot_off, cup_indexed in ASSET_SLOTS:
+            png_rel = a_section.get(key)
+            if png_rel is None:
+                continue
+            png_path = (FEATURE_DIR / png_rel).resolve()
+            if not png_path.is_file():
+                fatal(f"{cup_loc}.assets.{key}: '{png_rel}' not found at {png_path}")
+
+            custom_id = CUSTOM_ID_BASE + cup_idx * 8 + slot_off
+            if custom_id > U16_MAX:
+                fatal(f"{cup_loc}.assets.{key}: custom id 0x{custom_id:x} overflows u16")
+
+            # Optional explicit size; default from atlas slot. Use PIL to
+            # validate against actual PNG dimensions.
+            with Image.open(png_path) as im:
+                pw, ph = im.size
+
+            gk = next_gk
+            next_gk += 1
+            tpl_filename = f"mkgp2_custom_{custom_id:04x}.tpl"
+            custom_paths.append(tpl_filename)
+
+            assets.append({
+                "id":           custom_id,
+                "group_key":    gk,
+                "slot_index":   0,
+                # next_id: keep vanilla alpha-mask sibling chain alive for the
+                # icon/name/trophy slots so the alpha overlay still preloads.
+                # Vanilla pattern: 0x1777 -> 0x178B alpha, 0x1729 -> 0x1736,
+                # 0x1EA2 -> 0x1EBA. We mirror that by computing
+                # next = vanilla.next_id chain head + alias offset, but until
+                # we sweep that, just terminate (-1) — alpha overlay will fail
+                # silently (acceptable for MVP).
+                "next_id":      -1,
+                "flags":        4,
+                "offset":       (0.0, 0.0),
+                "size":         (float(pw), float(ph)),
+                "scale":        (1.0, 1.0),
+                "png_path":     png_path,
+                "tpl_filename": tpl_filename,
+                "_meta_key":    key,
+                "_cup_ident":   cup_ident,
+                "_cup_id":      cup_id,
+            })
+
+            # Binding: when g_cupId == cup.cup_id, intercept the vanilla id
+            # and serve the custom id. Cup-indexed slots emit 8 bindings
+            # (one per cursor position 0..7) all routing to the same custom
+            # id — page 3 is a "single-cup grid" where every tile shows
+            # test_cup regardless of its position-native vanilla id.
+            if cup_indexed:
+                positions = range(8)
+            else:
+                positions = (0,)
+            for pos in positions:
+                bindings.append({
+                    "cup_id":  cup_id,
+                    "from":    vanilla_base + pos if cup_indexed else vanilla_base,
+                    "to":      custom_id,
+                    "source":  f"{cup_loc}({cup_ident}).assets.{key}"
+                               + (f" [pos={pos}]" if cup_indexed else ""),
+                })
+
+    return assets, bindings, custom_paths
+
+
+# ---- emitters -------------------------------------------------------------
+
+def emit_header(assets, bindings, custom_paths):
     lines = []
     lines.append("// GENERATED by gen_custom_assets_header.py — do not edit.")
-    lines.append("// Source: assets.yaml + bindings/*.yaml")
+    lines.append("// Source: features/cups.yaml")
     lines.append("#ifndef GENERATED_CUSTOM_ASSETS_H")
     lines.append("#define GENERATED_CUSTOM_ASSETS_H")
     lines.append("")
     lines.append('#include "custom_assets.h"')
     lines.append("")
 
-    # Assets
-    lines.append(f"const CustomResourceEntry kCustomResourceTable[] = {{")
+    lines.append("const CustomResourceEntry kCustomResourceTable[] = {")
     for a in assets:
         ox, oy = a["offset"]
         sx, sy = a["size"]
         cx, cy = a["scale"]
+        ni = a["next_id"]
+        ni_str = f"0x{ni:04x}" if ni >= 0 else str(ni)
+        lines.append(
+            f"    // {a['_cup_ident']} (cupId={a['_cup_id']}) {a['_meta_key']}"
+        )
         lines.append("    {")
         lines.append(f"        /* self_id    */ 0x{a['id']:04x},")
         lines.append(f"        /* pad_02     */ 0,")
@@ -162,8 +282,6 @@ def emit(assets, bindings):
         lines.append(f"        /* size_y     */ {sy!r}f,")
         lines.append(f"        /* slot_index */ {a['slot_index']},")
         lines.append(f"        /* group_key  */ 0x{a['group_key']:04x},")
-        ni = a["next_id"]
-        ni_str = f"0x{ni:04x}" if ni >= 0 else str(ni)
         lines.append(f"        /* next_id    */ {ni_str},")
         lines.append(f"        /* pad_1a     */ 0,")
         lines.append(f"        /* scale_x    */ {cx!r}f,")
@@ -172,14 +290,11 @@ def emit(assets, bindings):
         lines.append(f"        /* pad_tail   */ {{0,0,0}},")
         lines.append("    },")
     if not assets:
-        # Avoid empty array (ISO C/C++ disallow). Emit a single sentinel entry
-        # with an id that CustomResource_Lookup will never match.
-        lines.append("    { 0, 0, 0.0f, 0.0f, 1.0f, 1.0f, 0, 0, -1, 0, 1.0f, 1.0f, 0, {0,0,0} }, // sentinel (kCustomResourceCount=0)")
+        lines.append("    { 0, 0, 0.0f, 0.0f, 1.0f, 1.0f, 0, 0, -1, 0, 1.0f, 1.0f, 0, {0,0,0} }, // sentinel")
     lines.append("};")
     lines.append(f"const unsigned int kCustomResourceCount = {len(assets)}u;")
     lines.append("")
 
-    # Bindings
     lines.append("const CupBinding kBindings[] = {")
     for b in bindings:
         lines.append(
@@ -189,9 +304,21 @@ def emit(assets, bindings):
             f"0 }}, // {b['source']}"
         )
     if not bindings:
-        lines.append("    { 0, 0, 0, 0 }, // sentinel (kBindingCount=0)")
+        lines.append("    { 0, 0, 0, 0 }, // sentinel")
     lines.append("};")
     lines.append(f"const unsigned int kBindingCount = {len(bindings)}u;")
+    lines.append("")
+
+    lines.append("const char* const kCustomPathTable[] = {")
+    for i, name in enumerate(custom_paths):
+        if name is None:
+            lines.append(f"    0,  // gap @ 0x{CUSTOM_GROUPKEY_BASE + i:04x}")
+        else:
+            lines.append(f'    "{name}",  // 0x{CUSTOM_GROUPKEY_BASE + i:04x}')
+    if not custom_paths:
+        lines.append("    0,  // sentinel")
+    lines.append("};")
+    lines.append(f"const unsigned int kCustomPathCount = {len(custom_paths)}u;")
     lines.append("")
 
     lines.append("#endif")
@@ -199,11 +326,40 @@ def emit(assets, bindings):
     return "\n".join(lines)
 
 
+def emit_riivolution_xml(custom_paths):
+    lines = []
+    for name in custom_paths:
+        if name is None:
+            continue
+        lines.append(f'<file disc="/{name}" external="/mkgp2_patch/{name}" create="true"/>')
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+# ---- driver ---------------------------------------------------------------
+
 def main():
-    assets = load_assets()
-    bindings = load_bindings()
-    OUTPUT.write_text(emit(assets, bindings), encoding="utf-8")
-    print(f"Generated {OUTPUT.name}: {len(assets)} asset(s), {len(bindings)} binding(s)")
+    if not CUPS_YAML.exists():
+        fatal(f"missing {CUPS_YAML}")
+    doc = yaml.safe_load(CUPS_YAML.read_text(encoding="utf-8")) or {}
+    cups = doc.get("cups") or []
+    if not isinstance(cups, list):
+        fatal("cups.yaml: 'cups' must be a list")
+
+    assets, bindings, custom_paths = collect_assets(cups)
+
+    FILES_DIR.mkdir(exist_ok=True)
+    encoded = 0
+    for a in assets:
+        tpl_path = FILES_DIR / a["tpl_filename"]
+        encode_png_to_tpl(a["png_path"], tpl_path)
+        encoded += 1
+
+    OUTPUT_H.write_text(emit_header(assets, bindings, custom_paths), encoding="utf-8")
+    OUTPUT_XML.write_text(emit_riivolution_xml(custom_paths), encoding="utf-8")
+
+    print(f"Generated {OUTPUT_H.name}: "
+          f"{len(assets)} asset(s), {len(bindings)} binding(s), "
+          f"{encoded} custom TPL(s)")
 
 
 if __name__ == "__main__":

@@ -98,3 +98,6 @@ kWeatherInitJumpTable=0x804910bc          # void *[17] (g_cupId 0..16 jump table
 # Resource system
 kResourcePathTable=0x80350508             # char *[]; indexed by ResourceEntry.groupKey (id<0x2b00)
 kExtendedResourcePathTable=0x8034a418     # char *[]; indexed by raw resourceId*4 (id>=0x2b00)
+PreloadResource=0x80120d80                # int(int resourceId); ensures slot for resource exists.
+                                          # Internally calls GetGroupKey/GetFilePathPtr → DVDOpen →
+                                          # registers slot with refcount++. Returns 1 success / 0 fail.

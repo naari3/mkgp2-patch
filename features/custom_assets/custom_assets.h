@@ -21,7 +21,10 @@ struct CustomResourceEntry {
     float size_x;       // +0x0C
     float size_y;       // +0x10
     s16   slot_index;   // +0x14
-    s16   group_key;    // +0x16
+    u16   group_key;    // +0x16 — u16 (NOT s16): custom gks >= 0x9000 must not
+                        //         sign-extend into negative int. vanilla uses s16
+                        //         here but all its values are < 0x8000, so reading
+                        //         vanilla as u16 is identical.
     s16   next_id;      // +0x18  (-1 = chain terminator)
     u16   pad_1a;
     float scale_x;      // +0x1C
@@ -44,10 +47,15 @@ extern "C" {
     extern const unsigned int        kCustomResourceCount;
     extern const CupBinding          kBindings[];
     extern const unsigned int        kBindingCount;
+    // kCustomPathTable[i] = TPL filename for groupKey (CUSTOM_GROUPKEY_BASE + i),
+    // or NULL for gaps. Indexed range is [0, kCustomPathCount).
+    extern const char* const         kCustomPathTable[];
+    extern const unsigned int        kCustomPathCount;
 
     const CustomResourceEntry* CustomResource_Lookup(int resourceId);
 }
 
-static const int CUSTOM_ID_BASE = 0x9000;
+static const int CUSTOM_ID_BASE       = 0x9000;
+static const int CUSTOM_GROUPKEY_BASE = 0x9000;
 
 #endif

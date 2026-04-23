@@ -1,0 +1,108 @@
+# Custom cup + course definitions.
+#
+# 単一データソース。`features/cup_page3/gen_cup_courses_header.py` と
+# `features/custom_assets/gen_custom_assets_header.py` の両方が読む。
+#
+# 階層:
+#   cups[]                 — カップ定義 (CUP select で 1 タイル)
+#     id: <C ident>        — 識別子 (識別/シンボル名/ファイル名 suffix)
+#     cup_id: <int>        — vanilla cupId スロット番号 (>= 17)
+#     display_alias_cup    — UI を「どの vanilla カップに見せかけるか」
+#                            のヒント (default: 0 = Yoshi)
+#                            binding の vanilla resource id を計算するのに使う
+#     assets:              — カップ単位の表示画像 (省略可、省略 = vanilla 維持)
+#       icon:   <path>     — 128×128  CUPsel02 のスロット
+#       name:   <path>     — 256×46   CUPname のスロット
+#       trophy: <path>     — 92×86    trophy_01_locked のスロット
+#     courses[]            — カップ内の個別コース (現状 1 つだけ対応)
+#       id: <C ident>
+#       collision_short:   — short-lap 衝突 .bin
+#       collision_long:    — long-lap  衝突 .bin
+#       line_bin:          — AI ライン .bin
+#       laps / time / bonus
+#       bgm_l / bgm_r:     — DSP filename (cup_page3.cpp が DVDOpen に渡す)
+#       ai_lap_bonus_rules: AI 速度補正ルール (詳細は cup_page3 docs 参照)
+#       base_speed:         AI base speed table (per ccClass)
+#       base_speed_rounds:  per-round 上書き (任意)
+#       (将来) thumb:       round screenshot 200×96
+#
+# Voice announcer queue は cup_page3 が共有 SFX を維持するので test_cup でも
+# 「3-2-1 GO!」等は鳴る。
+
+cups:
+  - id: test_cup
+    cup_id: 17
+    display_alias_cup: 0   # Yoshi のスロットを差し替える
+    assets:
+      icon:   images/test_cup_icon.png
+      name:   images/test_cup_name.png
+      trophy: images/test_cup_trophy.png
+      banner: images/test_cup_banner.png   # 301×125 — vanilla 0x175E (CUPsel01_a)
+
+    courses:
+      - id: test_course
+        collision_short: grd_short.bin
+        collision_long:  grd_long.bin
+        line_bin:        test_course_short_line.bin
+        laps:  3
+        time:  120.0
+        bonus: 15.0
+        bgm_l: bgm01_demoL.dsp
+        bgm_r: bgm01_demoR.dsp
+
+        # Dumped from vanilla Mario fallback @ 0x803a34e0 (round=2, cup=1, variant=0),
+        # with subMode normalized to -1 so the rules fire regardless of g_roundIndex.
+        # Layer comments reflect the decompile of AI_CalcLapSpeedBonus at 0x801dd480.
+        ai_lap_bonus_rules:
+          # --- Layer A: 150cc per-lap base ---
+          - { ccClass: 2, position: 1, bonus:  20.0 }
+          - { ccClass: 2, position: 2, bonus:  10.0 }
+          - { ccClass: 2, position: 3, bonus:  10.0 }
+          - { ccClass: 2, position: 4, bonus:  10.0 }
+          - { ccClass: 2, position: 5, bonus:  10.0 }
+          - { ccClass: 2, position: 9, lapDiffMin: 50, lapDiffMax: 128, bonus: -5.0 }
+
+          # --- Layer B: final-lap (pos=1) kartIdx-specific boosts ---
+          - { kartIdx: 1, position: 1, bonus:  50.0 }
+          - { kartIdx: 2, position: 1, bonus:  40.0 }
+          - { kartIdx: 3, position: 1, bonus:  35.0 }
+          - { kartIdx: 4, position: 1, bonus:  20.0 }
+
+          - { position: 1, lapDiffMin: 20, lapDiffMax: 35, excludePosition: 4, bonus:  0.0 }
+          - { position: 1, lapDiffMin: 20, lapDiffMax: 35, excludePosition: 5, bonus:  0.0 }
+          - { position: 1, lapDiffMin: 20, lapDiffMax: 35, bonus: 20.0 }
+          - { position: 1, lapDiffMin: 60, lapDiffMax: 75, bonus: 20.0 }
+
+          # --- Layer C: pos=2 ---
+          - { kartIdx: 1, position: 2, bonus:  30.0 }
+          - { kartIdx: 2, position: 2, bonus:  25.0 }
+          - { kartIdx: 3, position: 2, bonus:  20.0 }
+          - { kartIdx: 4, position: 2, bonus:  15.0 }
+          - { position: 2, excludePosition: 5, bonus: -10.0 }
+          - { position: 2, lapDiffMin: 20, lapDiffMax: 35, bonus: 10.0 }
+          - { position: 2, lapDiffMin: 60, lapDiffMax: 75, bonus: 10.0 }
+
+          # --- Layer D: pos=3 ---
+          - { position: 3, excludePosition: 4, bonus: -10.0 }
+          - { position: 3, excludePosition: 5, bonus: -20.0 }
+          - { position: 3, lapDiffMin: 20, lapDiffMax: 35, bonus:  0.0 }
+          - { position: 3, lapDiffMin: 60, lapDiffMax: 75, bonus:  0.0 }
+
+          # --- Layer E: pos=4 ---
+          - { position: 4, excludePosition: 3, bonus: -10.0 }
+          - { position: 4, excludePosition: 4, bonus: -20.0 }
+          - { position: 4, excludePosition: 5, bonus: -20.0 }
+          - { position: 4, lapDiffMin: 20, lapDiffMax: 35, bonus: -10.0 }
+          - { position: 4, lapDiffMin: 60, lapDiffMax: 75, bonus: -20.0 }
+
+          # --- Layer F: deep backmarker penalties ---
+          - { position: 5, bonus: -35.0 }
+          - { ccClass: 0, position: 6, lapDiffMin:  0, lapDiffMax:  50, bonus: -35.0 }
+          - { ccClass: 0, position: 6, lapDiffMin: 51, lapDiffMax: 128, bonus: -65.0 }
+          - { ccClass: 1, position: 6, lapDiffMin:  0, lapDiffMax:  50, bonus: -55.0 }
+          - { ccClass: 1, position: 6, lapDiffMin: 51, lapDiffMax: 128, bonus: -70.0 }
+
+        base_speed:
+          "50cc":  { lo: 145.0, hi: 160.0 }
+          "100cc": { lo: 200.0, hi: 220.0 }
+          "150cc": { lo: 250.0, hi: 270.0 }

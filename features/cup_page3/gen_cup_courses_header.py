@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Generate generated_cup_courses.h from cup_courses.yaml.
+"""Generate generated_cup_courses.h from features/cups.yaml.
 
-Input: tracks-centric yaml (see cup_courses.yaml header for full schema).
+Input: cup-centric yaml (see ../cups.yaml header for full schema). Each cup
+exposes 1+ courses; cup_page3 currently consumes the FIRST course only
+(1 cup = 1 playable course). custom_assets reads the same yaml in parallel
+to build resource bindings.
+
 Output: a header that emits all the static data + Kamek records the
 patch needs:
   - kCupPage2Courses[8]           — cursor -> cupId for the CUP3 page
@@ -92,16 +96,6 @@ RULE_FIELD_DEFAULTS = {
     "lapDiffMax":      99,
     "excludePosition": -1,
 }
-
-
-def assign_cup_id(track_index: int) -> int:
-    """tracks 配列の index -> cupId.
-
-    Custom tracks occupy cupId >= 17. Slots 0 (test_course dev leftover)
-    and 9..16 (vanilla minigame / challenge modes) are intentionally skipped
-    so new custom content never collides with vanilla semantics. See
-    cup_courses.yaml header for the rationale."""
-    return 17 + track_index
 
 
 def safe_ident(name: str) -> str:
@@ -243,74 +237,93 @@ def normalize_base_speed(field: str, base_value, rounds_value):
 
 def main() -> int:
     feature_dir = Path(__file__).parent
-    yaml_path = feature_dir / "cup_courses.yaml"
+    yaml_path = feature_dir.parent / "cups.yaml"   # features/cups.yaml
     out_path  = feature_dir / "generated_cup_courses.h"
     xml_path  = feature_dir / "generated_riivolution.xml"
 
     with open(yaml_path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    tracks = data.get("tracks") or []
-    if not tracks:
-        raise SystemExit("error: tracks: list is empty")
+    cups = data.get("cups") or []
+    if not cups:
+        raise SystemExit(f"error: {yaml_path.name}: cups: list is empty")
 
-    # ----- validate + normalize -----
-    norm = []   # list of dict (with cup_id, ident, etc.)
-    for i, t in enumerate(tracks):
-        if not isinstance(t, dict):
-            raise SystemExit(f"error: tracks[{i}] must be a mapping")
-        name = t.get("name")
-        if not isinstance(name, str):
-            raise SystemExit(f"error: tracks[{i}].name must be string")
-        ident = safe_ident(name)
-        cup_id = assign_cup_id(i)
+    # ----- validate + normalize (1 cup = 1 course; first course wins) -----
+    norm = []
+    seen_cup_ids = {}
+    for i, cup in enumerate(cups):
+        if not isinstance(cup, dict):
+            raise SystemExit(f"error: cups[{i}] must be a mapping")
+        cup_ident = safe_ident(cup.get("id") or "")
+        cup_id = cup.get("cup_id")
+        if not isinstance(cup_id, int) or cup_id < 17:
+            raise SystemExit(
+                f"error: cups[{i}].cup_id must be int >= 17, got {cup_id!r}"
+            )
+        if cup_id in seen_cup_ids:
+            raise SystemExit(
+                f"error: cups[{i}].cup_id={cup_id} duplicated "
+                f"(also cups[{seen_cup_ids[cup_id]}])"
+            )
+        seen_cup_ids[cup_id] = i
 
-        coll_s = safe_filename(f"tracks[{i}].collision_short",
-                               t.get("collision_short"))
-        coll_l = safe_filename(f"tracks[{i}].collision_long",
-                               t.get("collision_long"))
-        line   = safe_filename(f"tracks[{i}].line_bin", t.get("line_bin"))
-        bgm_l  = safe_filename(f"tracks[{i}].bgm_l",  t.get("bgm_l"))
-        bgm_r  = safe_filename(f"tracks[{i}].bgm_r",  t.get("bgm_r"))
+        courses = cup.get("courses") or []
+        if not courses:
+            raise SystemExit(
+                f"error: cups[{i}]({cup_ident}).courses must have >=1 entry"
+            )
+        if len(courses) > 1:
+            raise SystemExit(
+                f"error: cups[{i}]({cup_ident}).courses has "
+                f"{len(courses)} entries; multi-course per cup not yet "
+                f"supported (cup_page3 consumes the first course only)"
+            )
+        c = courses[0]
+        if not isinstance(c, dict):
+            raise SystemExit(f"error: cups[{i}].courses[0] must be a mapping")
 
-        laps = t.get("laps")
-        time_s = t.get("time")
-        bonus_s = t.get("bonus")
+        course_ident = safe_ident(c.get("id") or "")
+        loc = f"cups[{i}]({cup_ident}).courses[0]({course_ident})"
+
+        coll_s = safe_filename(f"{loc}.collision_short", c.get("collision_short"))
+        coll_l = safe_filename(f"{loc}.collision_long",  c.get("collision_long"))
+        line   = safe_filename(f"{loc}.line_bin",        c.get("line_bin"))
+        bgm_l  = safe_filename(f"{loc}.bgm_l",           c.get("bgm_l"))
+        bgm_r  = safe_filename(f"{loc}.bgm_r",           c.get("bgm_r"))
+
+        laps = c.get("laps")
+        time_s = c.get("time")
+        bonus_s = c.get("bonus")
         if not isinstance(laps, int) or laps < 1 or laps > 127:
-            raise SystemExit(
-                f"error: tracks[{i}].laps must be int in 1..127, got {laps!r}"
-            )
+            raise SystemExit(f"error: {loc}.laps must be int 1..127, got {laps!r}")
         if not isinstance(time_s, (int, float)) or time_s < 0:
-            raise SystemExit(
-                f"error: tracks[{i}].time must be number >= 0, got {time_s!r}"
-            )
+            raise SystemExit(f"error: {loc}.time must be number >= 0, got {time_s!r}")
         if not isinstance(bonus_s, (int, float)) or bonus_s < 0:
-            raise SystemExit(
-                f"error: tracks[{i}].bonus must be number >= 0, got {bonus_s!r}"
-            )
+            raise SystemExit(f"error: {loc}.bonus must be number >= 0, got {bonus_s!r}")
 
-        if "ai_lap_bonus" in t:
+        if "ai_lap_bonus" in c:
             raise SystemExit(
-                f"error: tracks[{i}].ai_lap_bonus (scalar) is removed; "
+                f"error: {loc}.ai_lap_bonus (scalar) is removed; "
                 "use ai_lap_bonus_rules: [...] instead"
             )
         lap_bonus_rules = normalize_lap_bonus_rules(
-            f"tracks[{i}].ai_lap_bonus_rules",
-            t.get("ai_lap_bonus_rules"),
+            f"{loc}.ai_lap_bonus_rules",
+            c.get("ai_lap_bonus_rules"),
         )
-
         base_speed_table = normalize_base_speed(
-            f"tracks[{i}].base_speed",
-            t.get("base_speed"),
-            t.get("base_speed_rounds"),
+            f"{loc}.base_speed",
+            c.get("base_speed"),
+            c.get("base_speed_rounds"),
         )
 
-        # Each track gets one new BGM id, sitting after the vanilla 21:
         bgm_id = VANILLA_BGM_COUNT + i
 
+        # Track ident keeps backward compat with old symbol names: prefer
+        # the course id (matches what callers historically saw as `tracks[i].name`).
         norm.append({
             "index":   i,
-            "ident":   ident,
+            "ident":   course_ident,
+            "cup_ident": cup_ident,
             "cup_id":  cup_id,
             "coll_s":  coll_s,
             "coll_l":  coll_l,
@@ -336,7 +349,7 @@ def main() -> int:
 
     # ----- emit header -----
     L = []
-    L.append("// Auto-generated from cup_courses.yaml - do not edit")
+    L.append("// Auto-generated from features/cups.yaml - do not edit")
     L.append("#ifndef GENERATED_CUP_COURSES_H")
     L.append("#define GENERATED_CUP_COURSES_H")
     L.append("")

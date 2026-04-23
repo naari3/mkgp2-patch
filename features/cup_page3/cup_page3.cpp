@@ -50,7 +50,7 @@ extern "C" {
 
 // ---------- Custom track lookup helpers ----------
 // kCustomTracks[] and its cupId/field plumbing live in
-// generated_cup_courses.h (emitted from cup_courses.yaml).
+// generated_cup_courses.h (emitted from features/cups.yaml).
 static const struct CustomTrack* FindCustomTrack(unsigned int cupId) {
     for (unsigned int i = 0; i < kCustomTrackCount; ++i) {
         if (kCustomTracks[i].cupId == cupId) return &kCustomTracks[i];
@@ -86,6 +86,18 @@ extern "C" void CupForceGates(void* scene) {
     if (!scene) return;
     U8(scene, OFF_GATE_FLAG0) = 1;
     U8(scene, OFF_GATE_FLAG1) = 1;
+    // Drive g_cupId from the active page so custom_assets' bindings fire
+    // during page-3 HOVER (not just post-selection). Page 2 (our 3rd page)
+    // maps every cursor slot to kCupPage2Courses[*] = 17, and the resource
+    // bindings gate on g_cupId == 17. Setting it here — rather than only
+    // from CupSelectDispatch post-confirm — lets the 8 tile sprites rehydrate
+    // with test_cup atlases as soon as the page animation completes.
+    //
+    // Writing 0 on pages 0/1 is deliberate: if the player just finished a
+    // test_cup race, g_cupId is still 17 on scene re-entry; without this
+    // reset, the Yoshi-position tile on omote would render as test_cup.
+    u8 flag = U8(scene, OFF_PAGE_FLAG);
+    *(u32*)0x806cf108u = (flag == 2) ? 17u : 0u;
 }
 
 // Replaces the original instruction at 0x801c772c (stwu r1, -0x30(r1)).
