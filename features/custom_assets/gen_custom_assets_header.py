@@ -11,26 +11,39 @@ that declares an `assets:` section, emits:
     into the disc tree
 
 Custom resource id allocation per cup:
-  base = 0x9000 + cup_index * 8
-  + 0  -> icon          (CUPsel02 atlas tile)
-  + 1  -> name          (CUPname banner)
-  + 2  -> trophy_locked (trophy_01_locked atlas)
-  + 3  -> banner        (CUPsel01_a banner slot — NOT cup-indexed)
-  + 4..7 -> reserved (course thumb / additional banners)
+  base = 0x9000 + cup_index * IDS_PER_CUP
+  + 0  -> icon              (CUPsel02 atlas tile, cup-indexed)
+  + 1  -> name              (CUPname banner, cup-indexed)
+  + 2  -> trophy_locked     (trophy_01_locked atlas, cup-indexed)
+  + 3  -> banner            (CUPsel01_a banner slot, NOT cup-indexed)
+  + 4  -> cup_name_ribbon   (CUPsel02 diagonal name strip, cup-indexed)
+  + 5  -> name_roundselect  (round-select cup-name strip)
+  + 6  -> course1_thumb_road (round-select course 1 vertical thumb 128x160)
+  + 7  -> course2_thumb_road (round-select course 2 vertical thumb)
+  + 8  -> course1_thumb      (round-select course 1 square thumb 128x128)
+  + 9  -> course2_thumb      (round-select course 2 square thumb)
+  + 10..15 -> reserved
 Cup index = position in cups[] (NOT cup_id), so removing/reordering cups
-shifts ids — but bindings are recomputed from the same yaml so vanilla
+shifts ids. Bindings are recomputed from the same yaml so vanilla
 sees no change.
 
-Vanilla resource ids that get replaced:
-  icon          -> 0x1777 + K   (K in 0..7, all map to custom icon)
-  name          -> 0x1729 + K   (same)
-  trophy_locked -> 0x1EA2 + K   (same)
-  banner        -> 0x175E       (NOT cup-indexed; single global id)
-For cup-indexed slots we emit 8 bindings (one per vanilla cup position)
-because the custom cup is displayed as a full "page 3" grid whose tiles
-still render from position-native ids. `display_alias_cup` is retained in
-yaml as documentation of the atlas crop position but no longer controls
-binding selection.
+Vanilla resource ids that get replaced (cup-indexed slots emit 8 bindings,
+one per page-3 tile cursor position 0..7; non-cup-indexed slots emit 1):
+  icon              -> 0x1777 + K   (K in 0..7)
+  name              -> 0x1729 + K
+  trophy_locked     -> 0x1EA2 + K
+  banner            -> 0x175E       (single global id)
+  cup_name_ribbon   -> 0x1780 + K
+  name_roundselect  -> 0x16ED       (single, COURSEname01 atlas crop)
+  course1_thumb_road -> 0x19E0      (single, ROUNDsel02_YP atlas)
+  course2_thumb_road -> 0x19E1
+  course1_thumb     -> 0x1A66       (single, ROUNDsel03_YP atlas)
+  course2_thumb     -> 0x1A67
+For round-select slots, g_cupId must be 17 at the time the round-select
+scene queries these resource ids. Currently cup_page3 only forces
+g_cupId=17 during cup-select page 3 hover; a separate round-select hook
+on clFlowRound_Init (0x801caf34) is needed to keep g_cupId=17 for the
+round-select scene to pick up these bindings (TODO).
 
 Bindings are gated on g_cupId == cup.cup_id. cup_page3 writes
 g_cupId = cup.cup_id on page 2 entry (CupForwardTransition 1->2) and
@@ -59,6 +72,7 @@ OUTPUT_XML  = FEATURE_DIR / "generated_riivolution.xml"
 
 CUSTOM_ID_BASE       = 0x9000
 CUSTOM_GROUPKEY_BASE = 0x9000   # must match custom_assets.h
+IDS_PER_CUP          = 16       # per-cup reserved id block
 U16_MAX = 0xFFFF
 
 # Per-slot meta. (yaml key, vanilla resource id base, atlas size, slot offset
@@ -67,14 +81,23 @@ U16_MAX = 0xFFFF
 # cup_indexed = False  -> binding.from = vanilla_base (single global id; the
 #                         cup_id gate still scopes which cup triggers it).
 ASSET_SLOTS = [
-    # key             , vanilla_base, default_size, slot_off, cup_indexed
-    ("icon"           , 0x1777, (128.0, 128.0), 0, True),
-    ("name"           , 0x1729, (256.0,  46.0), 1, True),
-    ("trophy"         , 0x1EA2, ( 92.0,  86.0), 2, True),
-    ("banner"         , 0x175E, (301.0, 125.0), 3, False),
+    # key                , vanilla_base, default_size, slot_off, cup_indexed
+    ("icon"              , 0x1777, (128.0, 128.0),  0, True),
+    ("name"              , 0x1729, (256.0,  46.0),  1, True),
+    ("trophy"            , 0x1EA2, ( 92.0,  86.0),  2, True),
+    ("banner"            , 0x175E, (301.0, 125.0),  3, False),
     # Diagonal cup-name ribbon shown only on the hovered tile in cup-select.
     # Vanilla 0x1780..0x1787 in CUPsel02 atlas (148x64, group_key 0x0445).
-    ("cup_name_ribbon", 0x1780, (148.0,  64.0), 4, True),
+    ("cup_name_ribbon"   , 0x1780, (148.0,  64.0),  4, True),
+    # --- Round-select scene assets (require g_cupId == 17 in clFlowRound_*) ---
+    # Cup-name strip top-left of round-select (COURSEname01 atlas crop).
+    ("name_roundselect"  , 0x16ED, (110.0,  67.0),  5, False),
+    # Course thumbnails. Vertical 128x160 = ROUNDsel02_YP, square 128x128 =
+    # ROUNDsel03_YP. Course1 vs Course2 differ in source vanilla id.
+    ("course1_thumb_road", 0x19E0, (128.0, 160.0),  6, False),
+    ("course2_thumb_road", 0x19E1, (128.0, 160.0),  7, False),
+    ("course1_thumb"     , 0x1A66, (128.0, 128.0),  8, False),
+    ("course2_thumb"     , 0x1A67, (128.0, 128.0),  9, False),
 ]
 
 
@@ -164,10 +187,11 @@ def encode_png_to_tpl(png_path, out_path):
 
 def collect_assets(cups):
     """Walk cups[] and produce flat lists for asset entries + bindings + tpl
-    encodes. Returns (assets, bindings, custom_paths)."""
+    encodes. Returns (assets, bindings, custom_paths, alias_map)."""
     assets = []
     bindings = []
     custom_paths = []   # index = group_key - CUSTOM_GROUPKEY_BASE
+    alias_map = []      # [{custom_cup_id, alias_vanilla_cup_id, _cup_ident}, ...]
     next_gk = CUSTOM_GROUPKEY_BASE
 
     for cup_idx, cup in enumerate(cups):
@@ -181,6 +205,15 @@ def collect_assets(cups):
         alias = cup.get("display_alias_cup", 0)
         if not isinstance(alias, int) or not (0 <= alias <= 7):
             fatal(f"{cup_loc}.display_alias_cup must be int 0..7, got {alias!r}")
+
+        # Custom cups (cup_id >= 17) drive the round-select g_cupId swap.
+        # Vanilla cups (cup_id 0..15) don't need an alias entry.
+        if cup_id >= 17:
+            alias_map.append({
+                "custom_cup_id":       cup_id,
+                "alias_vanilla_cup":   alias,
+                "_cup_ident":          cup_ident,
+            })
 
         a_section = cup.get("assets")
         if a_section is None:
@@ -196,7 +229,7 @@ def collect_assets(cups):
             if not png_path.is_file():
                 fatal(f"{cup_loc}.assets.{key}: '{png_rel}' not found at {png_path}")
 
-            custom_id = CUSTOM_ID_BASE + cup_idx * 8 + slot_off
+            custom_id = CUSTOM_ID_BASE + cup_idx * IDS_PER_CUP + slot_off
             if custom_id > U16_MAX:
                 fatal(f"{cup_loc}.assets.{key}: custom id 0x{custom_id:x} overflows u16")
 
@@ -251,12 +284,12 @@ def collect_assets(cups):
                                + (f" [pos={pos}]" if cup_indexed else ""),
                 })
 
-    return assets, bindings, custom_paths
+    return assets, bindings, custom_paths, alias_map
 
 
 # ---- emitters -------------------------------------------------------------
 
-def emit_header(assets, bindings, custom_paths):
+def emit_header(assets, bindings, custom_paths, alias_map):
     lines = []
     lines.append("// GENERATED by gen_custom_assets_header.py — do not edit.")
     lines.append("// Source: features/cups.yaml")
@@ -324,6 +357,21 @@ def emit_header(assets, bindings, custom_paths):
     lines.append(f"const unsigned int kCustomPathCount = {len(custom_paths)}u;")
     lines.append("")
 
+    lines.append("// Maps each custom cupId to a vanilla cupId whose tables we mimic.")
+    lines.append("// Drives features/round_select g_cupId swap (OOB-safe table reads).")
+    lines.append("const CupAliasEntry kCupAliasMap[] = {")
+    for e in alias_map:
+        lines.append(
+            f"    {{ /*custom*/ {e['custom_cup_id']}, "
+            f"/*alias*/ {e['alias_vanilla_cup']}, "
+            f"{{0,0}} }}, // {e['_cup_ident']}"
+        )
+    if not alias_map:
+        lines.append("    { 0, 0, {0,0} }, // sentinel")
+    lines.append("};")
+    lines.append(f"const unsigned int kCupAliasMapCount = {len(alias_map)}u;")
+    lines.append("")
+
     lines.append("#endif")
     lines.append("")
     return "\n".join(lines)
@@ -348,7 +396,7 @@ def main():
     if not isinstance(cups, list):
         fatal("cups.yaml: 'cups' must be a list")
 
-    assets, bindings, custom_paths = collect_assets(cups)
+    assets, bindings, custom_paths, alias_map = collect_assets(cups)
 
     FILES_DIR.mkdir(exist_ok=True)
     encoded = 0
@@ -357,12 +405,13 @@ def main():
         encode_png_to_tpl(a["png_path"], tpl_path)
         encoded += 1
 
-    OUTPUT_H.write_text(emit_header(assets, bindings, custom_paths), encoding="utf-8")
+    OUTPUT_H.write_text(emit_header(assets, bindings, custom_paths, alias_map),
+                        encoding="utf-8")
     OUTPUT_XML.write_text(emit_riivolution_xml(custom_paths), encoding="utf-8")
 
     print(f"Generated {OUTPUT_H.name}: "
           f"{len(assets)} asset(s), {len(bindings)} binding(s), "
-          f"{encoded} custom TPL(s)")
+          f"{encoded} custom TPL(s), {len(alias_map)} alias entry(s)")
 
 
 if __name__ == "__main__":

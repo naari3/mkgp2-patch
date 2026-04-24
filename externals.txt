@@ -80,6 +80,14 @@ Sprite_SetupAnim=0x801a03dc
 Sprite_SetAnimParam=0x801a0374
 SetCourseParams=0x8009cbfc
 
+# Round-unlock save data lookups (used in clFlowRound_Init).
+# Both index into g_playerData @ 0x805d2580 + 0x1ba via cup_subindex
+# (cupSub = cup<9 ? cup-1 : cup-9). progress[ccClass*8 + cupSub] is a
+# byte: 0=nothing, 1..5=short rounds 1..5 cleared/unlocked, 6..10=long.
+RoundIsUnlocked=0x801d5b04        # char(playerData*, int round0to7)
+RoundCupIsCompleted=0x801d5c0c    # char(playerData*, int ccClass, int cup, int longRound)
+g_playerData=0x805d2580           # PlayerData* root (progress array @ +0x1b9..0x1d0)
+
 # Weather / BGM (cup_page3 WeatherInitHook)
 WeatherSystem_PickVariant=0x80193264  # picks weather variant byte; arg is "force this id" or -1 for random
 

@@ -32,13 +32,23 @@
 cups:
   - id: test_cup
     cup_id: 17
-    display_alias_cup: 0   # Yoshi のスロットを差し替える
+    display_alias_cup: 7   # Yoshi (g_cupId=7 → DAT_8049af8c[7]=0 sub_index で round-select の cup-indexed テーブル群を in-bounds で読ませる)
     assets:
+      # --- Cup-select scene assets ---
       icon:           images/test_cup_icon.png
       name:           images/test_cup_name.png
       trophy:         images/test_cup_trophy.png
-      banner:         images/test_cup_banner.png        # 301×125 — vanilla 0x175E (CUPsel01_a)
-      cup_name_ribbon: images/test_cup_name_ribbon.png  # 148×64 — vanilla 0x1780 (CUPsel02 diagonal name strip, hovered tile)
+      banner:         images/test_cup_banner.png        # 301×125, vanilla 0x175E (CUPsel01_a)
+      cup_name_ribbon: images/test_cup_name_ribbon.png  # 148×64, vanilla 0x1780 (CUPsel02 diagonal name strip, hovered tile)
+      # --- Round-select scene assets ---
+      # 110×67, vanilla 0x16ED (COURSEname01 atlas crop, top-left cup-name strip)
+      name_roundselect: images/test_cup_name_roundselect.png
+      # Course thumbnails. 4 vanilla ids per cup (vertical 128×160 + square
+      # 128×128 for each course). Bound to Yoshi (cupId=0) atlas slots.
+      course1_thumb_road: images/test_cup_course1_thumb_road.png  # 128×160, vanilla 0x19E0
+      course2_thumb_road: images/test_cup_course2_thumb_road.png  # 128×160, vanilla 0x19E1
+      course1_thumb:      images/test_cup_course1_thumb.png       # 128×128, vanilla 0x1A66
+      course2_thumb:      images/test_cup_course2_thumb.png       # 128×128, vanilla 0x1A67
 
     courses:
       - id: test_course

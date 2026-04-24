@@ -34,12 +34,22 @@ struct CustomResourceEntry {
 };
 
 // Vanilla resource id remapper. Applied in every getter hook before lookup.
-// cup_id = -1 acts as a wildcard; otherwise matched against g_cupId.
+// cup_id = -1 acts as a wildcard; otherwise matched against the *effective*
+// cup id (= g_customCupScope when active, else g_cupId).
 struct CupBinding {
     s16 cupId;          // -1 = wildcard
     u16 fromId;         // vanilla resource id to intercept
     u16 toId;           // replacement id (may be >= CUSTOM_ID_BASE)
     u16 pad;
+};
+
+// Custom-cup alias map. Drives the round-select g_cupId swap so vanilla
+// cupId-indexed tables (DAT_8049af8c etc) read in-bounds when our custom
+// cup is active. Source: cups.yaml display_alias_cup field.
+struct CupAliasEntry {
+    u8 customCupId;        // our cupId (>= 17)
+    u8 aliasVanillaCupId;  // vanilla cup whose tables to mimic (0..7)
+    u8 pad[2];
 };
 
 extern "C" {
@@ -51,8 +61,18 @@ extern "C" {
     // or NULL for gaps. Indexed range is [0, kCustomPathCount).
     extern const char* const         kCustomPathTable[];
     extern const unsigned int        kCustomPathCount;
+    extern const CupAliasEntry       kCupAliasMap[];
+    extern const unsigned int        kCupAliasMapCount;
+
+    // Active custom cupId during scenes that needed a g_cupId swap to keep
+    // vanilla in-bounds (e.g. round-select). 0 = inactive. ApplyBinding gates
+    // on this when non-zero so bindings still match the player's real cup.
+    extern volatile int              g_customCupScope;
 
     const CustomResourceEntry* CustomResource_Lookup(int resourceId);
+    // Returns the alias vanilla cupId for a given custom cupId, or -1 if
+    // the cupId is not a custom one.
+    int CustomCup_LookupAlias(int customCupId);
 }
 
 static const int CUSTOM_ID_BASE       = 0x9000;

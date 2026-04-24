@@ -151,15 +151,40 @@ static inline bool LogQueriedIdOnce(u16 id, u16* set, int& count, const char* ta
     return true;
 }
 
+// g_customCupScope: when non-zero, overrides g_cupId for binding gate.
+// Used by features/round_select to keep bindings firing while g_cupId
+// is temporarily swapped to a vanilla alias cupId for OOB-safe table reads.
+extern "C" volatile int g_customCupScope = 0;
+
+// Scope-match diagnostic: cap at 30 events. Logs every binding fire while
+// g_customCupScope > 0 to verify round-select swap routes correctly.
+static int s_scopeMatchLogCount = 0;
+
+// Track scope-active resource queries that DIDN'T match any binding. Helps
+// distinguish "binding wrong" from "binding never queried".
+static const int kScopeMissMax = 64;
+static u16 s_scopeMissIds[kScopeMissMax];
+static int s_scopeMissCount = 0;
+
 static inline int ApplyBinding(int resourceId) {
     if (kBindingCount == 0) return resourceId;
     TryPreloadCustomAssetsAtCup17();
-    int cup = (int)g_cupId;
+    // Scope override (e.g. round-select swaps g_cupId to a vanilla alias to
+    // keep cupId-indexed tables in-bounds; scope holds the *real* custom cup
+    // so bindings still match).
+    int cup = (g_customCupScope > 0) ? g_customCupScope : (int)g_cupId;
     for (unsigned int i = 0; i < kBindingCount; ++i) {
         const CupBinding& b = kBindings[i];
         if ((b.cupId == -1 || (int)b.cupId == cup) &&
             (int)(u16)b.fromId == resourceId) {
             int bound = (int)(u16)b.toId;
+            if (g_customCupScope > 0 && s_scopeMatchLogCount < 30) {
+                ++s_scopeMatchLogCount;
+                DebugPrintfSafe("MKGP2: scope-match #%d: 0x%04x -> 0x%04x "
+                                "(scope=%d, g_cupId=%d)\n",
+                                s_scopeMatchLogCount, resourceId, bound,
+                                g_customCupScope, (int)g_cupId);
+            }
             // Per-pair counter
             int pairIdx = -1;
             for (int j = 0; j < s_bindingFireCount; ++j) {
@@ -203,6 +228,20 @@ static inline int ApplyBinding(int resourceId) {
             return bound;
         }
     }
+    // Scope-active miss: track unique resource ids queried while scope > 0
+    // but didn't match any binding. Helps spot ids we forgot to bind.
+    if (g_customCupScope > 0 && s_scopeMissCount < kScopeMissMax) {
+        bool seen = false;
+        for (int i = 0; i < s_scopeMissCount; ++i) {
+            if (s_scopeMissIds[i] == (u16)resourceId) { seen = true; break; }
+        }
+        if (!seen) {
+            s_scopeMissIds[s_scopeMissCount++] = (u16)resourceId;
+            DebugPrintfSafe("MKGP2: scope-miss: 0x%04x (scope=%d, g_cupId=%d) #%d\n",
+                            resourceId, g_customCupScope, (int)g_cupId,
+                            s_scopeMissCount);
+        }
+    }
     return resourceId;
 }
 
@@ -215,6 +254,16 @@ const CustomResourceEntry* CustomResource_Lookup(int resourceId) {
             return &kCustomResourceTable[i];
     }
     return 0;
+}
+
+// Return the vanilla cupId to mimic for a given custom cupId, or -1 if
+// the cupId is not a registered custom cup. Drives the round-select swap.
+extern "C" int CustomCup_LookupAlias(int customCupId) {
+    for (u32 i = 0; i < kCupAliasMapCount; ++i) {
+        if ((int)kCupAliasMap[i].customCupId == customCupId)
+            return (int)kCupAliasMap[i].aliasVanillaCupId;
+    }
+    return -1;
 }
 
 // Vanilla-compatible lookup helper. Returns NULL if resourceId has no entry
