@@ -86,18 +86,22 @@ extern "C" void CupForceGates(void* scene) {
     if (!scene) return;
     U8(scene, OFF_GATE_FLAG0) = 1;
     U8(scene, OFF_GATE_FLAG1) = 1;
-    // Drive g_cupId from the active page so custom_assets' bindings fire
-    // during page-3 HOVER (not just post-selection). Page 2 (our 3rd page)
-    // maps every cursor slot to kCupPage2Courses[*] = 17, and the resource
-    // bindings gate on g_cupId == 17. Setting it here — rather than only
-    // from CupSelectDispatch post-confirm — lets the 8 tile sprites rehydrate
-    // with test_cup atlases as soon as the page animation completes.
+    // Pin g_cupId = 17 while the player is HOVERING page 3 so custom_assets'
+    // bindings (gated on g_cupId == 17) fire for every tile. We deliberately
+    // do NOT touch g_cupId on pages 0/1: an earlier version cleared it to 0
+    // there to flush stale test_cup leakage, but that also clobbered the
+    // SetCourseParams write made by CupSelectDispatch on confirm — meaning
+    // every omote/ura cup confirmation ended up running vanilla cup 0
+    // (test_course dev placeholder) instead of the selected cup.
     //
-    // Writing 0 on pages 0/1 is deliberate: if the player just finished a
-    // test_cup race, g_cupId is still 17 on scene re-entry; without this
-    // reset, the Yoshi-position tile on omote would render as test_cup.
-    u8 flag = U8(scene, OFF_PAGE_FLAG);
-    *(u32*)0x806cf108u = (flag == 2) ? 17u : 0u;
+    // The leakage case (g_cupId stuck at 17 after a test_cup race when the
+    // player re-enters cup-select on page 0/1) is already handled implicitly
+    // by clFlowCup_Init -> FUN_801c64dc -> CupCursorUpdateDispatch (which
+    // installs SetCourseParams(CUP_COURSE_BY_CURSOR[cursor]) for non-page-2),
+    // so no explicit reset is needed.
+    if (U8(scene, OFF_PAGE_FLAG) == 2) {
+        *(u32*)0x806cf108u = 17u;
+    }
 }
 
 // Replaces the original instruction at 0x801c772c (stwu r1, -0x30(r1)).
