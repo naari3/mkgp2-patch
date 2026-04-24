@@ -9,9 +9,13 @@
 //   in place. This is the exact boot path, so the lakitu countdown replays
 //   and every global flag / timer / path-entry is reset cleanly.
 //
-// Hook: RaceScene_FrameUpdate (0x800a0ef4) entry via kmBranch.
-//   Running the restart before this frame's update begins avoids dangling
-//   references to about-to-be-freed sub-objects on the caller's stack.
+// Two parallel scene classes share the 0x40-byte struct but use different
+// vtables; hook both so restart works across modes:
+//   - g_gameMode == 0 (RACE/GP) → RaceScene_FrameUpdate @ 0x800a0ef4,
+//                                 RaceScene_Dtor / RaceScene_Init pair
+//   - g_gameMode == 1 (TIME_ATTACK) → TaMode_FrameUpdate @ 0x800a2b90,
+//                                     TaMode_Dtor / TaMode_Init pair
+// The BATTLE scene class (size 0x38, different vtable) is not handled.
 //
 // Hotkey: GC pad A + B held simultaneously (rising edge of the combo).
 //   Dolphin's Triforce JVS mapping for MKGP2 (MarioKartGP.cpp):
@@ -33,6 +37,9 @@ extern "C" {
     InputObject** GetInputManager();
     void RaceScene_Dtor(void* scene, short freeSelf);
     void RaceScene_Init(void* scene);
+    void TaMode_Dtor(void* scene, short freeSelf);
+    void TaMode_Init(void* scene);
+    extern volatile unsigned int g_gameMode;   // 0=RACE, 1=TIME_ATTACK, 2=BATTLE
 }
 
 static u32 s_prevHeld = 0;
@@ -52,13 +59,19 @@ extern "C" void TryRaceRestart(void* scene) {
     s_prevHeld = held;
 
     if (combo_now && !combo_prev) {
-        DebugPrintfSafe("MKGP2: race restart (scene=%p)\n", scene);
-        RaceScene_Dtor(scene, 0);
-        RaceScene_Init(scene);
+        DebugPrintfSafe("MKGP2: race restart (scene=%p mode=%u)\n",
+                        scene, (unsigned)g_gameMode);
+        if (g_gameMode == 1) {           // TIME_ATTACK
+            TaMode_Dtor(scene, 0);
+            TaMode_Init(scene);
+        } else {                         // RACE/GP (BATTLE not supported)
+            RaceScene_Dtor(scene, 0);
+            RaceScene_Init(scene);
+        }
     }
 }
 
-// Hook at 0x800a0ef4. Original first instruction: stwu r1, -0x90(r1).
+// VS/GP hook @ 0x800a0ef4. Original first instruction: stwu r1, -0x90(r1).
 // Save regs, call C handler (which may restart in-place), restore regs,
 // execute the replaced prologue, then exit to 0x800a0ef8 via kmPatchExitPoint.
 asm void RaceRestartHook() {
@@ -78,5 +91,26 @@ asm void RaceRestartHook() {
     blr
 }
 
+// TA hook @ 0x800a2b90. Original first instruction: stwu r1, -0xa0(r1).
+// Frame size differs from the VS variant so this needs its own wrapper.
+asm void TaRestartHook() {
+    nofralloc
+    stwu r1, -0x20(r1)
+    mflr r0
+    stw  r0, 0x24(r1)
+    stw  r31, 0x1c(r1)
+    mr   r31, r3
+    bl   TryRaceRestart
+    mr   r3, r31
+    lwz  r31, 0x1c(r1)
+    lwz  r0, 0x24(r1)
+    mtlr r0
+    addi r1, r1, 0x20
+    stwu r1, -0xa0(r1)
+    blr
+}
+
 kmBranch(0x800a0ef4, RaceRestartHook);
 kmPatchExitPoint(RaceRestartHook, 0x800a0ef8);
+kmBranch(0x800a2b90, TaRestartHook);
+kmPatchExitPoint(TaRestartHook, 0x800a2b94);

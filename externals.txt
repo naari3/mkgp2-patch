@@ -39,10 +39,17 @@ OSDumpContext=0x80257848
 OSUnhandledException=0x80257f00
 g_DebugPrintfEnable=0x80598a8a
 
-# Race mode
+# Race mode (VS/GP)
 RaceScene_Init=0x800a1d80
 RaceScene_Dtor=0x800a1a1c
 RaceScene_FrameUpdate=0x800a0ef4
+
+# Race mode (Time Attack) — parallel scene class with its own vtable
+# at 0x8040f0b0; installed when g_gameMode == 1. Same 0x40-byte scene
+# struct; Dtor ABI (scene, freeSelf), Init ABI (scene) match Race side.
+TaMode_Init=0x800a3c38
+TaMode_Dtor=0x800a38f8
+TaMode_FrameUpdate=0x800a2b90
 AI_CalcLapSpeedBonus=0x801dd480
 GetBaseSpeedMax=0x801de664   # AI base target-speed +0 float (lo). Indexed
 GetBaseSpeedMin=0x801de5e8   # AI base target-speed +4 float (hi). by
