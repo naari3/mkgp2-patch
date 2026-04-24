@@ -34,10 +34,11 @@ cups:
     cup_id: 17
     display_alias_cup: 0   # Yoshi のスロットを差し替える
     assets:
-      icon:   images/test_cup_icon.png
-      name:   images/test_cup_name.png
-      trophy: images/test_cup_trophy.png
-      banner: images/test_cup_banner.png   # 301×125 — vanilla 0x175E (CUPsel01_a)
+      icon:           images/test_cup_icon.png
+      name:           images/test_cup_name.png
+      trophy:         images/test_cup_trophy.png
+      banner:         images/test_cup_banner.png        # 301×125 — vanilla 0x175E (CUPsel01_a)
+      cup_name_ribbon: images/test_cup_name_ribbon.png  # 148×64 — vanilla 0x1780 (CUPsel02 diagonal name strip, hovered tile)
 
     courses:
       - id: test_course

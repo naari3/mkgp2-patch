@@ -67,11 +67,14 @@ U16_MAX = 0xFFFF
 # cup_indexed = False  -> binding.from = vanilla_base (single global id; the
 #                         cup_id gate still scopes which cup triggers it).
 ASSET_SLOTS = [
-    # key    , vanilla_base, default_size, slot_off, cup_indexed
-    ("icon"  , 0x1777, (128.0, 128.0), 0, True),
-    ("name"  , 0x1729, (256.0,  46.0), 1, True),
-    ("trophy", 0x1EA2, ( 92.0,  86.0), 2, True),
-    ("banner", 0x175E, (301.0, 125.0), 3, False),
+    # key             , vanilla_base, default_size, slot_off, cup_indexed
+    ("icon"           , 0x1777, (128.0, 128.0), 0, True),
+    ("name"           , 0x1729, (256.0,  46.0), 1, True),
+    ("trophy"         , 0x1EA2, ( 92.0,  86.0), 2, True),
+    ("banner"         , 0x175E, (301.0, 125.0), 3, False),
+    # Diagonal cup-name ribbon shown only on the hovered tile in cup-select.
+    # Vanilla 0x1780..0x1787 in CUPsel02 atlas (148x64, group_key 0x0445).
+    ("cup_name_ribbon", 0x1780, (148.0,  64.0), 4, True),
 ]
 
 
