@@ -29,6 +29,9 @@ extern "C" {
     // to globals (g_cupId, g_longRoundFlag, g_courseVariantIdx, g_reverseRoundFlag).
     int  SetCourseParams(int cupId, int longRound, int variantIdx, int reverseRound);
 
+    // Globals.
+    extern volatile int g_roundIndex;                     // 0x806d1298, round 0..7
+
     // Vanilla data tables (resolved via externals.txt).
     extern const unsigned char kRaceParamsTable[];        // RaceParamsEntry[48] base
     extern const float kAIBaseSpeedTable_Race[];          // CupSpeedEntry[192] as flat floats
@@ -49,13 +52,33 @@ extern "C" {
 }
 
 // ---------- Custom track lookup helpers ----------
-// kCustomTracks[] and its cupId/field plumbing live in
-// generated_cup_courses.h (emitted from features/cups.yaml).
-static const struct CustomTrack* FindCustomTrack(unsigned int cupId) {
-    for (unsigned int i = 0; i < kCustomTrackCount; ++i) {
-        if (kCustomTracks[i].cupId == cupId) return &kCustomTracks[i];
+// kCustomCups[] / CustomRound and its cupId/field plumbing live in
+// generated_cup_courses.h (emitted from features/cups.yaml +
+// features/course_models.yaml).
+static const struct CustomCup* FindCustomCup(unsigned int cupId) {
+    for (unsigned int i = 0; i < kCustomCupCount; ++i) {
+        if (kCustomCups[i].cupId == cupId) return &kCustomCups[i];
     }
     return 0;
+}
+
+// Look up the round for (cupId, roundIndex). Falls back to round 0 when
+// roundIndex is out of range so vanilla flows that haven't yet set
+// g_roundIndex (e.g. early scene transitions) still get usable data.
+static const struct CustomRound* FindCustomRound(unsigned int cupId,
+                                                  int roundIndex) {
+    const struct CustomCup* cup = FindCustomCup(cupId);
+    if (!cup) return 0;
+    if (roundIndex < 0 || (unsigned int)roundIndex >= cup->nRounds) {
+        return &cup->rounds[0];
+    }
+    return &cup->rounds[roundIndex];
+}
+
+// Compatibility shim: kept for call sites that just need to know "is this
+// a custom cup" without caring about the round.
+static int IsCustomCup(unsigned int cupId) {
+    return FindCustomCup(cupId) != 0;
 }
 
 // Scene field offsets (clFlowCup struct, 0x158 bytes total).
@@ -390,7 +413,7 @@ kmWrite32(0x80047700, 0x2C040080);
 extern "C" void CourseSetupCallbackGuard(void* header, int zero) {
     EnsureDBATWidened();
     unsigned int cupId = *(unsigned int*)0x806cf108u;
-    if (FindCustomTrack(cupId)) return;   // skip OOB'd header for custom
+    if (IsCustomCup(cupId)) return;   // skip OOB'd header for custom
     FUN_8007c56c(header, zero);
 }
 kmCall(0x800480e8, CourseSetupCallbackGuard);
@@ -420,7 +443,7 @@ kmCall(0x800480e8, CourseSetupCallbackGuard);
 //   3. If vanilla -> replay displaced stwu and bctr to 0x800a8d38.
 extern "C" int WarpDashMgrInit_MaybeCustom(unsigned int* param_1, int param_2) {
     EnsureDBATWidened();
-    if (!FindCustomTrack((unsigned int)param_2)) return 0;
+    if (!IsCustomCup((unsigned int)param_2)) return 0;
     // Zero-init WarpDashMgr (same first 7 words as vanilla prologue).
     param_1[0] = 0;
     param_1[1] = 0;
@@ -490,14 +513,16 @@ extern "C" void ResolveRaceParams(int* outLap, float* outTime, float* outBonus) 
     u32 ccClass      = *(u32*)0x806d12cc;  // g_ccClass
     u32 longRound    = *(u32*)0x806d1268;  // g_longRoundFlag (round picks short(0)/long(1) variant)
 
-    for (int i = 0; i < kRaceParamOverrideCount; ++i) {
-        const RaceParamOverride& p = kRaceParamOverrides[i];
-        if ((u32)p.cupId == cupId) {
-            *outLap   = p.laps;
-            *outTime  = p.time;
-            *outBonus = p.bonus;
-            return;
-        }
+    // Custom cups: read from per-round CustomRound (laps/time/bonus).
+    // longRound is the vanilla short(0)/long(1) flag; round_select keeps
+    // round 1+ locked so this maps cleanly to g_roundIndex 0/1.
+    int roundIdx = (int)g_roundIndex;
+    const struct CustomRound* round = FindCustomRound(cupId, roundIdx);
+    if (round != 0) {
+        *outLap   = round->laps;
+        *outTime  = round->time;
+        *outBonus = round->bonus;
+        return;
     }
 
     const unsigned char* vp =
@@ -570,9 +595,10 @@ extern "C" int AILapBonusLookup(int kartIdx, int remainingLaps,
     int ccClass = (int)*(u32*)0x806d12cc;
     int subMode = (int)(signed char)*(u32*)0x806d1298;  // (char)g_roundIndex
 
-    for (unsigned int i = 0; i < kCustomTrackCount; ++i) {
-        if (kCustomTracks[i].cupId != cupId) continue;
-        const AILapBonusRule* rules = kCustomTracks[i].lapBonusRules;
+    const struct CustomRound* round =
+        FindCustomRound(cupId, (int)g_roundIndex);
+    if (round != 0) {
+        const AILapBonusRule* rules = round->lapBonusRules;
         if (!rules) return 0;  // no override -> defer to vanilla
         for (; rules->ccClass != -100; ++rules) {
             if (rules->ccClass != -1 &&
@@ -655,13 +681,12 @@ extern "C" const CupSpeedEntry* CustomBaseSpeedLookup(int cupId,
     if (gameMode != 0) return 0;       // only override RACE mode for now
     if (roundIndex < 0 || roundIndex >= 8) return 0;
     if (ccClass >= 3) return 0;
-    for (unsigned int i = 0; i < kCustomTrackCount; ++i) {
-        if (kCustomTracks[i].cupId != (u32)cupId) continue;
-        const CupSpeedEntry* tbl = kCustomTracks[i].baseSpeedTable;
-        if (!tbl) return 0;
-        return &tbl[ccClass * 8 + roundIndex];
-    }
-    return 0;
+    const struct CustomRound* round =
+        FindCustomRound((unsigned int)cupId, roundIndex);
+    if (round == 0) return 0;
+    const CupSpeedEntry* tbl = round->baseSpeed;
+    if (!tbl) return 0;
+    return &tbl[ccClass];   // per-round table is [3] cc entries
 }
 
 static inline int VanillaBaseSpeedIndex(int cupId, int roundIndex,
@@ -733,11 +758,19 @@ extern "C" void* WeatherInitCustom(void* state, int cupType) {
 
     u32 cupId = *(u32*)0x806cf108;
     const void* bgmPair = 0;
-    for (u32 i = 0; i < kCustomTrackCount; ++i) {
-        if (kCustomTracks[i].cupId == cupId) {
-            bgmPair = (const void*)kCustomTracks[i].bgmPair;
-            break;
-        }
+    // Per-cup BGM pair buffer: 4 u16 in vanilla layout
+    //   [round0_L, round0_R, round1_L, round1_R]
+    // Built from CustomRound's bgmIdL/R (per-round) on each call. Single
+    // static slot is OK since WeatherInit fires once per scene entry.
+    static unsigned short s_perCupBgmPair[4];
+    const struct CustomCup* cup = FindCustomCup(cupId);
+    if (cup != 0 && cup->nRounds > 0) {
+        s_perCupBgmPair[0] = (unsigned short)cup->rounds[0].bgmIdL;
+        s_perCupBgmPair[1] = (unsigned short)cup->rounds[0].bgmIdR;
+        unsigned int r1 = (cup->nRounds >= 2) ? 1u : 0u;
+        s_perCupBgmPair[2] = (unsigned short)cup->rounds[r1].bgmIdL;
+        s_perCupBgmPair[3] = (unsigned short)cup->rounds[r1].bgmIdR;
+        bgmPair = (const void*)s_perCupBgmPair;
     }
     if (bgmPair == 0) {
         // Vanilla fallback: cup 1..8 use per-cup tables at DAT_806d8a80+,
@@ -895,8 +928,9 @@ extern "C" int CourseDataLoadCustom(
 ) {
     EnsureDBATWidened();
 
-    const struct CustomTrack* track = FindCustomTrack((unsigned int)courseId);
-    if (track == 0 || track->lineBin == 0) {
+    const struct CustomRound* round =
+        FindCustomRound((unsigned int)courseId, (int)g_roundIndex);
+    if (round == 0 || round->lineBin == 0) {
         return 0;  // not a custom cup -> defer to vanilla
     }
 
@@ -908,7 +942,7 @@ extern "C" int CourseDataLoadCustom(
     // Load the line_bin file. Mirrors vanilla's "usedEmbedded == false"
     // branch at 0x800abc98..0x800abd64 (file size + alloc + DVD read +
     // per-path offset fixup + waypoint count).
-    const char* filename = track->lineBin;
+    const char* filename = round->lineBin;
     int rawSize = FUN_8007e344(filename);
     if (rawSize < 0) {
         DebugPrintfSafe("MKGP2: line_bin '%s' DVDOpen failed (cupId=%d)\n",
@@ -987,10 +1021,12 @@ kmBranch(0x800abae8, CourseDataLoadPathTableHook);
 // index OOB of the vanilla allocation (8 cups populated), so we fully
 // replace the function.
 //
-// Custom track's CustomTrack has one short + one long collision filename;
-// variantIdx and reverseRoundFlag are ignored (custom tracks don't yet
-// carry per-variant collision meshes). For non-custom cupIds we replay the
-// vanilla lookup, preserving cup 1..8 exactly.
+// Custom track exposes a single `collision` filename. variantIdx /
+// reverseRoundFlag / longRoundFlag are all ignored — round_select keeps
+// the long-variant rows (and any per-variant rows) locked so the runtime
+// flags never reach a custom-cup with a value the schema can't honour.
+// For non-custom cupIds we replay the vanilla lookup, preserving cup
+// 1..8 exactly.
 extern "C" const char* GetCollisionFilenameHook() {
     EnsureDBATWidened();
     unsigned int cupId    = *(unsigned int*)0x806cf108u;   // g_cupId
@@ -998,12 +1034,13 @@ extern "C" const char* GetCollisionFilenameHook() {
     int reverseRound      = *(int*)0x806d1270u;            // g_reverseRoundFlag
     int variantIdx        = *(int*)0x806d126cu;            // g_courseVariantIdx
 
-    const struct CustomTrack* t = FindCustomTrack(cupId);
-    if (t != 0) {
-        const char* fn = (longRound == 1) ? t->collisionLong : t->collisionShort;
-        if (fn != 0) return fn;
-        // Fall through to vanilla with cupId aliased to 0 (test_course slot).
-        cupId = 0;
+    // Custom cup: pick round by g_roundIndex (long flag selects round 1 in
+    // vanilla but round_select keeps round 1+ locked, so g_roundIndex is the
+    // single source of truth). FindCustomRound clamps OOB roundIndex to 0.
+    int roundIdx = (int)g_roundIndex;
+    const struct CustomRound* round = FindCustomRound(cupId, roundIdx);
+    if (round != 0) {
+        return round->collision;
     }
 
     if ((int)cupId < 0) return 0;
@@ -1040,7 +1077,7 @@ extern "C" void* FUN_8009c238_Hook() {
     // the vanilla cupId=0 behaviour (iVar2 = -1 failed the `< 0` guard and
     // returned NULL, leaving test_course without coins). Aliasing to cupId=1
     // would spawn Yoshi cup coins at test_course positions — misleading.
-    if (FindCustomTrack((unsigned int)cupId)) return 0;
+    if (IsCustomCup((unsigned int)cupId)) return 0;
 
     int iVar2 = cupId - 1;
     if (iVar2 < 0) return 0;
@@ -1083,7 +1120,7 @@ extern "C" const char* FUN_8009c3c4_Hook() {
     int cupId        = (int)*(unsigned int*)0x806cf108u;
     int longRound    = *(int*)0x806d1268u;
     int reverseRound = *(int*)0x806d1270u;
-    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
     if (cupId < 0) return 0;
     if (longRound < 0) return 0;
     return ((const char**)0x8040b930u)[reverseRound * 0x1c + longRound * 0x45 + cupId * 0x8a];
@@ -1099,7 +1136,7 @@ extern "C" const char* GetCourseModelFilenameHook() {
     int reverseRound = *(int*)0x806d1270u;
     int variantIdx   = *(int*)0x806d126cu;
     unsigned int meshFlag = *(unsigned int*)0x806d127cu;
-    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
     if (cupId < 0) return 0;
     if (longRound < 0) return 0;
     int idx = variantIdx + reverseRound * 0x1c + longRound * 0x45 + cupId * 0x8a;
@@ -1113,7 +1150,7 @@ extern "C" void* GetJointNameTableHook() {
     int cupId      = (int)*(unsigned int*)0x806cf108u;
     int longRound  = *(int*)0x806d1268u;
     int variantIdx = *(int*)0x806d126cu;
-    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
     if (cupId < 0) return 0;
     if (longRound < 0) return 0;
     return ((void**)0x8040b910u)[variantIdx + longRound * 0x45 + cupId * 0x8a];
@@ -1126,7 +1163,7 @@ extern "C" const char* GetCollisionBinFilenameHook() {
     int cupId      = (int)*(unsigned int*)0x806cf108u;
     int longRound  = *(int*)0x806d1268u;
     int variantIdx = *(int*)0x806d126cu;
-    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
     if (cupId < 0) return 0;
     if (longRound < 0) return 0;
     if (variantIdx < 0) return 0;
@@ -1141,7 +1178,7 @@ extern "C" int GetStartPositionHook(int slot, int* outX, int* outY, int* outZ) {
     int cupId        = (int)*(unsigned int*)0x806cf108u;
     int longRound    = *(int*)0x806d1268u;
     int reverseRound = *(int*)0x806d1270u;
-    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
     int* base = 0;
     if (slot >= 0 && cupId >= 0 && longRound >= 0) {
         base = ((int**)0x8040b934u)
@@ -1167,7 +1204,7 @@ extern "C" unsigned int FUN_8009c1d0_Hook() {
     int longRound    = *(int*)0x806d1268u;
     int reverseRound = *(int*)0x806d1270u;
     int variantIdx   = *(int*)0x806d126cu;
-    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
     if (cupId < 0) return 0;
     if (longRound < 0) return 0;
     if (variantIdx < 0) return 0;
@@ -1183,7 +1220,7 @@ extern "C" unsigned int GetCourseBgmEntryHook() {
     int longRound    = *(int*)0x806d1268u;
     int reverseRound = *(int*)0x806d1270u;
     int variantIdx   = *(int*)0x806d126cu;
-    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
     if (cupId < 0) return 0;
     if (longRound < 0) return 0;
     if (variantIdx < 0) return 0;
@@ -1198,7 +1235,7 @@ extern "C" unsigned int FUN_8009c360_Hook() {
     int cupId      = (int)*(unsigned int*)0x806cf108u;
     int longRound  = *(int*)0x806d1268u;
     int variantIdx = *(int*)0x806d126cu;
-    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
     if (cupId < 0) return 0;
     if (longRound < 0) return 0;
     if (variantIdx < 0) return 0;
@@ -1214,7 +1251,7 @@ extern "C" unsigned int GetCourseObjectTableHook() {
     int longRound    = *(int*)0x806d1268u;
     int reverseRound = *(int*)0x806d1270u;
     int variantIdx   = *(int*)0x806d126cu;
-    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
     if (cupId < 0) return 0;
     if (longRound < 0) return 0;
     return *(unsigned int*)(cupId * 0x228 + longRound * 0x114
@@ -1229,7 +1266,7 @@ extern "C" float GetCourseStartYawHook() {
     int cupId        = (int)*(unsigned int*)0x806cf108u;
     int longRound    = *(int*)0x806d1268u;
     int reverseRound = *(int*)0x806d1270u;
-    if (FindCustomTrack((unsigned int)cupId)) cupId = 0;
+    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
     if (cupId < 0) return *(float*)0x806d4790u;
     if (longRound < 0) return *(float*)0x806d4790u;
     return *(float*)(cupId * 0x228 + longRound * 0x114

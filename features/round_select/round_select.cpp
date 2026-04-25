@@ -42,6 +42,105 @@ extern "C" {
     // g_customCupScope is active.
     char RoundIsUnlocked(void* playerData, int round);                       // 0x801d5b04
     char RoundCupIsCompleted(void* playerData, int ccClass, int cup, int longRound);  // 0x801d5c0c
+
+    int PreloadResource(int resourceId);   // 0x80120d80
+}
+
+// --- Round-thumb slot injection -------------------------------------------
+//
+// Vanilla per-cup 16-byte slot in DAT_8049aea0 holds 8 u16 thumb resource ids
+// (FUN_801c9288 reads `&DAT_8049aea0 + sub_index*16 + roundIdx*4` for square
+// and `+2` for road). Yoshi only has 2 distinct values duplicated across all
+// 4 rounds. To get per-round thumbs for our custom cup, we save the alias's
+// 16-byte slot on PreInit, write our 8 custom-id u16s, and restore on PreDtor.
+//
+// The 8 injected ids (0x4006..0x4009 + duplicates) flow through vanilla
+// PreloadResource → custom_assets getter hooks → kCustomPathTable → our TPLs.
+// No custom_assets binding entry is needed for round thumbs (the inject
+// supplies the custom id directly into the table).
+
+// 0x8049af8c[g_cupId] -> sub_index. Same table read as vanilla clFlowRound_Init.
+static const short* const kCupSubIndexTable = (const short*)0x8049af8c;
+// Cup-slot table base (16 bytes per cup, 4 rounds × 4 bytes).
+static u16* const kCupSlotTableBase = (u16*)0x8049aea0;
+
+static u16  s_savedSlot[8];          // 16 bytes of vanilla slot
+static int  s_savedSlotIdx = -1;     // sub_index of saved slot, -1 = nothing saved
+
+// Look up our 8 inject ids for a custom cup_id. Returns NULL if no entry.
+static const RoundThumbInject* FindThumbInject(int customCupId) {
+    for (unsigned int i = 0; i < kRoundThumbInjectCount; ++i) {
+        if ((int)kRoundThumbInjects[i].customCupId == customCupId)
+            return &kRoundThumbInjects[i];
+    }
+    return 0;
+}
+
+// Manually preload our inject ids so the per-frame UV refresh path finds
+// registered slots. vanilla clFlowRound_Init does call PreloadResource on
+// the table values it reads (= our injects), but only for round 0/1 offsets
+// — and empirically the slot registry shows the custom ids never make it in
+// without an explicit pre-touch (probably because PreloadResource's first
+// step is a vanilla resource-table lookup that misses for custom ids and
+// short-circuits before reaching our getters).
+static void PreloadInjectIds(const RoundThumbInject* inj) {
+    for (int i = 0; i < 8; ++i) {
+        unsigned int id = (unsigned int)inj->thumbIds[i];
+        if (id < 0x4000) continue;
+        // Dedup: same id appears 4 times for 2-round case (round 0/2 dup,
+        // round 1/3 dup). Skip if any earlier slot had the same id.
+        bool dup = false;
+        for (int j = 0; j < i; ++j) {
+            if (inj->thumbIds[j] == inj->thumbIds[i]) { dup = true; break; }
+        }
+        if (dup) continue;
+        int ret = PreloadResource((int)id);
+        DebugPrintfSafe("MKGP2:   PreloadResource(0x%04x) = %d\n", (int)id, ret);
+    }
+}
+
+static void InjectRoundThumbs(int customCupId, int aliasCupId) {
+    if (s_savedSlotIdx >= 0) {
+        // Already injected (re-entry?). Don't overwrite saved.
+        DebugPrintfSafe("MKGP2: round-thumb inject skipped (already active idx=%d)\n",
+                        s_savedSlotIdx);
+        return;
+    }
+    const RoundThumbInject* inj = FindThumbInject(customCupId);
+    if (!inj) return;
+    if (aliasCupId < 0 || aliasCupId > 8) return;
+    int subIdx = (int)kCupSubIndexTable[aliasCupId];
+    if (subIdx < 0 || subIdx >= 8) return;     // sentinel / OOB safety
+
+    u16* slot = kCupSlotTableBase + subIdx * 8;
+    // Save vanilla 8 u16 then overwrite with our injects.
+    for (int i = 0; i < 8; ++i) s_savedSlot[i] = slot[i];
+    for (int i = 0; i < 8; ++i) slot[i] = inj->thumbIds[i];
+    s_savedSlotIdx = subIdx;
+    // Split the dump into two short DebugPrintfSafe calls — DebugPrintfSafe's
+    // r3-shift only covers r3..r10, so packing 11+ varargs causes the tail
+    // values to be misaligned (read from stack[0..] which holds the next args).
+    DebugPrintfSafe("MKGP2: round-thumb inject cup=%d alias=%d sub=%d nRounds=%d\n",
+                    customCupId, aliasCupId, subIdx, (int)inj->nRounds);
+    DebugPrintfSafe("MKGP2:   saved=[%04x %04x %04x %04x]\n",
+                    (unsigned)s_savedSlot[0], (unsigned)s_savedSlot[1],
+                    (unsigned)s_savedSlot[2], (unsigned)s_savedSlot[3]);
+    DebugPrintfSafe("MKGP2:   new  =[%04x %04x %04x %04x]\n",
+                    (unsigned)slot[0], (unsigned)slot[1],
+                    (unsigned)slot[2], (unsigned)slot[3]);
+
+    PreloadInjectIds(inj);
+}
+
+static void RestoreRoundThumbs() {
+    if (s_savedSlotIdx < 0) return;
+    u16* slot = kCupSlotTableBase + s_savedSlotIdx * 8;
+    for (int i = 0; i < 8; ++i) slot[i] = s_savedSlot[i];
+    DebugPrintfSafe("MKGP2: round-thumb restore sub=%d -> [%04x %04x %04x %04x]\n",
+                    s_savedSlotIdx,
+                    (unsigned)slot[0], (unsigned)slot[1],
+                    (unsigned)slot[2], (unsigned)slot[3]);
+    s_savedSlotIdx = -1;
 }
 
 // --- C dispatchers called from asm wrappers ---------------------------------
@@ -85,6 +184,11 @@ extern "C" void RoundSelect_PreInit() {
     }
     g_customCupScope = cup;
     g_cupId = (unsigned int)alias;
+    // Direct-insert: write our 8 custom-ID u16s into the alias cup's 16-byte
+    // slot. vanilla code reads them as resource ids, calls PreloadResource,
+    // and the custom_assets ResourceSlotLoadBranchHook reroutes the loader to
+    // the filename path so our TPLs end up registered in the slot registry.
+    InjectRoundThumbs(cup, alias);
     DebugPrintfSafe("MKGP2: round-select swap cupId %d -> %d (scope=%d)\n",
                     cup, alias, cup);
     DumpSlotRegistryFor("PreInit (after swap)");
@@ -93,6 +197,7 @@ extern "C" void RoundSelect_PreInit() {
 extern "C" void RoundSelect_PreDtor() {
     EnsureDBATWidened();
     if (g_customCupScope > 0) {
+        RestoreRoundThumbs();   // no-op when nothing was injected
         DebugPrintfSafe("MKGP2: round-select restore cupId %d -> %d\n",
                         (int)g_cupId, g_customCupScope);
         g_cupId = (unsigned int)g_customCupScope;
@@ -128,19 +233,29 @@ extern "C" int SetCourseParams_RoundWrapper(int cupId, int longRound,
 //
 // Without these, our alias swap (g_cupId 17 -> 7 for Yoshi atlas) makes
 // vanilla read Yoshi's progress byte for our custom cup, leaking Yoshi's
-// per-round unlock state onto test_cup. PoC policy for any custom cup:
-// "nothing cleared yet" — round 1 is current/playable, rest locked.
-// Real per-cup persistent progress is future work (would need a patch-side
-// shadow byte table).
+// per-round unlock state onto test_cup. Real per-cup persistent progress is
+// future work (would need a patch-side shadow byte table).
 //
 // Note: the externals-name "RoundIsUnlocked" is misleading — the function
 // actually answers "is round N *cleared*?" (returns 1 iff round_index+1 ≤
-// progress byte). Returning 0 for all rounds means nothing cleared, which
-// vanilla then turns into "round 0 = current, round 1..3 = locked" UI state.
+// progress byte). vanilla clFlowRound_Init walks rounds 0..3 and assigns:
+//   cleared (return 1)              → state 0, counts toward "available"
+//   first uncleared (return 0)       → state 1 (current/highlighted)
+//   subsequent uncleared (return 0)  → state 2 (locked, cursor skips)
+//
+// Policy: every yaml-defined round should be selectable. Mark round
+// 0..(nRounds-2) as "cleared" so they're playable, mark round (nRounds-1)
+// as current, and round nRounds.. as locked. This makes all defined rounds
+// reachable while still letting vanilla's bVar1 transition handle the
+// "current" highlight on the last defined round.
 extern "C" char RoundIsUnlocked_Wrapper(void* playerData, int round) {
     EnsureDBATWidened();
     if (g_customCupScope > 0) {
-        return 0;  // nothing cleared → round 0 becomes current/playable
+        const RoundThumbInject* inj = FindThumbInject(g_customCupScope);
+        int nRounds = (inj != 0) ? (int)inj->nRounds : 1;
+        if (nRounds < 1) nRounds = 1;
+        if (round >= 0 && round < nRounds - 1) return 1;   // cleared → playable
+        return 0;                                          // current or locked
     }
     return RoundIsUnlocked(playerData, round);
 }

@@ -1,119 +1,146 @@
-# Custom cup + course definitions.
+# Custom cup + round definitions.
 #
 # 単一データソース。`features/cup_page3/gen_cup_courses_header.py` と
 # `features/custom_assets/gen_custom_assets_header.py` の両方が読む。
+# course_models.yaml と組み合わせて完結する (round の `course_model` が
+# course_models.yaml の id を参照)。
 #
 # 階層:
 #   cups[]                 — カップ定義 (CUP select で 1 タイル)
 #     id: <C ident>        — 識別子 (識別/シンボル名/ファイル名 suffix)
 #     cup_id: <int>        — vanilla cupId スロット番号 (>= 17)
-#     display_alias_cup    — UI を「どの vanilla カップに見せかけるか」
-#                            のヒント (default: 0 = Yoshi)
-#                            binding の vanilla resource id を計算するのに使う
-#     assets:              — カップ単位の表示画像 (省略可、省略 = vanilla 維持)
-#       icon:   <path>     — 128×128  CUPsel02 のスロット
-#       name:   <path>     — 256×46   CUPname のスロット
-#       trophy: <path>     — 92×86    trophy_01_locked のスロット
-#     courses[]            — カップ内の個別コース (現状 1 つだけ対応)
-#       id: <C ident>
-#       collision_short:   — short-lap 衝突 .bin
-#       collision_long:    — long-lap  衝突 .bin
+#     display_alias_cup    — round-select で UI を「どの vanilla カップに
+#                            見せかけるか」のヒント (default: 7 = Yoshi)
+#                            この vanilla カップの sub_index 経由で
+#                            cup-indexed sprite テーブルが in-bounds で読まれる
+#     assets:              — Cup 単位の表示画像 (round に跨る共通 UI)
+#       icon, name, trophy, banner, cup_name_ribbon  — cup-select 画面
+#       name_roundselect                              — round-select 上部の cup-name strip
+#     rounds[]             — round-select UI の各ボタンに対応する個別 round
+#                            (最大 4 つ、未定義 round は round-select で locked)
+#                            各 round は完全独立リソース、共通化は yaml anchor で行う
+#       id: <C ident>      — round 識別子
+#       course_model:      — course_models.yaml の id 参照 (model + joints を引く)
+#       collision:         — 衝突 .bin
 #       line_bin:          — AI ライン .bin
+#       thumb:             — round-select cell の course thumbnail (128x128)
+#       thumb_road:        — round-select cell の course thumbnail-road (128x160)
 #       laps / time / bonus
 #       bgm_l / bgm_r:     — DSP filename (cup_page3.cpp が DVDOpen に渡す)
 #       ai_lap_bonus_rules: AI 速度補正ルール (詳細は cup_page3 docs 参照)
 #       base_speed:         AI base speed table (per ccClass)
-#       base_speed_rounds:  per-round 上書き (任意)
-#       (将来) thumb:       round screenshot 200×96
+#       base_speed_rounds:  per-round 上書き (任意、cc_class 配列内 8 entry)
 #
 # Voice announcer queue は cup_page3 が共有 SFX を維持するので test_cup でも
 # 「3-2-1 GO!」等は鳴る。
 
+# yaml anchor で重複設定を共有する例 (round 1 と round 2 で同じ AI 設定を使う)
+_shared_ai_lap_bonus_rules: &shared_ai_lap_bonus_rules
+  # Dumped from vanilla Mario fallback @ 0x803a34e0 (round=2, cup=1, variant=0),
+  # with subMode normalized to -1 so the rules fire regardless of g_roundIndex.
+  # Layer comments reflect the decompile of AI_CalcLapSpeedBonus at 0x801dd480.
+  # --- Layer A: 150cc per-lap base ---
+  - { ccClass: 2, position: 1, bonus:  20.0 }
+  - { ccClass: 2, position: 2, bonus:  10.0 }
+  - { ccClass: 2, position: 3, bonus:  10.0 }
+  - { ccClass: 2, position: 4, bonus:  10.0 }
+  - { ccClass: 2, position: 5, bonus:  10.0 }
+  - { ccClass: 2, position: 9, lapDiffMin: 50, lapDiffMax: 128, bonus: -5.0 }
+  # --- Layer B: final-lap (pos=1) kartIdx-specific boosts ---
+  - { kartIdx: 1, position: 1, bonus:  50.0 }
+  - { kartIdx: 2, position: 1, bonus:  40.0 }
+  - { kartIdx: 3, position: 1, bonus:  35.0 }
+  - { kartIdx: 4, position: 1, bonus:  20.0 }
+  - { position: 1, lapDiffMin: 20, lapDiffMax: 35, excludePosition: 4, bonus:  0.0 }
+  - { position: 1, lapDiffMin: 20, lapDiffMax: 35, excludePosition: 5, bonus:  0.0 }
+  - { position: 1, lapDiffMin: 20, lapDiffMax: 35, bonus: 20.0 }
+  - { position: 1, lapDiffMin: 60, lapDiffMax: 75, bonus: 20.0 }
+  # --- Layer C: pos=2 ---
+  - { kartIdx: 1, position: 2, bonus:  30.0 }
+  - { kartIdx: 2, position: 2, bonus:  25.0 }
+  - { kartIdx: 3, position: 2, bonus:  20.0 }
+  - { kartIdx: 4, position: 2, bonus:  15.0 }
+  - { position: 2, excludePosition: 5, bonus: -10.0 }
+  - { position: 2, lapDiffMin: 20, lapDiffMax: 35, bonus: 10.0 }
+  - { position: 2, lapDiffMin: 60, lapDiffMax: 75, bonus: 10.0 }
+  # --- Layer D: pos=3 ---
+  - { position: 3, excludePosition: 4, bonus: -10.0 }
+  - { position: 3, excludePosition: 5, bonus: -20.0 }
+  - { position: 3, lapDiffMin: 20, lapDiffMax: 35, bonus:  0.0 }
+  - { position: 3, lapDiffMin: 60, lapDiffMax: 75, bonus:  0.0 }
+  # --- Layer E: pos=4 ---
+  - { position: 4, excludePosition: 3, bonus: -10.0 }
+  - { position: 4, excludePosition: 4, bonus: -20.0 }
+  - { position: 4, excludePosition: 5, bonus: -20.0 }
+  - { position: 4, lapDiffMin: 20, lapDiffMax: 35, bonus: -10.0 }
+  - { position: 4, lapDiffMin: 60, lapDiffMax: 75, bonus: -20.0 }
+  # --- Layer F: deep backmarker penalties ---
+  - { position: 5, bonus: -35.0 }
+  - { ccClass: 0, position: 6, lapDiffMin:  0, lapDiffMax:  50, bonus: -35.0 }
+  - { ccClass: 0, position: 6, lapDiffMin: 51, lapDiffMax: 128, bonus: -65.0 }
+  - { ccClass: 1, position: 6, lapDiffMin:  0, lapDiffMax:  50, bonus: -55.0 }
+  - { ccClass: 1, position: 6, lapDiffMin: 51, lapDiffMax: 128, bonus: -70.0 }
+
+_shared_base_speed: &shared_base_speed
+  "50cc":  { lo: 145.0, hi: 160.0 }
+  "100cc": { lo: 200.0, hi: 220.0 }
+  "150cc": { lo: 250.0, hi: 270.0 }
+
 cups:
   - id: test_cup
     cup_id: 17
-    display_alias_cup: 7   # Yoshi (g_cupId=7 → DAT_8049af8c[7]=0 sub_index で round-select の cup-indexed テーブル群を in-bounds で読ませる)
+    display_alias_cup: 7   # Yoshi (g_cupId=7 → DAT_8049af8c[7]=0 sub_index)
+
     assets:
       # --- Cup-select scene assets ---
-      icon:           images/test_cup_icon.png
-      name:           images/test_cup_name.png
-      trophy:         images/test_cup_trophy.png
-      banner:         images/test_cup_banner.png        # 301×125, vanilla 0x175E (CUPsel01_a)
-      cup_name_ribbon: images/test_cup_name_ribbon.png  # 148×64, vanilla 0x1780 (CUPsel02 diagonal name strip, hovered tile)
-      # --- Round-select scene assets ---
-      # 110×67, vanilla 0x16ED (COURSEname01 atlas crop, top-left cup-name strip)
-      name_roundselect: images/test_cup_name_roundselect.png
-      # Course thumbnails. 4 vanilla ids per cup (vertical 128×160 + square
-      # 128×128 for each course). Bound to Yoshi (cupId=0) atlas slots.
-      course1_thumb_road: images/test_cup_course1_thumb_road.png  # 128×160, vanilla 0x19E0
-      course2_thumb_road: images/test_cup_course2_thumb_road.png  # 128×160, vanilla 0x19E1
-      course1_thumb:      images/test_cup_course1_thumb.png       # 128×128, vanilla 0x1A66
-      course2_thumb:      images/test_cup_course2_thumb.png       # 128×128, vanilla 0x1A67
+      icon:           images/test_cup_icon.png             # 128×128, vanilla 0x1777
+      name:           images/test_cup_name.png             # 256×46, vanilla 0x1729
+      trophy:         images/test_cup_trophy.png           # 92×86, vanilla 0x1EA2
+      banner:         images/test_cup_banner.png           # 301×125, vanilla 0x175E
+      cup_name_ribbon: images/test_cup_name_ribbon.png     # 148×64, vanilla 0x1780
+      # --- Round-select scene cup-level assets ---
+      # 注: vanilla MKGP2 は cup あたり 16 byte slot に [4 round × 2 サイズ] の
+      # u16 thumb resource ID テーブルを持つ (DAT_8049aea0 起点、FUN_801c9288 内
+      # で iVar5 = sub_index*16 + roundIdx*4 で indexing)。Yoshi 等の vanilla
+      # cup は 2 round しか実値が無く round 2/3 は round 0/1 の duplicate。
+      # custom cup では各 round に thumb/thumb_road を持たせ、PreInit で alias
+      # cup の 16 byte slot を save → 自前 ID を inject し、PreDtor で restore する
+      # ことで per-round 表示を実現 (round_select.cpp の inject/restore 参照)。
+      name_roundselect:   images/test_cup_name_roundselect.png    # 110×67, vanilla 0x16ED
 
-    courses:
-      - id: test_course
-        collision_short: grd_short.bin
-        collision_long:  grd_long.bin
-        line_bin:        test_course_short_line.bin
+    rounds:
+      - id: round1
+        course_model: test_course
+        collision:    grd_short.bin
+        line_bin:     test_course_short_line.bin
         laps:  3
         time:  120.0
         bonus: 15.0
         bgm_l: bgm01_demoL.dsp
         bgm_r: bgm01_demoR.dsp
+        # round-select 行 (上 2 行) の thumb 画像
+        # thumb       — 角 128×128 (vanilla 0x1A66 系、FUN_801c9288 0x1a1e 経由)
+        # thumb_road  — 縦 128×160 (vanilla 0x19E0 系、FUN_801c9288 0x19b0 経由)
+        thumb:       images/test_cup_course1_thumb.png
+        thumb_road:  images/test_cup_course1_thumb_road.png
+        ai_lap_bonus_rules: *shared_ai_lap_bonus_rules
+        base_speed:         *shared_base_speed
 
-        # Dumped from vanilla Mario fallback @ 0x803a34e0 (round=2, cup=1, variant=0),
-        # with subMode normalized to -1 so the rules fire regardless of g_roundIndex.
-        # Layer comments reflect the decompile of AI_CalcLapSpeedBonus at 0x801dd480.
-        ai_lap_bonus_rules:
-          # --- Layer A: 150cc per-lap base ---
-          - { ccClass: 2, position: 1, bonus:  20.0 }
-          - { ccClass: 2, position: 2, bonus:  10.0 }
-          - { ccClass: 2, position: 3, bonus:  10.0 }
-          - { ccClass: 2, position: 4, bonus:  10.0 }
-          - { ccClass: 2, position: 5, bonus:  10.0 }
-          - { ccClass: 2, position: 9, lapDiffMin: 50, lapDiffMax: 128, bonus: -5.0 }
+      - id: round2
+        course_model: test_course
+        collision:    grd_long.bin
+        # 暫定: long 用 line.bin が無いので short 用を流用
+        line_bin:     test_course_short_line.bin
+        laps:  3
+        time:  120.0
+        bonus: 15.0
+        bgm_l: bgm01_demoL.dsp
+        bgm_r: bgm01_demoR.dsp
+        thumb:       images/test_cup_course2_thumb.png
+        thumb_road:  images/test_cup_course2_thumb_road.png
+        ai_lap_bonus_rules: *shared_ai_lap_bonus_rules
+        base_speed:         *shared_base_speed
 
-          # --- Layer B: final-lap (pos=1) kartIdx-specific boosts ---
-          - { kartIdx: 1, position: 1, bonus:  50.0 }
-          - { kartIdx: 2, position: 1, bonus:  40.0 }
-          - { kartIdx: 3, position: 1, bonus:  35.0 }
-          - { kartIdx: 4, position: 1, bonus:  20.0 }
-
-          - { position: 1, lapDiffMin: 20, lapDiffMax: 35, excludePosition: 4, bonus:  0.0 }
-          - { position: 1, lapDiffMin: 20, lapDiffMax: 35, excludePosition: 5, bonus:  0.0 }
-          - { position: 1, lapDiffMin: 20, lapDiffMax: 35, bonus: 20.0 }
-          - { position: 1, lapDiffMin: 60, lapDiffMax: 75, bonus: 20.0 }
-
-          # --- Layer C: pos=2 ---
-          - { kartIdx: 1, position: 2, bonus:  30.0 }
-          - { kartIdx: 2, position: 2, bonus:  25.0 }
-          - { kartIdx: 3, position: 2, bonus:  20.0 }
-          - { kartIdx: 4, position: 2, bonus:  15.0 }
-          - { position: 2, excludePosition: 5, bonus: -10.0 }
-          - { position: 2, lapDiffMin: 20, lapDiffMax: 35, bonus: 10.0 }
-          - { position: 2, lapDiffMin: 60, lapDiffMax: 75, bonus: 10.0 }
-
-          # --- Layer D: pos=3 ---
-          - { position: 3, excludePosition: 4, bonus: -10.0 }
-          - { position: 3, excludePosition: 5, bonus: -20.0 }
-          - { position: 3, lapDiffMin: 20, lapDiffMax: 35, bonus:  0.0 }
-          - { position: 3, lapDiffMin: 60, lapDiffMax: 75, bonus:  0.0 }
-
-          # --- Layer E: pos=4 ---
-          - { position: 4, excludePosition: 3, bonus: -10.0 }
-          - { position: 4, excludePosition: 4, bonus: -20.0 }
-          - { position: 4, excludePosition: 5, bonus: -20.0 }
-          - { position: 4, lapDiffMin: 20, lapDiffMax: 35, bonus: -10.0 }
-          - { position: 4, lapDiffMin: 60, lapDiffMax: 75, bonus: -20.0 }
-
-          # --- Layer F: deep backmarker penalties ---
-          - { position: 5, bonus: -35.0 }
-          - { ccClass: 0, position: 6, lapDiffMin:  0, lapDiffMax:  50, bonus: -35.0 }
-          - { ccClass: 0, position: 6, lapDiffMin: 51, lapDiffMax: 128, bonus: -65.0 }
-          - { ccClass: 1, position: 6, lapDiffMin:  0, lapDiffMax:  50, bonus: -55.0 }
-          - { ccClass: 1, position: 6, lapDiffMin: 51, lapDiffMax: 128, bonus: -70.0 }
-
-        base_speed:
-          "50cc":  { lo: 145.0, hi: 160.0 }
-          "100cc": { lo: 200.0, hi: 220.0 }
-          "150cc": { lo: 250.0, hi: 270.0 }
+      # round3, round4 未定義 → round-select で locked、thumb は round 0/1 の duplicate
+      # (Yoshi vanilla layout に合わせる)。round 3/4 を完全独立にしたい場合は
+      # clFlowRound_Init の preload list 拡張が要る (sub_index*16 + 8/12 offset)。

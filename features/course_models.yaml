@@ -1,0 +1,26 @@
+# Course model definitions.
+#
+# 1 entry = 1 HSD geometry resource (= 1 .dat ファイル + その joint hierarchy)。
+# cups.yaml の round が `course_model: <id>` でこの id を参照する。
+#
+# joints は HSD に baked-in な属性なので model 単位で 1 度宣言。
+# 同じ .dat を別 id で 2 度宣言することも可能 (joint subset を別解釈したい場合等)。
+#
+# 階層:
+#   course_models:
+#     <id>:
+#       file:    <filename>     # HSD .dat / .bin (実体は ISO root 直下 or
+#                                #   features/<feature>/files/ 経由 Riivolution)
+#       joints:  [name, ...]    # 18 slot vanilla format (slot 0..17)。
+#                                # 暫定で省略可 (= joint_extend が no-op = vanilla 動作維持)
+#                                # 将来カスタム HSD を載せたら slot 単位で埋める
+
+course_models:
+  test_course:
+    # vanilla の test_course HSD。test slot (cupId=0) で参照されるファイル群と
+    # 一致 (ISO 直下に存在: test_course_road.dat)。
+    file: test_course_road.dat
+    # joints 暫定省略。joint_extend は cupId=17 で sCourseJointDefs を miss し
+    # NULL を返す = 既存挙動と同じ (無 manipulation)。将来 vanilla joint 一覧を
+    # Ghidra rodata から抜いてここに埋める。
+    joints: []

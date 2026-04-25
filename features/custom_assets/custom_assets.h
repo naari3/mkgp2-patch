@@ -21,10 +21,11 @@ struct CustomResourceEntry {
     float size_x;       // +0x0C
     float size_y;       // +0x10
     s16   slot_index;   // +0x14
-    u16   group_key;    // +0x16 — u16 (NOT s16): custom gks >= 0x9000 must not
-                        //         sign-extend into negative int. vanilla uses s16
-                        //         here but all its values are < 0x8000, so reading
-                        //         vanilla as u16 is identical.
+    u16   group_key;    // +0x16 — u16 (NOT s16). Custom gks live in the
+                        //         sign-safe range 0x4000..0x7FFF, so even with s16
+                        //         they would not negate, but u16 keeps the type
+                        //         contract consistent with the file-path table
+                        //         indexing (groupKey - CUSTOM_GROUPKEY_BASE).
     s16   next_id;      // +0x18  (-1 = chain terminator)
     u16   pad_1a;
     float scale_x;      // +0x1C
@@ -52,6 +53,24 @@ struct CupAliasEntry {
     u8 pad[2];
 };
 
+// Per-round thumb resource id injection.
+// vanilla の DAT_8049aea0 起点の per-cup 16 byte slot に上書きする 8 u16。
+// レイアウトは vanilla と同じく [round0_sq, round0_vert, round1_sq, round1_vert,
+// round2_sq, round2_vert, round3_sq, round3_vert] (FUN_801c9288 の
+// iVar5 = sub_index*16 + roundIdx*4 indexing と一致)。yaml で round 2/3 が
+// 未定義なら round 0/1 の duplicate を入れる (Yoshi vanilla pattern)。
+// PreInit で書き込み、PreDtor で original を restore する。
+//
+// nRounds: yaml で実際に定義された round 数 (1..4)。RoundIsUnlocked_Wrapper
+// が「round 0..(nRounds-2) → cleared、round nRounds-1 → current」として
+// 用意されている round 全てを選択可能にするのに使う。
+struct RoundThumbInject {
+    u8  customCupId;       // 対象 cup_id (>= 17)
+    u8  nRounds;           // yaml で定義された round 数 (1..4)
+    u8  pad[2];
+    u16 thumbIds[8];       // vanilla cup slot に書き込む 8 u16
+};
+
 extern "C" {
     extern const CustomResourceEntry kCustomResourceTable[];
     extern const unsigned int        kCustomResourceCount;
@@ -63,6 +82,8 @@ extern "C" {
     extern const unsigned int        kCustomPathCount;
     extern const CupAliasEntry       kCupAliasMap[];
     extern const unsigned int        kCupAliasMapCount;
+    extern const RoundThumbInject    kRoundThumbInjects[];
+    extern const unsigned int        kRoundThumbInjectCount;
 
     // Active custom cupId during scenes that needed a g_cupId swap to keep
     // vanilla in-bounds (e.g. round-select). 0 = inactive. ApplyBinding gates
@@ -75,7 +96,13 @@ extern "C" {
     int CustomCup_LookupAlias(int customCupId);
 }
 
-static const int CUSTOM_ID_BASE       = 0x9000;
-static const int CUSTOM_GROUPKEY_BASE = 0x9000;
+// 0x4000 を選ぶ理由: vanilla 未使用域 (vanilla main = 0..0x2AFF, extended =
+// 0x2B00..0x2B03) かつ signed 16-bit 範囲 (< 0x8000) に収まる。後者が肝で、
+// vanilla の Sprite_SetAnimParam(sprite, paramId, short value) 等で resource id
+// を short として扱う API があり、id の high bit が立つと sign-extend で
+// 0xFFFFxxxx になって slot[0] (= resourceId, full int) の lookup でミスする。
+// 0x4xxx 系は high bit clear なので sign-safe。
+static const int CUSTOM_ID_BASE       = 0x4000;
+static const int CUSTOM_GROUPKEY_BASE = 0x4000;
 
 #endif

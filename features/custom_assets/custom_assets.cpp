@@ -3,8 +3,8 @@
 #include "custom_assets.h"
 
 // PoC phase A: hook the 6 ResourceEntry getters clustered at
-// 0x801223e8..0x80122808. Custom IDs (>= 0x9000) are served from
-// kCustomResourceTable[]. IDs < 0x9000 fall through to vanilla
+// 0x801223e8..0x80122808. Custom IDs (>= 0x4000, sign-safe range) are served
+// from kCustomResourceTable[]. IDs < 0x4000 fall through to vanilla
 // kResourceTableMain[11008] @ 0x80422208 and kResourceTableExt[4] @ 0x8048da08
 // by reimplementing the vanilla lookup (cache is NOT touched to avoid
 // corrupting vanilla's shared last-hit slot).
@@ -66,7 +66,7 @@ extern "C" int PreloadResource(int resourceId);   // 0x80120d80
 
 // One-shot manual preload: when g_cupId first becomes 17, explicitly
 // PreloadResource() each vanilla id we bind. This forces the resource slot
-// registry to load+register our custom TPLs (with our group_key 0x900x), so
+// registry to load+register our custom TPLs (with our group_key 0x400x), so
 // downstream UV-only refresh paths (e.g. FUN_8011d890) can find them on
 // every subsequent frame.
 //
@@ -105,10 +105,9 @@ static void TryPreloadCustomAssetsAtCup17() {
         int dataPtr = slot[2];
         if (gk != -1) {
             populated++;
-            // low 16 bits match our custom range? handles both positive int
-            // 0x9000 and sign-extended -28672 (0xFFFF9000) variants.
-            bool isCustom = ((unsigned int)gk & 0xFFFF) >= 0x9000u &&
-                            ((unsigned int)gk & 0xFFFF) <= 0x9100u;
+            // low 16 bits match our custom range (CUSTOM_GROUPKEY_BASE..+0x100).
+            bool isCustom = ((unsigned int)gk & 0xFFFF) >= 0x4000u &&
+                            ((unsigned int)gk & 0xFFFF) <= 0x4100u;
             if (populated <= 20 || isCustom) {
                 DebugPrintfSafe("MKGP2:   slot[%d] resId=0x%04x gk=0x%08x data=%p\n",
                                 i, resId, gk, (void*)dataPtr);
@@ -214,7 +213,7 @@ static inline int ApplyBinding(int resourceId) {
                 for (int i = 0; i < 600; ++i) {
                     int* slot = slots + i * 7;
                     int gk = slot[1];
-                    if (gk >= 0x9000 && gk <= 0x9100) {
+                    if (gk >= 0x4000 && gk <= 0x4100) {
                         DebugPrintfSafe("MKGP2: slot[%d] resId=0x%04x gk=0x%04x dataPtr=%p\n",
                                         i, slot[0], gk, (void*)slot[2]);
                         found++;
@@ -377,6 +376,65 @@ extern "C" int GetGroupKey_Hook(int resourceId) {
     return 0;
 }
 
+// ResourceSlot_Load branch hook (vanilla @ 0x8011dccc).
+//
+// Vanilla flow:
+//   8011dcc4: cmpwi r24, 0x2b00          ; r24 = resourceId
+//   8011dcc8: or    r27, r3, r3          ; (groupKey returned by prior call)
+//   8011dccc: bge   0x8011dcf8           ; if r24 >= 0x2b00 → ELSE branch
+//   8011dcd0: ...THEN: ResourceTable_GetFilePathPtr → FUN_8008e940 (load file)
+//   8011dcf8: ...ELSE: DisplayBuffer_GetByIndex(r24 - 0x2b00) (in-mem buffer)
+//
+// Our custom resource ids (0x4000+) need to take the THEN branch — they have
+// real on-disk TPLs reachable via our GetFilePathPtr_Hook. Vanilla's bge
+// would route them to ELSE → DisplayBuffer_GetByIndex(0x1500+) → far OOB read
+// → garbage `slot[2]` shared across all 4 thumb slots (= invisible sprites).
+//
+// We replace the single `bge` instruction with a branch to this wrapper. The
+// wrapper preserves vanilla semantics for ids < 0x2b00 (THEN) and ids in the
+// vanilla extended range [0x2b00, 0x4000) (ELSE), and routes custom ids in
+// [0x4000, 0x8000) to the THEN branch. r24 is read but not modified;
+// CR0 is clobbered (no instruction after the original bge depends on CR0).
+extern "C" asm void ResourceSlot_Load_BranchHook() {
+    nofralloc
+    // CR0 was just set by `cmpwi r24, 0x2b00` at 0x8011dcc4.
+    blt _then_resume       // r24 <  0x2b00 → vanilla THEN
+    // r24 >= 0x2b00. Decide custom vs vanilla-extended.
+    cmplwi r24, 0x4000
+    blt _else_resume       // r24 in [0x2b00, 0x4000) → vanilla ELSE
+    cmplwi r24, 0x8000
+    bge _else_resume       // r24 >= 0x8000 → vanilla ELSE
+    // r24 in [0x4000, 0x8000) → take THEN (filename path)
+_then_resume:
+    lis  r12, 0x8011
+    ori  r12, r12, 0xdcd0  // = 0x8011dcd0 (THEN entry)
+    mtctr r12
+    bctr
+_else_resume:
+    lis  r12, 0x8011
+    ori  r12, r12, 0xdcf8  // = 0x8011dcf8 (ELSE entry)
+    mtctr r12
+    bctr
+}
+
+// IsValidResourceId hook (vanilla @ 0x80122b90).
+//
+// Vanilla: returns 1 iff `0 <= id < 0x2b04` (= 0x2b00 main table size + 4
+// extended entries). PreloadResource gates ALL its work on this check —
+// custom ids (>= 0x4000) immediately fail here, so our injected round-thumb
+// ids never get registered into the resource slot registry, leaving the
+// round-select sprites with no backing texture (= transparent on screen).
+//
+// We allow custom ids that exist in kCustomResourceTable to pass. The
+// vanilla range stays exactly as-is so vanilla resources keep their normal
+// behavior.
+extern "C" int IsValidResourceId_Hook(int resourceId) {
+    EnsureDBATWidened();
+    if (resourceId >= 0 && resourceId < 0x2b04) return 1;
+    if (CustomResource_Lookup(resourceId) != 0) return 1;
+    return 0;
+}
+
 // Resolve a groupKey to a filename. Custom groupKeys (>= CUSTOM_GROUPKEY_BASE)
 // route to kCustomPathTable; everything else uses the vanilla table.
 static inline char* ResolveFilePath(unsigned int groupKey) {
@@ -397,7 +455,7 @@ extern "C" char* GetFilePathPtr_Hook(int resourceId) {
                      s_seenIdsCount_FilePath, "FilePath");
     resourceId = ApplyBinding(resourceId);
     // Extended-range (>= 0x2B00) uses a separate direct-indexed table; custom
-    // IDs (>= CUSTOM_ID_BASE = 0x9000) must route through the groupKey path.
+    // IDs (>= CUSTOM_ID_BASE = 0x4000) must route through the groupKey path.
     const CustomResourceEntry* c = CustomResource_Lookup(resourceId);
     if (c) return ResolveFilePath((u16)c->group_key);
     if (resourceId >= 0x2B00) {
@@ -420,6 +478,8 @@ kmBranch(0x8012258c, GetChainNextId_Hook);
 kmBranch(0x80122808, GetSlotIndex_Hook);
 kmBranch(0x80122ac4, GetGroupKey_Hook);
 kmBranch(0x801229c4, GetFilePathPtr_Hook);
+kmBranch(0x80122b90, IsValidResourceId_Hook);
+kmBranch(0x8011dccc, ResourceSlot_Load_BranchHook);
 
 // --------- Data tables: kCustomResourceTable[] + kBindings[] ---------------
 // Generated from features/cups.yaml by gen_custom_assets_header.py.
