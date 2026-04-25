@@ -120,7 +120,7 @@ static void TryPreloadCustomAssetsAtCup17() {
 
 // Per-pair (from, cup) fire counter. Tracks first-seen + total count so we
 // can distinguish "binding fires every frame for all IDs" (downstream issue)
-// from "some IDs fire only once" (caching / early-return per FontHandle).
+// from "some IDs fire only once" (caching / early-return per SpriteHandle).
 // Cap at 64 unique entries.
 static const int kBindingFireMax = 64;
 struct BindingFireRecord { u16 from; s16 cup; u32 count; };

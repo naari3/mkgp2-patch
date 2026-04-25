@@ -28,7 +28,7 @@ caller
   → resource slot registry @0x806573e8 に登録
   → 8 getter family は SetResource / per-frame UV refresh   ★ mod 用に lookup 拡張要
     path (`SpriteLayer_SetResource @0x8011f094` 等) から
-    1 field ずつ引かれる。描画フェーズ自体は g_FontHandlePool
+    1 field ずつ引かれる。描画フェーズ自体は g_SpriteHandlePool
     の slot 内 cached データを読むだけ (= 描画中は getter 走らない)
 ```
 
