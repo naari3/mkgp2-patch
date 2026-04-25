@@ -93,12 +93,14 @@ vanilla の caller (sprite 描画パイプライン) は
 
 ### `custom_assets.cpp`
 
-実装本体。主要パーツ:
+実装本体。vanilla 構造体 / アドレス (`kResourceTableMain @0x80422208`,
+`kResourceTableExt @0x8048da08`, `kResourcePathTable @0x80350508`,
+`kExtendedResourcePathTable @0x8034a418`) は `mkgp2docs/mkgp2_resource_asset_system.md`
+の説明と layout がそのまま該当する。
 
-- `kResourceTableMain` (`0x80422208`) と `kResourceTableExt` (`0x8048da08`) を
-  `VanillaResourceEntry*` として外部参照
-- `kResourcePathTable` (`0x80350508`) と `kExtendedResourcePathTable`
-  (`0x8034a418`) を `extern` 宣言
+主要パーツ:
+
+- 上記 vanilla 4 テーブルを `extern` で外部参照
 - 10 個の `*_Hook` 関数 (8 getter + IsValidResourceId + ResourceSlot_Load の
   asm wrapper)。8 getter の共通フロー:
 
@@ -386,17 +388,12 @@ yaml schema の拡張だけで済む。乗らない (sprite が vanilla pipeline
 
 ### custom ID は `< 0x8000` 必須 (sign-safe range)
 
-vanilla の `Sprite_SetAnimParam(sprite, paramId, short value)` (`@0x801a0374`)
-が値を **signed 16-bit** で取る経路があり、`0x9006` のような high-bit セット
-の id を渡すと sign-extend で `0xFFFF9006` になって slot registry の
-`slot[0]` (full int) と比較した際に miss する → 描画失敗 (透明)。
+vanilla の `Sprite_SetAnimParam` 経由で resource id が `short` 扱いされる
+経路があり、mod id の high bit が立つと sign-extend で slot lookup miss →
+透明描画になる。**binding 方式では出ない、direct-insert 方式でのみ顕在化**。
 
-**binding 方式では問題が出ない** (slot は vanilla id で keyed されるため)。
-**direct-insert 方式で初めて顕在化** する。新規 ID 域を選ぶときは必ず
-`< 0x8000` を確認。`CUSTOM_ID_BASE = 0x4000` は中央寄りに取った値。
-
-詳細: `tasks/lessons.md` / memory `feedback_custom_resource_id_sign_safe.md` /
-`docs/asset_pipeline.md` § Sign-safe ID range。
+メカニズム詳細: `mkgp2docs/mkgp2_resource_asset_system.md` § Sprite_SetAnimParam。
+mod 側の判断と現状: `docs/asset_pipeline.md` § 3 Sign-safe ID range。
 
 ### vanilla テーブルの境界を踏み抜く
 
@@ -416,14 +413,15 @@ custom_assets 自体ではやってない)。
 
 ### preload のタイミング
 
-per-frame UV refresh パスは slot miss 時に slot 作成しない (vanilla の
-`SetResource` / `FUN_8011fb2c` パスのみが `PreloadResource` をトリガする)。
-そのため custom resource を初めてバインドした瞬間に slot が作られないと、
-1 frame だけ vanilla アセットがフラッシュする。
+vanilla の per-frame UV refresh パスは slot miss しても slot を作成しない
+(詳細: `mkgp2docs/mkgp2_resource_asset_system.md` § per-frame UV refresh path
+は slot を作成しない)。そのため custom resource を初めて参照する瞬間に
+slot が作られていないと 1 frame だけ vanilla 側がフラッシュする。
 
 `custom_assets.cpp` の `TryPreloadCustomAssetsAtCup17()` が g_cupId が初めて
 17 になったときに、binding 全件を `PreloadResource()` で先回りロードしている。
-これがないと 1 frame の vanilla フラッシュが見える。
+direct-insert 方式 (round-level asset) は `round_select.cpp` 側で同等の
+preload を行う (PreInit hook で inject 後に `PreloadResource(customId)` を call)。
 
 ### `next_id` の chain
 

@@ -10,102 +10,44 @@ sprite カテゴリ等) を後付けする際の出発点。
 
 ---
 
-## 1. vanilla resource pipeline (前提)
+## 1. vanilla pipeline で mod が押さえるべき点
 
-vanilla の sprite / texture は次の 4 ステージで描画される:
+**vanilla pipeline の体系的な解説は `mkgp2docs/mkgp2_resource_asset_system.md`
+を参照** (ResourceEntry 40-byte layout、RGB+alpha chain、TPL envelope、
+slot レジストリ、per-cup slot @ `0x8049aea0`、`Sprite_*Anim` 等)。
 
-```
-   caller (gameplay logic)
-        │
-        │ resourceId (int)
-        ▼
-   ┌──────────────────────────────────┐
-   │ IsValidResourceId  @0x80122b90   │ id < 0x2b04 のみ通す (gate)
-   └──────────────────────────────────┘
-        │
-        ▼
-   ┌──────────────────────────────────┐
-   │ PreloadResource   @0x80120d80    │ slot を allocate / hit
-   └──────────────────────────────────┘
-        │
-        ▼
-   ┌──────────────────────────────────┐
-   │ ResourceSlot_Load @0x8011dca4    │ TPL を DVD/in-mem から load
-   │   bge @0x8011dccc                │
-   │   ├ THEN: filename path          │ id < 0x2b00 → ResourceEntry.group_key
-   │   │       → kResourcePathTable[]  │   → DVD load
-   │   └ ELSE: in-mem buffer          │ id >= 0x2b00 → DisplayBuffer_GetByIndex
-   └──────────────────────────────────┘
-        │
-        ▼
-   ┌──────────────────────────────────┐
-   │ slot registry @0x806573e8        │ 600 slots × 28 bytes
-   │   slot[0] resourceId             │
-   │   slot[1] groupKey               │
-   │   slot[2] resourceDataPtr (TPL)  │
-   │   slot[3..6] sub-data            │
-   └──────────────────────────────────┘
-        │
-        ▼
-   ┌──────────────────────────────────┐
-   │ 8 getter family @0x801223e8..    │ ResourceEntry のフィールドを 1 個ずつ
-   │   GetFlagsByte                   │ 返す API。sprite 描画パスがこれで
-   │   GetScaleXY  / GetSizeXY        │ texture rect / atlas tile / next chain
-   │   GetOffsetXY / GetGroupKey      │ 等を引く
-   │   GetFilePathPtr / GetSlotIndex  │
-   │   GetChainNextId                 │
-   │   IsValidResourceId               │
-   └──────────────────────────────────┘
-```
-
-### resourceId の意味別レンジ
-
-| range | 用途 | テーブル | 経路 |
-|---|---|---|---|
-| `0x0000..0x2AFF` | vanilla main resource | `kResourceTableMain @0x80422208` (11008 entries × 40 byte) | filename (THEN) |
-| `0x2B00..0x2B03` | vanilla extended resource | `kResourceTableExt @0x8048da08` (4 entries) | in-mem (ELSE) |
-| `0x2B04..0x3FFF` | **未使用** (mod が使ってよい) | — | — |
-| `0x4000..0x7FFF` | **mod direct-insert 推奨域** (sign-safe) | `kCustomResourceTable[]` | filename (THEN, hook で強制) |
-| `0x8000..0xFFFF` | **使用禁止** (sign-extension トラップ) | — | — |
-
-### ResourceEntry 40-byte layout
-
-`VanillaResourceEntry` (`features/custom_assets/custom_assets.h`) と
-`CustomResourceEntry` は同 layout:
-
-| offset | type | field | 用途 |
-|---|---|---|---|
-| +0x00 | u16 | `self_id` | この resource の id (sanity) |
-| +0x04 | f32 | `offset_x/y` | atlas 内 UV offset |
-| +0x0C | f32 | `size_x/y` | atlas 内 tile size |
-| +0x14 | s16 | `slot_index` | slot registry 内の位置 (chain 用) |
-| +0x16 | u16 | `group_key` | filename table index |
-| +0x18 | s16 | `next_id` | RGB↔alpha chain (-1 で終端) |
-| +0x1C | f32 | `scale_x/y` | sprite 描画 scale |
-| +0x24 | u8  | `flags` | format / blend mode |
-
-`group_key` は vanilla で s16 だが、custom で `u16` 扱いするのは
-sign-safe range (< 0x8000) を満たすため。
-
-### per-cup 16-byte slot @ `0x8049aea0`
-
-cup-select 上の各 cup には 16 byte の slot が紐づき、内部に 4 round × 4 byte
-(square thumb id 2 byte + road thumb id 2 byte) の resource id が並ぶ。
-round-select の sprite 描画 (`FUN_801c9288`) はこの slot を直接 indexing する:
+ここでは mod が乗る上で押さえる必要のある制約だけ要約:
 
 ```
-&DAT_8049aea0[sub_index * 16]
-    +0x00: round0 square id (u16)
-    +0x02: round0 road   id (u16)
-    +0x04: round1 square id (u16)
-    +0x06: round1 road   id (u16)
-    +0x08: round2 square id (u16)
-    +0x0A: round2 road   id (u16)
-    +0x0C: round3 square id (u16)
-    +0x0E: round3 road   id (u16)
+caller
+  → IsValidResourceId   (id < 0x2b04 のみ通す gate)         ★ mod 用に拡張要
+  → PreloadResource     (slot 確保 / hit 判定)
+  → ResourceSlot_Load   (bge @0x8011dccc で THEN/ELSE)      ★ mod 用に分岐拡張要
+       ├ THEN (id < 0x2b00): filename → DVD load
+       └ ELSE (id >= 0x2b00): in-mem buffer (DisplayBuffer)
+  → slot registry @0x806573e8 に登録
+  → 8 getter family (描画パスから 1 field ずつ引く)         ★ mod 用に lookup 拡張要
 ```
 
-`sub_index` は `0x8049af8c[g_cupId]` の lookup table で取れる。
+### mod が制約として直面する vanilla 仕様
+
+| vanilla 仕様 | mod 上の影響 | 対処 |
+|---|---|---|
+| `IsValidResourceId @0x80122b90` が `< 0x2b04` を gate | mod id はここで bail され slot 登録されない (透明) | gate を hook して custom id も valid 判定 |
+| `ResourceSlot_Load @0x8011dca4` の `bge @0x8011dccc` 分岐は `0x2b00` で切る | mod id が `>= 0x2b00` だと ELSE (in-mem buffer) に流れて OOB → 全 slot 同 garbage | bge を asm wrapper で置換、mod id 範囲は強制 THEN |
+| 8 getter family は 1 field ずつ独立に呼ばれる | 1 個でも未 hook だと「flags は mod / size は vanilla」のような不整合 | 8 getter 全部 hook |
+| `Sprite_SetAnimParam @0x801a0374` が値を `short` で取る | mod id `>= 0x8000` は sign-extend で slot lookup miss | mod id は `< 0x8000` (§3) |
+| per-frame UV refresh path は slot 未登録で silently fallback | scene 初回フレームに transparent / garbage が一瞬出る | scene PreInit で `PreloadResource(customId)` を能動 call |
+
+### mod ID range の置き場所
+
+| range | 用途 |
+|---|---|
+| `0x0000..0x2AFF` | vanilla main (触らない) |
+| `0x2B00..0x2B03` | vanilla extended (触らない) |
+| `0x2B04..0x3FFF` | mod 未使用 (将来用) |
+| **`0x4000..0x7FFF`** | **mod direct-insert 推奨域** (sign-safe、現 custom_assets が `0x4000..0x4100` 使用中) |
+| `0x8000..0xFFFF` | sign-extension トラップで使用禁止 (§3) |
 
 ---
 
@@ -178,31 +120,14 @@ slot registry には **custom id で entry が登録される**。
 
 ## 3. Sign-safe ID range (絶対制約)
 
-`CUSTOM_ID_BASE = 0x4000` は **設計選択ではなく制約**。
+`CUSTOM_ID_BASE = 0x4000` は **設計選択ではなく制約**。vanilla の
+`Sprite_SetAnimParam @0x801a0374` が値を `short` で取り、consumer 側で
+`(short)` 読み戻し時に sign-extend されるため、mod id の high bit が立つと
+slot lookup miss する。**メカニズムの詳細は
+`mkgp2docs/mkgp2_resource_asset_system.md` § Sprite_SetAnimParam 参照**。
 
-vanilla の `Sprite_SetAnimParam(sprite, paramId, short value)` (`@0x801a0374`)
-は値を **signed 16-bit** で取る。round-select 等で resource id を sprite anim
-param table に格納する経路があり、consumer がこれを `(short)` で読み戻すと
-sign-extend される。
-
-```
-custom id = 0x9006
-        │
-        │ Sprite_SetAnimParam に short として格納
-        ▼
-   anim param table: 0x9006 (16-bit, signed)
-        │
-        │ consumer が (short) で読む → sign-extend
-        ▼
-   読み戻し値: 0xFFFF9006 (32-bit signed)
-        │
-        │ slot registry の slot[0] (= resourceId, full int) と比較
-        ▼
-   slot[0] = 0x00009006  ≠  0xFFFF9006  → miss → 透明
-```
-
-binding 方式 (A) では slot は vanilla id (`< 0x8000`) で keyed されるので
-sign-safe。**direct-insert (B) で初めて顕在化する**。
+binding 方式 (§2.A) では slot が vanilla id (`< 0x8000`) で keyed される
+ので問題なし。**direct-insert 方式 (§2.B) で初めて顕在化する**。
 
 ### 安全範囲
 
