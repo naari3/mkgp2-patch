@@ -25,8 +25,11 @@ caller
   → ResourceSlot_Load   (bge @0x8011dccc で THEN/ELSE)      ★ mod 用に分岐拡張要
        ├ THEN (id < 0x2b00): filename → DVD load
        └ ELSE (id >= 0x2b00): in-mem buffer (DisplayBuffer)
-  → slot registry @0x806573e8 に登録
-  → 8 getter family (描画パスから 1 field ずつ引く)         ★ mod 用に lookup 拡張要
+  → resource slot registry @0x806573e8 に登録
+  → 8 getter family は SetResource / per-frame UV refresh   ★ mod 用に lookup 拡張要
+    path (`SpriteLayer_SetResource @0x8011f094` 等) から
+    1 field ずつ引かれる。描画フェーズ自体は g_FontHandlePool
+    の slot 内 cached データを読むだけ (= 描画中は getter 走らない)
 ```
 
 ### mod が制約として直面する vanilla 仕様
@@ -35,7 +38,7 @@ caller
 |---|---|---|
 | `IsValidResourceId @0x80122b90` が `< 0x2b04` を gate | mod id はここで bail され slot 登録されない (透明) | gate を hook して custom id も valid 判定 |
 | `ResourceSlot_Load @0x8011dca4` の `bge @0x8011dccc` 分岐は `0x2b00` で切る | mod id が `>= 0x2b00` だと ELSE (in-mem buffer) に流れて OOB → 全 slot 同 garbage | bge を asm wrapper で置換、mod id 範囲は強制 THEN |
-| 8 getter family は 1 field ずつ独立に呼ばれる | 1 個でも未 hook だと「flags は mod / size は vanilla」のような不整合 | 8 getter 全部 hook |
+| 8 getter family は 1 field ずつ独立に呼ばれる (SetResource / refresh path から、描画中ではない) | 1 個でも未 hook だと「flags は mod / size は vanilla」のような不整合 | 8 getter 全部 hook |
 | `Sprite_SetAnimParam @0x801a0374` が値を `short` で取る | mod id `>= 0x8000` は sign-extend で slot lookup miss | mod id は `< 0x8000` (§3) |
 | per-frame UV refresh path は slot 未登録で silently fallback | scene 初回フレームに transparent / garbage が一瞬出る | scene PreInit で `PreloadResource(customId)` を能動 call |
 
