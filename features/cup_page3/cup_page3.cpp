@@ -1,6 +1,7 @@
 #include <kamek.h>
 #include "patch_common.h"
 #include "generated_cup_courses.h"
+#include "../custom_assets/custom_assets.h"
 
 // clFlowCup (GP cup selection, scene state 0x15) has a tri-page experiment:
 //   page 0: omote (8 cups)
@@ -148,6 +149,70 @@ asm void CupUpdateEntryHook() {
 kmBranch(0x801c772c, CupUpdateEntryHook);
 kmPatchExitPoint(CupUpdateEntryHook, 0x801c7730);
 
+// --------- Cup-select page 2 cursor-indexed テーブル inject ----------------
+//
+// Phase C-1: cup-tile icon/ribbon (DAT_8049ad58) を direct-insert する。
+// vanilla の cursor-indexed テーブル DAT_8049ad58 は scene 内で書き換え可能で、
+// page 1→2 entry で kCupSelectInjects[i] の値を cursor=i slot に書き込み、
+// page 2→1 exit (および clFlowCup_Dtor entry safety net) で復元する。
+//
+// 結果: page 2 中 sprite に書き込まれる resourceId 自体が 0x4000+ になり、
+// debug_overlay で見える ID も統一される (binding 不要に近づく)。
+//
+// trophy / banner / cup-name banner は別テーブル。Phase C-2 以降で同じ
+// pattern を拡張する予定。
+//
+// state machine:
+//   inject 済みでない & page 1→2 entry: save vanilla 値 → write custom 値
+//   inject 済み      & page 2→1 exit  : write back vanilla 値 → clear flag
+//   inject 済み      & Dtor entry     : safety net で復元
+// 二重 inject / 二重 restore は flag で防御。
+
+static u16  s_cupSelectVanillaIcon[8];
+static u16  s_cupSelectVanillaRibbon[8];
+static unsigned int s_cupSelectInjectCountActive = 0;
+static bool s_cupSelectInjected = false;
+
+// DAT_8049ad58: 9 entry × 12 byte (= 6 short)
+//   short[0] = icon_id, short[1] = ribbon_id, short[2..5] = float x,y
+// cursor 0..7 が page 内 8 tile に対応。
+static u16* const kCupTileTable = (u16*)0x8049ad58;
+
+static void CupSelectTableInject_Apply() {
+    if (s_cupSelectInjected) {
+        DebugPrintfSafe("MKGP2: cup-select inject SKIP (already active, n=%u)\n",
+                        s_cupSelectInjectCountActive);
+        return;
+    }
+    unsigned int n = kCupSelectInjectCount;
+    if (n > 8) n = 8;
+    for (unsigned int i = 0; i < n; ++i) {
+        s_cupSelectVanillaIcon[i]   = kCupTileTable[i * 6 + 0];
+        s_cupSelectVanillaRibbon[i] = kCupTileTable[i * 6 + 1];
+        kCupTileTable[i * 6 + 0]    = kCupSelectInjects[i].iconId;
+        kCupTileTable[i * 6 + 1]    = kCupSelectInjects[i].ribbonId;
+    }
+    s_cupSelectInjectCountActive = n;
+    s_cupSelectInjected = true;
+    DebugPrintfSafe("MKGP2: cup-select inject n=%u (cursor[0] icon=0x%04x ribbon=0x%04x)\n",
+                    n,
+                    n > 0 ? (unsigned)kCupSelectInjects[0].iconId   : 0u,
+                    n > 0 ? (unsigned)kCupSelectInjects[0].ribbonId : 0u);
+}
+
+static void CupSelectTableInject_Restore() {
+    if (!s_cupSelectInjected) return;
+    unsigned int n = s_cupSelectInjectCountActive;
+    if (n > 8) n = 8;
+    for (unsigned int i = 0; i < n; ++i) {
+        kCupTileTable[i * 6 + 0] = s_cupSelectVanillaIcon[i];
+        kCupTileTable[i * 6 + 1] = s_cupSelectVanillaRibbon[i];
+    }
+    s_cupSelectInjectCountActive = 0;
+    s_cupSelectInjected = false;
+    DebugPrintfSafe("MKGP2: cup-select restore n=%u\n", n);
+}
+
 // --------- Forward transition: cursor>7 handling ------------------------
 // Replaces 0x801c7cfc..0x801c7d8c (inclusive) and exits to 0x801c7d90.
 extern "C" void CupForwardTransition(void* scene) {
@@ -173,6 +238,10 @@ extern "C" void CupForwardTransition(void* scene) {
         I32(scene, OFF_SUBSTATE)  = 4;
         I32(scene, OFF_FRAME_CTR) = 0;
         DebugPrintfSafe("MKGP2: cup page 1 -> 2 (new page)\n");
+        // Direct-insert: cursor-indexed cup-tile resource を custom ID に
+        // 書き換える。cursor 移動は scene 側がそのまま行うので、各 tile が
+        // 自前 cup の icon/ribbon を表示する。
+        CupSelectTableInject_Apply();
     }
     // flag == 2: terminal, cursor already clamped above.
 }
@@ -219,6 +288,8 @@ extern "C" void CupBackwardTransition(void* scene) {
         I32(scene, OFF_SUBSTATE)  = 4;
         I32(scene, OFF_FRAME_CTR) = 0;
         DebugPrintfSafe("MKGP2: cup page 2 -> 1\n");
+        // Restore vanilla cup-tile resource ids so page 1 (ura) は元通りに表示。
+        CupSelectTableInject_Restore();
     }
 }
 
@@ -1359,3 +1430,48 @@ kmPatchExitPoint(VoiceDequeueGuard, 0x801b6aa0);
 // a defensive safety net.
 kmWrite32(0x801B0C08, 0x2803000F);   // cmplwi r3, 15
 kmWrite32(0x801B0C0C, 0x418100A8);   // bgt cr0, +0xA8
+
+// --------- clFlowCup_Dtor entry hook: cup-select inject restore safety net
+//
+// Scene が page 2 のまま destroy された場合 (= 通常 page 2 → race scene 突入や
+// scene 切替) でも vanilla テーブルが復元されているように、Dtor 入口で
+// 必ず CupSelectTableInject_Restore() を呼ぶ。flag で二重 restore を防御済。
+//
+// vanilla prologue 4 insts (0x801c88f4..0x801c8900) を replay して、次の
+// 命令 0x801c8904 (`or. r30,r3,r3`) に bctr で戻る。
+extern "C" void CupSelect_PreDtor() {
+    EnsureDBATWidened();
+    CupSelectTableInject_Restore();
+}
+
+asm void clFlowCup_Dtor_Hook() {
+    nofralloc
+    // Wrapper frame (save r3 = scene, r4 = freeFlag).
+    stwu r1, -0x20(r1)
+    mflr r0
+    stw  r0, 0x24(r1)
+    stw  r3, 0x10(r1)
+    stw  r4, 0x14(r1)
+
+    bl   CupSelect_PreDtor
+
+    lwz  r3, 0x10(r1)
+    lwz  r4, 0x14(r1)
+    lwz  r0, 0x24(r1)
+    mtlr r0
+    addi r1, r1, 0x20
+
+    // Replay vanilla prologue 0x801c88f4..0x801c8900 (4 insts).
+    stwu r1, -0x20(r1)
+    mflr r0
+    stw  r0, 0x24(r1)
+    stmw r27, 0xc(r1)
+
+    // bctr to 0x801c8904 (next vanilla instruction).
+    lis  r12, 0x801c
+    ori  r12, r12, 0x8904
+    mtctr r12
+    bctr
+}
+
+kmBranch(0x801c88f4, clFlowCup_Dtor_Hook);

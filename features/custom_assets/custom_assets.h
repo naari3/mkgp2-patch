@@ -53,6 +53,23 @@ struct CupAliasEntry {
     u8 pad[2];
 };
 
+// Cup-select page 2 用の cursor-indexed テーブル inject。
+// vanilla の cursor-indexed テーブル DAT_8049ad58 (cup-tile icon/ribbon) は
+// scene 内で書き換え可能なので、page 1→2 entry でカスタム値を書き込み、
+// page 2→1 exit で復元する。direct-insert: SpriteHandleSlot の resourceId
+// 自体に custom 0x4000+ ID が乗るので debug_overlay で見える ID も統一される。
+//
+// 1 entry = 1 custom cup。配置 cursor は配列 index (= cups[] の順)。
+//
+// Phase C-1: icon + ribbon (DAT_8049ad58 short[0..1]) のみ direct-insert。
+// trophy / banner / cup-name banner は binding 経由で動作中 (Phase C-2 以降)。
+struct CupSelectInject {
+    u8  customCupId;  // 対象 cup_id (>= 17) — debug 用
+    u8  pad[3];
+    u16 iconId;       // → DAT_8049ad58[cursor*6+0]
+    u16 ribbonId;     // → DAT_8049ad58[cursor*6+1]
+};
+
 // Per-round thumb resource id injection.
 // vanilla の DAT_8049aea0 起点の per-cup 16 byte slot に上書きする 8 u16。
 // レイアウトは vanilla と同じく [round0_sq, round0_vert, round1_sq, round1_vert,
@@ -84,6 +101,8 @@ extern "C" {
     extern const unsigned int        kCupAliasMapCount;
     extern const RoundThumbInject    kRoundThumbInjects[];
     extern const unsigned int        kRoundThumbInjectCount;
+    extern const CupSelectInject     kCupSelectInjects[];
+    extern const unsigned int        kCupSelectInjectCount;
 
     // Active custom cupId during scenes that needed a g_cupId swap to keep
     // vanilla in-bounds (e.g. round-select). 0 = inactive. ApplyBinding gates
