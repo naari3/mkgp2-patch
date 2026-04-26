@@ -25,3 +25,23 @@
 - カーソル移動時の 1-frame flash は未解決だが、機能的にはカップ選択・ラウンド遷移・レース全て動く。cosmetic 優先度は低。必要なら将来 Ghidra でタイル描画パスを decompile して正確に対応する。
 
 ---
+
+## 2026-04-26: 'main game loop' を MainGameLoop と決めつけて hook した
+
+**失敗**: debug_overlay 機能で、毎フレームのデバッグ HUD を出すために `MainGameLoop @ 0x8002dd58` 内の `bl FUN_80121120` (0x8002e4ec) を kmCall した。起動シーケンスの最初の数フレーム (~50ms) だけ HUD が出て、PCB ID チェック画面以降ずっと出ない現象になった。
+
+**結果**:
+- HUD は boot 直後の 3 frame だけ表示
+- PCB ID check 画面 / title / cup select いずれでも一切出ない
+- 一方で custom_assets の getter hook は cup select でも fire し続けてた
+
+**根本原因**: `MainGameLoop` という名前と中の `while (iVar6 == 2) { ... FUN_80121120() ... }` の構造から「これが per-frame の game loop」と決めつけた。実際にはこれは **card task 待機 loop** (`iVar6 == 2` = card task in progress)。card 読込が完了すると loop を抜けて、PCB check loop → notice loop と進んで MainGameLoop は return する。
+
+実際の per-frame ループは `FUN_800ac894` が `MainGameLoop` 後に呼ぶ **`FUN_8002c5e8`** の `do { ... } while(true)`。中身に `DebugOverlay_Dispatch(param_1)` (vanilla 側のデバッグオーバーレイ呼び出し) や `bl 0x8002cd9c` (scene draw) が入っているので「これが本物」と判断できた。BL site は 0x8002c678 (main path) と 0x8002caf0 (cleanup)。
+
+**次回からの判断基準**:
+- 関数名や Ghidra の命名 (`MainGameLoop` 等) を信用しすぎない。caller chain (`get_function_callers`) を辿って、wrapper の構造を確認する。
+- "per-frame loop" の判定は **vanilla がそこで debug overlay / scene draw / フレームカウンタ等を呼んでいるか** で確認。FUN_8002c5e8 は `DebugOverlay_Dispatch` を呼んでいたので確実。
+- 候補が見えたら **動作で検証**: 診断 log を仕込んで、cup select 等の active scene でも fire するか確認 (今回これで気付いた)。
+- 「複数候補がある hook 先」(今回 FUN_80121120 の callers が 7 個)のうち、どれが "normal gameplay frame" かは caller の構造を Ghidra で読んで決める。
+

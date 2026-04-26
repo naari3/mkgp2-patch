@@ -48,7 +48,8 @@ echo "=== Linking ==="
     -externals="$PATCH_DIR/externals.txt" \
     -output-gecko="$PATCH_DIR/mkgp2_patch_gecko.txt" \
     -output-riiv="$PATCH_DIR/mkgp2_patch_riiv_raw.xml" \
-    -output-code="$PATCH_DIR/mkgp2_patch.bin"
+    -output-code="$PATCH_DIR/mkgp2_patch.bin" \
+    -output-map="$PATCH_DIR/mkgp2_patch.map"
 
 # 4.5. Validate ArenaLo > bin_end (heap must not overlap patch tail)
 echo "=== Validating ArenaLo ==="

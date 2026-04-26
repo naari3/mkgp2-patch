@@ -116,3 +116,79 @@ kExtendedResourcePathTable=0x8034a418     # char *[]; indexed by raw resourceId*
 PreloadResource=0x80120d80                # int(int resourceId); ensures slot for resource exists.
                                           # Internally calls GetGroupKey/GetFilePathPtr → DVDOpen →
                                           # registers slot with refcount++. Returns 1 success / 0 fail.
+ResourceTable_GetGroupKey=0x80122ac4      # int(int resourceId); returns ResourceEntry.groupKey (0 on miss)
+
+# Sprite handle pool / draw consumer (used by features/debug_overlay)
+g_SpriteHandlePool=0x8065bee8             # SpriteHandleSlot[500] (228 byte/slot). Cached 2D quad
+                                          # data populated by SpriteHandle_CreateEx and consumed by
+                                          # the per-layer pool walker (FUN_8011f994 → FUN_8011e9c0
+                                          # → FUN_8011df98). Field offsets: +0x10 resourceId,
+                                          # +0x38/3C scaleX/Y, +0x88 vertCoords[8], +0xD8/D9/DA
+                                          # activeFlag/visibleFlag/dirtyFlag.
+SpriteHandlePool_GC=0x80121120            # SpriteHandle pool garbage collector. Walks active list
+                                          # at DAT_806d1500+0x14, sweeps slots whose resourcePtr
+                                          # low byte is 0 back to the free list. Called once per
+                                          # active frame loop body. Per-frame hook target: BL site
+                                          # 0x8002c678 inside MainGameLoop (= former FUN_8002c5e8).
+
+# Debug text overlay (used by features/debug_overlay; vanilla also wires this
+# from BootPCBCheck / Service Menu paths).
+DrawText=0x801db548                       # void(double scale, DisplayContext* ctx, int x, int y,
+                                          #      int color, char* fmt, ...). Buffers a printf-style
+                                          #      entry into ctx; rendered by FUN_801db278.
+DisplayContext_Init=0x801db710            # int*(DisplayContext* ctx); allocates internal entry +
+                                          #      font texture buffers (~0x4200 + 0x120f00 byte).
+DisplayContext_Flush=0x801db278           # void(DisplayContext* ctx); saves GX state, sets 640x480
+                                          #      viewport, renders all queued text entries via
+                                          #      FUN_801daf38, restores state, zeros entry count.
+
+# GX library wrappers used by features/debug_overlay Phase 2B for untextured
+# colored QUAD emission. Reference template: FUN_801526c4 (vanilla untextured
+# filled rect renderer) — every wrapper here is verified by Ghidra decompile.
+#
+# IMPORTANT: signatures match what MKGP2's wrapper layer actually accepts,
+# NOT necessarily the GX library spec.
+
+# Primitive emit + vertex layout (Ghidra-named).
+GX_Begin=0x80266b88                       # void(u8 type, u8 vtxFmt, u16 cnt). type=0x80(QUADS)
+GX_ClearVtxDesc=0x802659d4                # void()
+GX_SetVtxDesc=0x80265300                  # void(int attr, int type). attr=9(POS) 0xb(CLR0) 0xd(TEX0)
+GX_SetVtxAttrFmt=0x80265a0c               # void(int vtxFmt, attr, cmp, type, frac).
+                                          #   POS+F32: cmp=0(XY) type=4(F32) frac=0
+GX_SetArray=0x80265f84                    # void(attr, base, stride). For INDEX8/16 attr access.
+
+# TEV / channel / blend.
+GX_SetTevOrder=0x802695ec                 # void(u8 stage, texCoord, texMap, int color).
+                                          #   color=4=GX_COLOR0A0; texCoord/texMap=0xff for untextured
+GX_SetTevPreset=0x8026904c                # void(int stage, int presetIdx). preset=4 = "raster only"
+GX_SetTevColor=0x80267c0c                 # void(int regId, const u32* rgbaWord). regId=4 = KColor0
+GX_SetNumTevStages=0x802662a0             # void(int n); BP 0x103f bits 0-3 (vanilla passes 0 for 1 stg)
+GX_SetCullMode=0x80266da8                 # void(mode); GenMode bits 14-15
+GX_SetNumChans=0x80269788                 # void(int n); GenMode shadow numChans bits
+GX_SetBlendMode=0x80269ca8                # void(type, src, dst, op). (1,4,5,0)=alpha-blend SRC/INVSRC
+
+# Matrix / viewport / projection.
+MTXOrtho=0x8025e154                       # void(top, bot, left, right, near, far, mtx4x4*)
+MTXIdentity=0x8025d120                    # void(mtx3x4*)
+GX_SetProjection=0x8026a18c               # void(mtx4x4*, type=1=ORTHO/0=PERSP); XF 0x61020
+GX_LoadPosMtxImm=0x8026a304               # void(mtx3x4*, idx); XF 0xb0000+idx*4
+GX_SetCurrentMtx=0x8026a3a4               # void(idx); 0..9
+GX_SetViewport=0x8026a574                 # void(left, top, w, h, near, far)
+GX_SetScissor=0x8026a5e0                  # void(x, y, w, h)
+
+# Unverified-name internal shims. Vanilla untextured emit (FUN_801526c4) calls
+# these with fixed args we just mirror. Keeping raw addresses since semantics
+# aren't fully decoded.
+DbgGx_Xfreg100A_Set3=0x80269d54           # void(u32, u32, u32). vanilla: (0, 7, 1)
+DbgGx_Xfreg100B_Set1=0x80269d88           # void(u32). vanilla: (0)
+DbgGx_BP1009_SetN=0x80267cfc              # void(int). vanilla: (1)
+DbgGx_GenModeTail7=0x80267d38             # void(7 ints). vanilla: (4, 0, 0, 0, 0, 0, 2)
+
+# Vanilla "draw untextured colored filled quad" entrypoint. Self-contained:
+# does its own GX state save/setup and emits one QUAD. Used by features/debug_overlay
+# Phase 2B for rect outlines (4 calls per rect = top/bottom/left/right edges).
+DrawColoredQuad=0x801526c4                # void(double x, y, w, h, u8 R, G, B, A). Screen-space, F32 POS.
+
+# Debug-overlay: 8-color RGBA4 palette (used elsewhere by DrawText `color` arg).
+# Not used by the QUAD emit path (we use TEV constant), kept for future modes.
+kDbgColorPalette=0x8039fd18               # 0=black 1=blue 2=green 3=cyan 4=red 5=mag 6=yellow 7=white
