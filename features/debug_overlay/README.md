@@ -53,11 +53,13 @@ $ grep g_dbgOverlayMode mkgp2_patch.map
 
 ## 既知の制約
 
-- DisplayContext の entry buffer は 127 entry まで。mode 2 の list は 28 行
-  cap、mode 3 の per-sprite (label + 矩形) は 110 個 cap。それを超える
-  visible sprite は frame 内で表示されない (= 上限 110)。
-- 110 cap は label と矩形で揃えてある。一方が表示されてもう一方が表示され
-  ない、という非対称は起きない。
+- mode 2 の list 表示は **28 行 cap** (画面 480px / 行高 10px に収める)。
+  cap を超えた slot は表示されないが、サマリ行で総数は分かる。
+- mode 3 (label + 矩形) は **cap なし**。pool 全 500 slot を walk する。
+  vanilla `DrawText` には `< 0x7f` (= 127 entry) のハード cap が hardcode
+  されているが、loop 中で 120 entry ごとに `DisplayContext_Flush` を呼んで
+  buffer をドレインすることで実質撤廃している。Flush 後も EFB に既描画分
+  は残るので、複数 Flush を重ねるとそのまま積み上がる。
 - mode 3 の矩形は `vertCoords[8]` (4 corner xy) の AABB を使う。回転済み
   sprite (rotation != 0) でも AABB は外接矩形になるので、視覚的には実際の
   描画形状より大きい矩形が出る場合がある。

@@ -204,14 +204,16 @@ static const double kHudScale     = 0.5;
 static const int    kHudLineHeight = 10;   // matches scale 0.5 (glyph ~16px nominal → ~8px advance)
 static const int    kHudOriginX   = 8;
 static const int    kHudOriginY   = 24;
-// Display caps. Each is the max number of sprites we'll visualize in a frame.
+// Display caps. Both modes walk the full 500-slot pool.
 //   kHudListMax: full-list mode 2 row count, sized to fit 480px at scale 0.5.
-//   kPerSpriteMax: mode 3 label + rect cap. Bound by DisplayContext's 127
-//     entry buffer (one slot for the summary line, rest for labels). Rect
-//     emit has no equivalent buffer, so we share the same cap to keep label
-//     and outline counts in sync (no asymmetric truncation).
-static const int    kHudListMax   = 28;
-static const int    kPerSpriteMax = 110;
+//   kFlushBatch: how many DrawText entries we let pile up before forcing a
+//     mid-loop DisplayContext_Flush. Vanilla DrawText silently drops entries
+//     once the buffer hits 127 (cmpwi 0x7f hardcoded inside DrawText), so we
+//     drain partway through to lift the per-frame label cap. The text drawn
+//     in earlier flushes stays on the EFB, so multiple flushes per frame
+//     accumulate as expected.
+static const int    kHudListMax  = 28;
+static const int    kFlushBatch  = 120;   // < 127 so DrawText never drops
 
 static void RenderHud() {
     if (!s_dbgCtx) return;
@@ -250,9 +252,11 @@ static void RenderHud() {
             ++line;
         }
     } else if (g_dbgOverlayMode == 3) {
-        // Per-sprite id label at AABB top-left.
-        int emitted = 0;
-        for (int i = 0; i < 500 && emitted < kPerSpriteMax; ++i) {
+        // Per-sprite id label at AABB top-left. Walks the full 500-slot pool;
+        // mid-loop Flush every kFlushBatch entries to bypass DrawText's 127
+        // entry hardcoded cap.
+        int batch = 1;   // summary line is already in the buffer
+        for (int i = 0; i < 500; ++i) {
             const SpriteHandleSlot& s = g_SpriteHandlePool[i];
             if (!s.activeFlag || !s.visibleFlag) continue;
             Aabb a = ComputeAabb(s.vertCoords);
@@ -261,19 +265,22 @@ static void RenderHud() {
             int x = (int)a.minX; if (x < 0) x = 0; if (x > 600) x = 600;
             int y = (int)a.minY; if (y < 0) y = 0; if (y > 472) y = 472;
             DrawText(kHudScale, s_dbgCtx, x, y, 7, "%04x", (int)s.resourceId);
-            ++emitted;
+            if (++batch >= kFlushBatch) {
+                DisplayContext_Flush(s_dbgCtx);
+                batch = 0;
+            }
         }
     }
 
     DisplayContext_Flush(s_dbgCtx);
 
     // Mode 3: per-sprite cyan rect outline via 4 GX_LINES per sprite.
-    // Rendered AFTER the text Flush so outlines compose on top of any text
-    // (including the labels above) in the FIFO command stream.
+    // Rendered AFTER the text Flush so outlines compose on top of the labels
+    // in the FIFO command stream. No buffer cap — GX_LINES emit goes straight
+    // to the GP FIFO.
     if (g_dbgOverlayMode == 3) {
         DebugOverlay_LineSetupViaQuad(/*R=*/0, /*G=*/0xff, /*B=*/0xff, /*A=*/0xff);
-        int emitted = 0;
-        for (int i = 0; i < 500 && emitted < kPerSpriteMax; ++i) {
+        for (int i = 0; i < 500; ++i) {
             const SpriteHandleSlot& s = g_SpriteHandlePool[i];
             if (!s.activeFlag || !s.visibleFlag) continue;
             Aabb a = ComputeAabb(s.vertCoords);
@@ -286,7 +293,6 @@ static void RenderHud() {
             if (rx + rw > 640) rw = 640 - rx;
             if (ry + rh > 480) rh = 480 - ry;
             DrawDebugRectLines(rx, ry, rw, rh);
-            ++emitted;
         }
     }
 }
