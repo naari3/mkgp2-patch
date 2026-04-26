@@ -25,15 +25,10 @@ loop (元 `MainGameLoop` と Ghidra で呼ばれていた `FUN_8002dd58`) では
 
 | mode | 内容 |
 |---|---|
-| 0 | サマリー 1 行 (active / visible カウント) |
-| 1 | 全 active+visible slot を左上に list (id, size, pos, filename) |
-| 2 | 各 visible sprite の AABB 左上に id label |
-| 3 | mode 2 + 緑 1px 矩形 outline (4 thin filled QUAD) |
-| 4 | 中央 100x30 magenta バー (DrawColoredQuad の smoke test) |
-| 5 | 中央 magenta クロス (GX_LINES の smoke test) |
-| 6 | mode 2 + cyan 矩形 outline (4 GX_LINES per sprite) |
-
-`g_dbgOverlayEnabled` (default 1) を 0 にすると全 mode 共通で off。
+| 0 | off (overlay 一切描画しない、default) |
+| 1 | サマリー 1 行 (active / visible カウント) |
+| 2 | 全 active+visible slot を左上に list (id, size, pos, filename) |
+| 3 | 各 visible sprite の AABB 左上に id label + cyan 矩形 outline (GX_LINES) |
 
 ## 内部構造
 
@@ -41,28 +36,28 @@ DisplayContext (font 付き 2D テキストレンダラ) を自前で `Alloc(0xd
 `DisplayContext_Init` で 1 個確保する。boot 時に lazy 初期化、以降の
 frame では使い回し。
 
-mode 3 / 4 / 5 / 6 の rect 描画は vanilla の `DrawColoredQuad`
-(`FUN_801526c4`) と GX_LINES piggyback を使っている。背景・state setup
-の詳細は別 doc を参照:
+mode 3 の矩形描画は vanilla の `DrawColoredQuad` (`FUN_801526c4`) で GX
+state を立ち上げてから GX_LINES を 4 本/sprite emit する piggyback 構造。
+背景・state setup の詳細は別 doc を参照:
 [mkgp2docs/mkgp2_screenspace_2d_emit.md](https://github.com/dolphin-emu/dolphin/blob/master/mkgp2docs/mkgp2_screenspace_2d_emit.md)。
 
 ## ビルド毎に変わるアドレス
 
-`g_dbgOverlayEnabled` / `g_dbgOverlayMode` のアドレスはパッチ bin の
-レイアウトに依存して毎ビルド変わる。確認は `mkgp2_patch.map` (build.sh が
-自動生成) を grep。
+`g_dbgOverlayMode` のアドレスはパッチ bin のレイアウトに依存して毎ビルド
+変わる。確認は `mkgp2_patch.map` (build.sh が自動生成) を grep。
 
 ```
-$ grep g_dbgOverlay mkgp2_patch.map
-  806F47E0 000004 g_dbgOverlayEnabled
-  806F4E00 000004 g_dbgOverlayMode
+$ grep g_dbgOverlayMode mkgp2_patch.map
+  806F47EC 000004 g_dbgOverlayMode
 ```
 
 ## 既知の制約
 
-- DisplayContext の entry buffer は 127 entry まで。mode 1 の list は 28 行
-  cap、mode 2 の per-sprite label は 110 個 cap で安全圏に収めている。
-- mode 6 の sprite 数 cap は 80 (4 line × 80 = 320 emit/frame)。実測上
-  問題は見えていないが GX_LINES path は vanilla 未踏なので注意。
-- mode 3 / 6 の矩形は `vertCoords[8]` (4 corner xy) の AABB を使う。回転
-  済み sprite (rotation != 0) でも AABB は外接矩形になる。
+- DisplayContext の entry buffer は 127 entry まで。mode 2 の list は 28 行
+  cap、mode 3 の per-sprite (label + 矩形) は 110 個 cap。それを超える
+  visible sprite は frame 内で表示されない (= 上限 110)。
+- 110 cap は label と矩形で揃えてある。一方が表示されてもう一方が表示され
+  ない、という非対称は起きない。
+- mode 3 の矩形は `vertCoords[8]` (4 corner xy) の AABB を使う。回転済み
+  sprite (rotation != 0) でも AABB は外接矩形になるので、視覚的には実際の
+  描画形状より大きい矩形が出る場合がある。

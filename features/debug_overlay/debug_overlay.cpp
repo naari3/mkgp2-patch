@@ -108,19 +108,12 @@ extern "C" {
 static void* s_dbgCtx        = 0;     // self-allocated DisplayContext
 static int   s_dbgCtxAllocFailedOnce = 0;
 
-// Master toggle. Default on for development. Pokeable from Dolphin if needed.
-volatile int g_dbgOverlayEnabled = 1;
-
-// Display mode. Default = compact summary (just a count).
-//   0 = summary line only (active / visible / pool counts)
-//   1 = full per-slot list (id / size / pos / filename), capped at kHudListMax
-//   2 = per-sprite id label at each visible sprite's top-left corner
-//   3 = green 1px rect outline around each visible sprite + per-sprite id label
-//   4 = single magenta 100x30 filled bar at screen center (DrawColoredQuad
-//       smoke test — validates the vanilla helper before mode 3 is trusted)
-//   5 = magenta cross at center via 2 GX_LINES (LINES smoke test)
-//   6 = cyan rect outline around each visible sprite via 4 GX_LINES + label
+// Display mode. Default 0 = off (no overlay rendered at all).
 // Pokeable from Dolphin to switch live.
+//   0 = off
+//   1 = summary line (active / visible counts)
+//   2 = full per-slot list (id / size / pos / filename), capped at kHudListMax
+//   3 = per-sprite id label at AABB top-left + cyan rect outline (GX_LINES)
 volatile int g_dbgOverlayMode = 0;
 
 // --- helpers ------------------------------------------------------------
@@ -145,38 +138,17 @@ static void EnsureDisplayContext() {
     s_dbgCtx = p;
 }
 
-// --- Rect outline rendering (Phase 2B) ----------------------------------
-//
-// DrawDebugRect outlines a (x, y, w, h) screen-space box by emitting four
-// thin (1px) filled quads via the vanilla DrawColoredQuad helper. Each call
-// runs DrawColoredQuad's full prologue (viewport / ortho / TEV preset / vtx
-// fmt) so we don't share state across edges; that's still cheap because the
-// state shadow is cached and dirty-bit-flushed only on the next GX_Begin.
-//
-// We keep edges 1px-thick to maximize visual clarity at scale 0.5 text font.
-
-static void DrawDebugRect(int x, int y, int w, int h,
-                          unsigned char r, unsigned char g,
-                          unsigned char b, unsigned char a) {
-    if (w <= 0 || h <= 0) return;
-    const int t = 1;
-    DrawColoredQuad((double)x,         (double)y,         (double)w, (double)t, r, g, b, a); // top
-    DrawColoredQuad((double)x,         (double)(y + h - t),(double)w, (double)t, r, g, b, a); // bottom
-    DrawColoredQuad((double)x,         (double)y,         (double)t, (double)h, r, g, b, a); // left
-    DrawColoredQuad((double)(x + w - t),(double)y,         (double)t, (double)h, r, g, b, a); // right
-}
-
-// --- GX_LINES path (Phase 2B-LINES) -------------------------------------
+// --- GX_LINES rect outline ----------------------------------------------
 //
 // Sets up state by calling DrawColoredQuad once with an offscreen 1x1 quad
-// (clipped by scissor — invisible). The quad emit configures GX exactly the
-// way we need for line rendering (POS=F32, TEV KColor0, ortho 640x480),
-// then leaves the state in place. Subsequent GX_Begin(0xa8) calls inherit
-// it and emit lines in the same color.
+// (clipped by the 640x480 scissor, so invisible). The quad emit configures
+// GX exactly the way we need for line rendering (POS=F32, TEV KColor0,
+// ortho 640x480), then leaves the state in place. Subsequent GX_Begin(0xa8)
+// calls inherit that state and emit lines in the same color.
 
 // Ensure GX state is set up for untextured F32 line emit, with KColor0 set
 // to the supplied RGBA. The throw-away quad is 1x1 at (-100,-100) so the
-// scissor at (0,0,640,480) clips it away (no visible artifact).
+// scissor clips it (no visible artifact).
 static void DebugOverlay_LineSetupViaQuad(unsigned char r, unsigned char g,
                                           unsigned char b, unsigned char a) {
     DrawColoredQuad(-100.0, -100.0, 1.0, 1.0, r, g, b, a);
@@ -232,10 +204,14 @@ static const double kHudScale     = 0.5;
 static const int    kHudLineHeight = 10;   // matches scale 0.5 (glyph ~16px nominal → ~8px advance)
 static const int    kHudOriginX   = 8;
 static const int    kHudOriginY   = 24;
-static const int    kHudListMax   = 28;    // cap when full-list mode is on
-// Per-sprite label cap. DisplayContext entry limit is 127 (one summary line
-// is always shown), so leave headroom for vanilla glyph use elsewhere.
-static const int    kPerSpriteLabelMax = 110;
+// Display caps. Each is the max number of sprites we'll visualize in a frame.
+//   kHudListMax: full-list mode 2 row count, sized to fit 480px at scale 0.5.
+//   kPerSpriteMax: mode 3 label + rect cap. Bound by DisplayContext's 127
+//     entry buffer (one slot for the summary line, rest for labels). Rect
+//     emit has no equivalent buffer, so we share the same cap to keep label
+//     and outline counts in sync (no asymmetric truncation).
+static const int    kHudListMax   = 28;
+static const int    kPerSpriteMax = 110;
 
 static void RenderHud() {
     if (!s_dbgCtx) return;
@@ -251,13 +227,13 @@ static void RenderHud() {
         }
     }
 
-    // Header: always shown (compact summary).
+    // Mode 1+: top-left summary line.
     DrawText(kHudScale, s_dbgCtx, kHudOriginX, kHudOriginY, 7,
              "DBG: %d visible / %d active sprites", visible, active);
 
-    // Optional full list (mode 1). Capped at kHudListMax to avoid screen
-    // overflow and DrawText's per-frame entry cap (127).
-    if (g_dbgOverlayMode == 1) {
+    if (g_dbgOverlayMode == 2) {
+        // Full per-slot list. Capped to stay under DisplayContext's 127
+        // entry-buffer limit and the screen height at scale 0.5.
         int line = 1;
         for (int i = 0; i < 500 && line <= kHudListMax; ++i) {
             const SpriteHandleSlot& s = g_SpriteHandlePool[i];
@@ -273,69 +249,31 @@ static void RenderHud() {
                      fname ? fname : "(?)");
             ++line;
         }
-    }
-    // Per-sprite id label at the AABB top-left of each visible sprite (mode 2/3).
-    // Lets us spatially correlate each rendered UI element with its resourceId
-    // without the global HUD list eating screen real-estate. Capped at
-    // kPerSpriteLabelMax to stay under the DisplayContext 127 entry budget.
-    else if (g_dbgOverlayMode == 2 || g_dbgOverlayMode == 3 || g_dbgOverlayMode == 6) {
+    } else if (g_dbgOverlayMode == 3) {
+        // Per-sprite id label at AABB top-left.
         int emitted = 0;
-        for (int i = 0; i < 500 && emitted < kPerSpriteLabelMax; ++i) {
+        for (int i = 0; i < 500 && emitted < kPerSpriteMax; ++i) {
             const SpriteHandleSlot& s = g_SpriteHandlePool[i];
             if (!s.activeFlag || !s.visibleFlag) continue;
             Aabb a = ComputeAabb(s.vertCoords);
-            // Skip degenerate / fully-offscreen rects.
             if (a.maxX <= 0.0f || a.maxY <= 0.0f) continue;
             if (a.minX >= 640.0f || a.minY >= 480.0f) continue;
             int x = (int)a.minX; if (x < 0) x = 0; if (x > 600) x = 600;
             int y = (int)a.minY; if (y < 0) y = 0; if (y > 472) y = 472;
-            DrawText(kHudScale, s_dbgCtx, x, y, 7,
-                     "%04x", (int)s.resourceId);
+            DrawText(kHudScale, s_dbgCtx, x, y, 7, "%04x", (int)s.resourceId);
             ++emitted;
         }
     }
 
     DisplayContext_Flush(s_dbgCtx);
 
-    // Filled-quad rect outlines (Phase 2B). Run AFTER the text Flush so the
-    // outlines compose on top of text in the FIFO command stream.
-    //   mode 3 = walk pool, outline each visible sprite (green, ~50% alpha)
-    //   mode 4 = single magenta filled rect at screen center (smoke test)
+    // Mode 3: per-sprite cyan rect outline via 4 GX_LINES per sprite.
+    // Rendered AFTER the text Flush so outlines compose on top of any text
+    // (including the labels above) in the FIFO command stream.
     if (g_dbgOverlayMode == 3) {
-        int emitted = 0;
-        for (int i = 0; i < 500 && emitted < 80; ++i) {
-            const SpriteHandleSlot& s = g_SpriteHandlePool[i];
-            if (!s.activeFlag || !s.visibleFlag) continue;
-            Aabb a = ComputeAabb(s.vertCoords);
-            if (a.maxX <= 0.0f || a.maxY <= 0.0f) continue;
-            if (a.minX >= 640.0f || a.minY >= 480.0f) continue;
-            int rx = (int)a.minX; if (rx < 0) rx = 0;
-            int ry = (int)a.minY; if (ry < 0) ry = 0;
-            int rw = (int)(a.maxX - a.minX); if (rw < 1) rw = 1;
-            int rh = (int)(a.maxY - a.minY); if (rh < 1) rh = 1;
-            if (rx + rw > 640) rw = 640 - rx;
-            if (ry + rh > 480) rh = 480 - ry;
-            DrawDebugRect(rx, ry, rw, rh,
-                          /*R=*/0, /*G=*/0xff, /*B=*/0, /*A=*/0xc0);
-            ++emitted;
-        }
-    } else if (g_dbgOverlayMode == 4) {
-        // 100×30 magenta bar at screen center. If this shows up, the
-        // DrawColoredQuad path works and mode 3 should also work.
-        DrawColoredQuad(270.0, 225.0, 100.0, 30.0,
-                        /*R=*/0xff, /*G=*/0, /*B=*/0xff, /*A=*/0xff);
-    } else if (g_dbgOverlayMode == 5) {
-        // GX_LINES smoke test: magenta cross at center. If this draws,
-        // GX_LINES is operational on top of the QUAD prologue.
-        DebugOverlay_LineSetupViaQuad(/*R=*/0xff, /*G=*/0, /*B=*/0xff, /*A=*/0xff);
-        DrawDebugLineI(100, 240, 540, 240);  // horizontal
-        DrawDebugLineI(320, 100, 320, 380);  // vertical
-    } else if (g_dbgOverlayMode == 6) {
-        // GX_LINES rect outlines. 4 lines per sprite × ~30 sprites = ~120
-        // GX_LINES emits per frame, all under one prologue.
         DebugOverlay_LineSetupViaQuad(/*R=*/0, /*G=*/0xff, /*B=*/0xff, /*A=*/0xff);
         int emitted = 0;
-        for (int i = 0; i < 500 && emitted < 80; ++i) {
+        for (int i = 0; i < 500 && emitted < kPerSpriteMax; ++i) {
             const SpriteHandleSlot& s = g_SpriteHandlePool[i];
             if (!s.activeFlag || !s.visibleFlag) continue;
             Aabb a = ComputeAabb(s.vertCoords);
@@ -367,8 +305,8 @@ extern "C" void DebugOverlay_FrameHook() {
     // 1. Run original sprite-pool GC.
     SpriteHandlePool_GC();
 
-    // 2. Overlay work (gated).
-    if (!g_dbgOverlayEnabled) return;
+    // 2. Overlay work (mode 0 = off, no display).
+    if (g_dbgOverlayMode == 0) return;
     EnsureDisplayContext();
     if (!s_dbgCtx) return;
     RenderHud();
