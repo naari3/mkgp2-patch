@@ -54,20 +54,29 @@ struct CupAliasEntry {
 };
 
 // Cup-select page 2 用の cursor-indexed テーブル inject。
-// vanilla の cursor-indexed テーブル DAT_8049ad58 (cup-tile icon/ribbon) は
-// scene 内で書き換え可能なので、page 1→2 entry でカスタム値を書き込み、
-// page 2→1 exit で復元する。direct-insert: SpriteHandleSlot の resourceId
-// 自体に custom 0x4000+ ID が乗るので debug_overlay で見える ID も統一される。
+// vanilla の cursor-indexed テーブル群は scene 内で書き換え可能なので、
+// page 1→2 entry でカスタム値を書き込み、page 2→1 exit で復元する。
+// direct-insert: SpriteHandleSlot の resourceId 自体に custom 0x4000+ ID
+// が乗るので debug_overlay で見える ID も統一される (banner top/bot は
+// immediate-mode draw なので debug_overlay には出ないが ID 経路は同じ)。
 //
 // 1 entry = 1 custom cup。配置 cursor は配列 index (= cups[] の順)。
 //
-// Phase C-1: icon + ribbon (DAT_8049ad58 short[0..1]) のみ direct-insert。
-// trophy / banner / cup-name banner は binding 経由で動作中 (Phase C-2 以降)。
+// 対象テーブル:
+//   DAT_8049ad58 [cursor*6 short]  short[0]=iconId,    short[1]=ribbonId
+//   DAT_8049ade4 [cursor*6 short]  short[0]=nameTopId, short[1]=nameBotId
+//                                  (= DAT_8049ade6 - 2; immediate-draw 用)
+//
+// Phase C-1: icon + ribbon (DAT_8049ad58) のみ direct-insert。
+// Phase C-2a: nameBotId (DAT_8049ade6, 0x1729系) を追加。
+// trophy (DAT_8039b218) と nameTop (0x1758系) は別 phase。
 struct CupSelectInject {
     u8  customCupId;  // 対象 cup_id (>= 17) — debug 用
     u8  pad[3];
     u16 iconId;       // → DAT_8049ad58[cursor*6+0]
     u16 ribbonId;     // → DAT_8049ad58[cursor*6+1]
+    u16 nameBotId;    // → DAT_8049ade4[cursor*6+1] (= DAT_8049ade6[cursor*6+0])
+    u16 pad_0e;
 };
 
 // Per-round thumb resource id injection.

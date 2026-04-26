@@ -278,12 +278,13 @@ def collect_assets(cups):
             fatal(f"{cup_loc}.assets must be a mapping")
 
         # cup-select direct-insert 用の per-cup id 累積。後で kCupSelectInjects に
-        # 入れる (icon と ribbon はそれぞれ別 slot なので個別に拾う)。
+        # 入れる (icon / ribbon / nameBot はそれぞれ別 slot なので個別に拾う)。
         cs_inject = {
             "custom_cup_id": cup_id,
             "_cup_ident":    cup_ident,
             "icon_id":       0,
             "ribbon_id":     0,
+            "name_bot_id":   0,
         }
 
         for key, vanilla_base, default_size, slot_off, cup_indexed in CUP_ASSET_SLOTS:
@@ -309,13 +310,18 @@ def collect_assets(cups):
             assets.append(_make_asset(custom_id, gk, png_path, pw, ph,
                                       key, cup_ident, cup_id, tpl_filename))
 
-            # cup-select direct-insert: icon (slot 0) と cup_name_ribbon (slot 4)
-            # は cursor-indexed テーブル DAT_8049ad58 short[0]/short[1] へ inject
-            # 対象。custom_id を後で kCupSelectInjects に積む。
+            # cup-select direct-insert: cursor-indexed テーブルへ inject 対象。
+            #   icon (slot 0)            → DAT_8049ad58 short[0]
+            #   cup_name_ribbon (slot 4) → DAT_8049ad58 short[1]
+            #   name (slot 1, 0x1729系)  → DAT_8049ade6 short[0]
+            #                              (= DAT_8049ade4 short[1], banner bot)
+            # custom_id を後で kCupSelectInjects に積む。
             if key == "icon":
                 cs_inject["icon_id"] = custom_id
             elif key == "cup_name_ribbon":
                 cs_inject["ribbon_id"] = custom_id
+            elif key == "name":
+                cs_inject["name_bot_id"] = custom_id
 
             # Binding: when g_cupId == cup.cup_id, intercept the vanilla id
             # and serve the custom id. Cup-indexed slots emit 8 bindings
@@ -397,10 +403,10 @@ def collect_assets(cups):
                 # hook in custom_assets). ApplyBinding sees the custom id and
                 # CustomResource_Lookup matches without needing a binding row.
 
-        # cup-select inject に積む (icon または ribbon がある場合のみ)。custom
-        # cup (cup_id >= 17) で 1 つでもあれば inject 候補になる。vanilla cup は
-        # cup-select page 0/1 でそのまま動くので無視。
-        if cup_id >= 17 and (cs_inject["icon_id"] or cs_inject["ribbon_id"]):
+        # cup-select inject に積む (custom cup で 1 つでもあれば inject 候補)。
+        # vanilla cup (cup_id < 17) は cup-select page 0/1 でそのまま動くので無視。
+        if cup_id >= 17 and (cs_inject["icon_id"] or cs_inject["ribbon_id"]
+                             or cs_inject["name_bot_id"]):
             cup_select_injects.append(cs_inject)
 
         # round 2/3 slots fall back to round 0/1 (Yoshi-style duplication).
@@ -533,17 +539,19 @@ def emit_header(assets, bindings, custom_paths, alias_map, round_injects,
     lines.append("")
 
     lines.append("// Cup-select page 2 cursor-indexed テーブル inject")
-    lines.append("// (DAT_8049ad58: cup-tile icon/ribbon)")
+    lines.append("// DAT_8049ad58: cup-tile icon/ribbon (sprite path)")
+    lines.append("// DAT_8049ade4: cup-name banner top/bot (immediate-draw path)")
     lines.append("// page 1->2 entry で cursor[i] slot へ書き込み、page 2->1 exit で復元。")
     lines.append("const CupSelectInject kCupSelectInjects[] = {")
     for e in cup_select_injects:
         lines.append(
             f"    {{ /*custom*/ {e['custom_cup_id']}, {{0,0,0}}, "
             f"/*icon*/ 0x{e['icon_id']:04x}, "
-            f"/*ribbon*/ 0x{e['ribbon_id']:04x} }}, // {e['_cup_ident']}"
+            f"/*ribbon*/ 0x{e['ribbon_id']:04x}, "
+            f"/*nameBot*/ 0x{e['name_bot_id']:04x}, 0 }}, // {e['_cup_ident']}"
         )
     if not cup_select_injects:
-        lines.append("    { 0, {0,0,0}, 0, 0 }, // sentinel")
+        lines.append("    { 0, {0,0,0}, 0, 0, 0, 0 }, // sentinel")
     lines.append("};")
     lines.append(f"const unsigned int kCupSelectInjectCount = {len(cup_select_injects)}u;")
     lines.append("")

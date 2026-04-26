@@ -151,16 +151,18 @@ kmPatchExitPoint(CupUpdateEntryHook, 0x801c7730);
 
 // --------- Cup-select page 2 cursor-indexed テーブル inject ----------------
 //
-// Phase C-1: cup-tile icon/ribbon (DAT_8049ad58) を direct-insert する。
-// vanilla の cursor-indexed テーブル DAT_8049ad58 は scene 内で書き換え可能で、
+// vanilla の cursor-indexed テーブル群を direct-insert する:
+//   DAT_8049ad58 (cup-tile sprite path)         icon / ribbon  ← C-1
+//   DAT_8049ade4 (cup-name banner immediate-draw) nameBot       ← C-2a
 // page 1→2 entry で kCupSelectInjects[i] の値を cursor=i slot に書き込み、
 // page 2→1 exit (および clFlowCup_Dtor entry safety net) で復元する。
 //
 // 結果: page 2 中 sprite に書き込まれる resourceId 自体が 0x4000+ になり、
-// debug_overlay で見える ID も統一される (binding 不要に近づく)。
+// debug_overlay で見える ID も統一される (banner は immediate-draw なので
+// debug_overlay には出ないが ID 経路は同じで binding 不要)。
 //
-// trophy / banner / cup-name banner は別テーブル。Phase C-2 以降で同じ
-// pattern を拡張する予定。
+// trophy (DAT_8039b218, +8 罠あり) と banner top (DAT_8049ade4 short[0]) は
+// 別 phase (C-2b/C-2c)。
 //
 // state machine:
 //   inject 済みでない & page 1→2 entry: save vanilla 値 → write custom 値
@@ -170,6 +172,7 @@ kmPatchExitPoint(CupUpdateEntryHook, 0x801c7730);
 
 static u16  s_cupSelectVanillaIcon[8];
 static u16  s_cupSelectVanillaRibbon[8];
+static u16  s_cupSelectVanillaNameBot[8];
 static unsigned int s_cupSelectInjectCountActive = 0;
 static bool s_cupSelectInjected = false;
 
@@ -177,6 +180,15 @@ static bool s_cupSelectInjected = false;
 //   short[0] = icon_id, short[1] = ribbon_id, short[2..5] = float x,y
 // cursor 0..7 が page 内 8 tile に対応。
 static u16* const kCupTileTable = (u16*)0x8049ad58;
+
+// DAT_8049ade4: 8 entry × 12 byte (= 6 short)。clFlowCup_Draw が
+// FUN_801a1174 で immediate-mode 描画する cup-name banner table。
+//   short[0] = nameTop_id (0x1758系)
+//   short[1] = nameBot_id (0x1729系)  ← C-2a で direct-insert 対象
+//   short[2..5] = float x_en, x_jp
+// cursor 0..7 が page 内 8 tile に対応。sprite handle pool を経由しないので
+// debug_overlay には出ないが、resourceId 経路は同じで binding と等価。
+static u16* const kCupNameBannerTable = (u16*)0x8049ade4;
 
 static void CupSelectTableInject_Apply() {
     if (s_cupSelectInjected) {
@@ -187,17 +199,20 @@ static void CupSelectTableInject_Apply() {
     unsigned int n = kCupSelectInjectCount;
     if (n > 8) n = 8;
     for (unsigned int i = 0; i < n; ++i) {
-        s_cupSelectVanillaIcon[i]   = kCupTileTable[i * 6 + 0];
-        s_cupSelectVanillaRibbon[i] = kCupTileTable[i * 6 + 1];
-        kCupTileTable[i * 6 + 0]    = kCupSelectInjects[i].iconId;
-        kCupTileTable[i * 6 + 1]    = kCupSelectInjects[i].ribbonId;
+        s_cupSelectVanillaIcon[i]    = kCupTileTable[i * 6 + 0];
+        s_cupSelectVanillaRibbon[i]  = kCupTileTable[i * 6 + 1];
+        s_cupSelectVanillaNameBot[i] = kCupNameBannerTable[i * 6 + 1];
+        kCupTileTable[i * 6 + 0]       = kCupSelectInjects[i].iconId;
+        kCupTileTable[i * 6 + 1]       = kCupSelectInjects[i].ribbonId;
+        kCupNameBannerTable[i * 6 + 1] = kCupSelectInjects[i].nameBotId;
     }
     s_cupSelectInjectCountActive = n;
     s_cupSelectInjected = true;
-    DebugPrintfSafe("MKGP2: cup-select inject n=%u (cursor[0] icon=0x%04x ribbon=0x%04x)\n",
+    DebugPrintfSafe("MKGP2: cup-select inject n=%u (cursor[0] icon=0x%04x ribbon=0x%04x nameBot=0x%04x)\n",
                     n,
-                    n > 0 ? (unsigned)kCupSelectInjects[0].iconId   : 0u,
-                    n > 0 ? (unsigned)kCupSelectInjects[0].ribbonId : 0u);
+                    n > 0 ? (unsigned)kCupSelectInjects[0].iconId      : 0u,
+                    n > 0 ? (unsigned)kCupSelectInjects[0].ribbonId    : 0u,
+                    n > 0 ? (unsigned)kCupSelectInjects[0].nameBotId   : 0u);
 }
 
 static void CupSelectTableInject_Restore() {
@@ -205,8 +220,9 @@ static void CupSelectTableInject_Restore() {
     unsigned int n = s_cupSelectInjectCountActive;
     if (n > 8) n = 8;
     for (unsigned int i = 0; i < n; ++i) {
-        kCupTileTable[i * 6 + 0] = s_cupSelectVanillaIcon[i];
-        kCupTileTable[i * 6 + 1] = s_cupSelectVanillaRibbon[i];
+        kCupTileTable[i * 6 + 0]       = s_cupSelectVanillaIcon[i];
+        kCupTileTable[i * 6 + 1]       = s_cupSelectVanillaRibbon[i];
+        kCupNameBannerTable[i * 6 + 1] = s_cupSelectVanillaNameBot[i];
     }
     s_cupSelectInjectCountActive = 0;
     s_cupSelectInjected = false;
