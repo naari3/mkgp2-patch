@@ -80,12 +80,18 @@ extern "C" {
     // (viewport, ortho proj, identity model mtx, TEV preset 4 = raster-only,
     // POS=F32 vtxFmt) and emits one GX_QUADS with the supplied RGBA. Phase 2B
     // calls this 4 times per sprite to draw a 1px-thick rect outline (top /
-    // bottom / left / right edges as separate thin filled rects). This avoids
-    // the whole GX-LINES + state-save/restore complication entirely — vanilla
-    // never emits non-QUAD primitives so QUADS is the only safe path.
+    // bottom / left / right edges as separate thin filled rects).
     void DrawColoredQuad(double x, double y, double w, double h,
                          unsigned char r, unsigned char g,
                          unsigned char b, unsigned char a);
+
+    // Phase 2B-LINES: GX-direct GX_LINES emit. DrawColoredQuad leaves all GX
+    // state (vtxFmt POS=F32, TEV KColor0, ortho proj, viewport) in place after
+    // returning, so we can immediately follow it with GX_Begin(GX_LINES, ...)
+    // and emit 2 F32 vertices to draw a line in the same color. Vanilla MKGP2
+    // never uses non-QUAD primitives, so this is uncharted territory at the
+    // wrapper-state level — but the FIFO command stream itself is well-formed.
+    void GX_Begin(unsigned char type, unsigned char vtxFmt, unsigned short cnt);
 }
 
 // custom_assets exposes its own custom path table for groupKey >= 0x4000.
@@ -112,6 +118,8 @@ volatile int g_dbgOverlayEnabled = 1;
 //   3 = green 1px rect outline around each visible sprite + per-sprite id label
 //   4 = single magenta 100x30 filled bar at screen center (DrawColoredQuad
 //       smoke test — validates the vanilla helper before mode 3 is trusted)
+//   5 = magenta cross at center via 2 GX_LINES (LINES smoke test)
+//   6 = cyan rect outline around each visible sprite via 4 GX_LINES + label
 // Pokeable from Dolphin to switch live.
 volatile int g_dbgOverlayMode = 0;
 
@@ -156,6 +164,47 @@ static void DrawDebugRect(int x, int y, int w, int h,
     DrawColoredQuad((double)x,         (double)(y + h - t),(double)w, (double)t, r, g, b, a); // bottom
     DrawColoredQuad((double)x,         (double)y,         (double)t, (double)h, r, g, b, a); // left
     DrawColoredQuad((double)(x + w - t),(double)y,         (double)t, (double)h, r, g, b, a); // right
+}
+
+// --- GX_LINES path (Phase 2B-LINES) -------------------------------------
+//
+// Sets up state by calling DrawColoredQuad once with an offscreen 1x1 quad
+// (clipped by scissor — invisible). The quad emit configures GX exactly the
+// way we need for line rendering (POS=F32, TEV KColor0, ortho 640x480),
+// then leaves the state in place. Subsequent GX_Begin(0xa8) calls inherit
+// it and emit lines in the same color.
+
+// Ensure GX state is set up for untextured F32 line emit, with KColor0 set
+// to the supplied RGBA. The throw-away quad is 1x1 at (-100,-100) so the
+// scissor at (0,0,640,480) clips it away (no visible artifact).
+static void DebugOverlay_LineSetupViaQuad(unsigned char r, unsigned char g,
+                                          unsigned char b, unsigned char a) {
+    DrawColoredQuad(-100.0, -100.0, 1.0, 1.0, r, g, b, a);
+}
+
+// Emit one GX_LINES segment. Args are int to avoid mwcc spilling float regs
+// across the GX_Begin call (which would emit a _savefpr_NN runtime helper
+// reference that Kamek's stdlib doesn't provide). The int→float conversion
+// happens after GX_Begin so the volatile FPRs are clobbered by the call but
+// not needed yet.
+static void DrawDebugLineI(int x0, int y0, int x1, int y1) {
+    GX_Begin(0xa8 /*GX_LINES*/, 0 /*vtxFmt 0*/, 2);
+    *(volatile float*)0xCC008000 = (float)x0;
+    *(volatile float*)0xCC008000 = (float)y0;
+    *(volatile float*)0xCC008000 = (float)x1;
+    *(volatile float*)0xCC008000 = (float)y1;
+}
+
+// Outline a rect with 4 GX_LINES (top/bottom/left/right). Caller must have
+// already invoked DebugOverlay_LineSetupViaQuad to configure state.
+static void DrawDebugRectLines(int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    const int x1 = x + w;
+    const int y1 = y + h;
+    DrawDebugLineI(x,  y,  x1, y);   // top
+    DrawDebugLineI(x1, y,  x1, y1);  // right
+    DrawDebugLineI(x,  y1, x1, y1);  // bottom
+    DrawDebugLineI(x,  y,  x,  y1);  // left
 }
 
 // AABB of the 4 corner (x,y) pairs in vertCoords[].
@@ -229,7 +278,7 @@ static void RenderHud() {
     // Lets us spatially correlate each rendered UI element with its resourceId
     // without the global HUD list eating screen real-estate. Capped at
     // kPerSpriteLabelMax to stay under the DisplayContext 127 entry budget.
-    else if (g_dbgOverlayMode == 2 || g_dbgOverlayMode == 3) {
+    else if (g_dbgOverlayMode == 2 || g_dbgOverlayMode == 3 || g_dbgOverlayMode == 6) {
         int emitted = 0;
         for (int i = 0; i < 500 && emitted < kPerSpriteLabelMax; ++i) {
             const SpriteHandleSlot& s = g_SpriteHandlePool[i];
@@ -275,6 +324,32 @@ static void RenderHud() {
         // DrawColoredQuad path works and mode 3 should also work.
         DrawColoredQuad(270.0, 225.0, 100.0, 30.0,
                         /*R=*/0xff, /*G=*/0, /*B=*/0xff, /*A=*/0xff);
+    } else if (g_dbgOverlayMode == 5) {
+        // GX_LINES smoke test: magenta cross at center. If this draws,
+        // GX_LINES is operational on top of the QUAD prologue.
+        DebugOverlay_LineSetupViaQuad(/*R=*/0xff, /*G=*/0, /*B=*/0xff, /*A=*/0xff);
+        DrawDebugLineI(100, 240, 540, 240);  // horizontal
+        DrawDebugLineI(320, 100, 320, 380);  // vertical
+    } else if (g_dbgOverlayMode == 6) {
+        // GX_LINES rect outlines. 4 lines per sprite × ~30 sprites = ~120
+        // GX_LINES emits per frame, all under one prologue.
+        DebugOverlay_LineSetupViaQuad(/*R=*/0, /*G=*/0xff, /*B=*/0xff, /*A=*/0xff);
+        int emitted = 0;
+        for (int i = 0; i < 500 && emitted < 80; ++i) {
+            const SpriteHandleSlot& s = g_SpriteHandlePool[i];
+            if (!s.activeFlag || !s.visibleFlag) continue;
+            Aabb a = ComputeAabb(s.vertCoords);
+            if (a.maxX <= 0.0f || a.maxY <= 0.0f) continue;
+            if (a.minX >= 640.0f || a.minY >= 480.0f) continue;
+            int rx = (int)a.minX; if (rx < 0) rx = 0;
+            int ry = (int)a.minY; if (ry < 0) ry = 0;
+            int rw = (int)(a.maxX - a.minX); if (rw < 1) rw = 1;
+            int rh = (int)(a.maxY - a.minY); if (rh < 1) rh = 1;
+            if (rx + rw > 640) rw = 640 - rx;
+            if (ry + rh > 480) rh = 480 - ry;
+            DrawDebugRectLines(rx, ry, rw, rh);
+            ++emitted;
+        }
     }
 }
 
