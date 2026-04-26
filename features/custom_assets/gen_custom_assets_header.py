@@ -278,13 +278,15 @@ def collect_assets(cups):
             fatal(f"{cup_loc}.assets must be a mapping")
 
         # cup-select direct-insert 用の per-cup id 累積。後で kCupSelectInjects に
-        # 入れる (icon / ribbon / nameBot はそれぞれ別 slot なので個別に拾う)。
+        # 入れる (icon / ribbon / nameBot / trophy はそれぞれ別 slot なので個別に拾う)。
         cs_inject = {
-            "custom_cup_id": cup_id,
-            "_cup_ident":    cup_ident,
-            "icon_id":       0,
-            "ribbon_id":     0,
-            "name_bot_id":   0,
+            "custom_cup_id":           cup_id,
+            "_cup_ident":              cup_ident,
+            "icon_id":                 0,
+            "ribbon_id":               0,
+            "name_bot_id":             0,
+            "trophy_id":               0,
+            "name_round_select_id":    0,
         }
 
         for key, vanilla_base, default_size, slot_off, cup_indexed in CUP_ASSET_SLOTS:
@@ -310,11 +312,12 @@ def collect_assets(cups):
             assets.append(_make_asset(custom_id, gk, png_path, pw, ph,
                                       key, cup_ident, cup_id, tpl_filename))
 
-            # cup-select direct-insert: cursor-indexed テーブルへ inject 対象。
+            # cup-select direct-insert: cursor-indexed テーブル / hook 経由で inject。
             #   icon (slot 0)            → DAT_8049ad58 short[0]
             #   cup_name_ribbon (slot 4) → DAT_8049ad58 short[1]
             #   name (slot 1, 0x1729系)  → DAT_8049ade6 short[0]
             #                              (= DAT_8049ade4 short[1], banner bot)
+            #   trophy (slot 2, 0x1EA2系) → FUN_801c64dc 末尾 hook で glyphRight 直書き
             # custom_id を後で kCupSelectInjects に積む。
             if key == "icon":
                 cs_inject["icon_id"] = custom_id
@@ -322,6 +325,10 @@ def collect_assets(cups):
                 cs_inject["ribbon_id"] = custom_id
             elif key == "name":
                 cs_inject["name_bot_id"] = custom_id
+            elif key == "trophy":
+                cs_inject["trophy_id"] = custom_id
+            elif key == "name_roundselect":
+                cs_inject["name_round_select_id"] = custom_id
 
             # Binding: when g_cupId == cup.cup_id, intercept the vanilla id
             # and serve the custom id. Cup-indexed slots emit 8 bindings
@@ -406,7 +413,8 @@ def collect_assets(cups):
         # cup-select inject に積む (custom cup で 1 つでもあれば inject 候補)。
         # vanilla cup (cup_id < 17) は cup-select page 0/1 でそのまま動くので無視。
         if cup_id >= 17 and (cs_inject["icon_id"] or cs_inject["ribbon_id"]
-                             or cs_inject["name_bot_id"]):
+                             or cs_inject["name_bot_id"] or cs_inject["trophy_id"]
+                             or cs_inject["name_round_select_id"]):
             cup_select_injects.append(cs_inject)
 
         # round 2/3 slots fall back to round 0/1 (Yoshi-style duplication).
@@ -538,20 +546,26 @@ def emit_header(assets, bindings, custom_paths, alias_map, round_injects,
     lines.append(f"const unsigned int kRoundThumbInjectCount = {len(round_injects)}u;")
     lines.append("")
 
-    lines.append("// Cup-select page 2 cursor-indexed テーブル inject")
-    lines.append("// DAT_8049ad58: cup-tile icon/ribbon (sprite path)")
-    lines.append("// DAT_8049ade4: cup-name banner top/bot (immediate-draw path)")
-    lines.append("// page 1->2 entry で cursor[i] slot へ書き込み、page 2->1 exit で復元。")
+    lines.append("// Per-cup direct-insert IDs across cup-select / round-select scenes.")
+    lines.append("// cup-select page 2 (cursor-indexed):")
+    lines.append("//   DAT_8049ad58: cup-tile icon/ribbon         (sprite path)")
+    lines.append("//   DAT_8049ade4: cup-name banner top/bot      (immediate-draw path)")
+    lines.append("//   trophyId:    FUN_801c64dc 末尾 hook で glyphRight 直書き (+8/+16 罠回避)")
+    lines.append("// round-select (alias-borrowed sub_index 経由):")
+    lines.append("//   DAT_8049afa0[alias_sub_index]: cup-name strip (vanilla 0x16ED系)")
+    lines.append("// page 1->2 entry / round-select PreInit で書き込み、対応 exit で復元。")
     lines.append("const CupSelectInject kCupSelectInjects[] = {")
     for e in cup_select_injects:
         lines.append(
             f"    {{ /*custom*/ {e['custom_cup_id']}, {{0,0,0}}, "
             f"/*icon*/ 0x{e['icon_id']:04x}, "
             f"/*ribbon*/ 0x{e['ribbon_id']:04x}, "
-            f"/*nameBot*/ 0x{e['name_bot_id']:04x}, 0 }}, // {e['_cup_ident']}"
+            f"/*nameBot*/ 0x{e['name_bot_id']:04x}, "
+            f"/*trophy*/ 0x{e['trophy_id']:04x}, "
+            f"/*nameRS*/ 0x{e['name_round_select_id']:04x} }}, // {e['_cup_ident']}"
         )
     if not cup_select_injects:
-        lines.append("    { 0, {0,0,0}, 0, 0, 0, 0 }, // sentinel")
+        lines.append("    { 0, {0,0,0}, 0, 0, 0, 0, 0 }, // sentinel")
     lines.append("};")
     lines.append(f"const unsigned int kCupSelectInjectCount = {len(cup_select_injects)}u;")
     lines.append("")

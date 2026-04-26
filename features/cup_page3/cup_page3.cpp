@@ -26,9 +26,26 @@ extern "C" {
     // Game funcs reused for forward/backward sprite swaps (page 0<->1 only).
     void Sprite_SetupAnim(void* sprite, int animId, int a, int b);
     int  Sprite_SetAnimParam(void* sprite, short paramId, short value);
+
+    // FUN_801c6c0c — cup-tile state machine (per cursor). Args:
+    //   scene  = clFlowCup scene
+    //   cursor = 0..7
+    //   state  = target state (1=init/skip-if-already, 2..6=variants).
+    // For state>=2, internally calls Sprite_SetupAnim(sprite, animId, 0, 0)
+    // → Sprite_SetAnimParam(sprite, 0x1777, DAT_8049ad58[cursor*6+0]) and
+    // 0x1780 (ribbon). Re-running with the cursor's *current* state forces
+    // the sprite's paramTable to be rebuilt from the (now-injected) table.
+    int  CupTile_StateChange(void* scene, int cursor, int state);
     // Vanilla signature: writes (cupId, longRoundFlag, courseVariantIdx, reverseRoundFlag)
     // to globals (g_cupId, g_longRoundFlag, g_courseVariantIdx, g_reverseRoundFlag).
     int  SetCourseParams(int cupId, int longRound, int variantIdx, int reverseRound);
+
+    // Vanilla save-data lookup. Misnamed in externals.txt (it answers
+    // "is round N cleared?" not "unlocked?" — see round_select.cpp comment),
+    // but in FUN_801c64dc the result drives "show locked vs unlocked trophy
+    // glyph" so the original name is meaningful here.
+    char RoundIsUnlocked(void* playerData, int round);    // 0x801d5b04
+    extern void* g_playerData;                            // 0x805d2580
 
     // Globals.
     extern volatile int g_roundIndex;                     // 0x806d1298, round 0..7
@@ -83,15 +100,18 @@ static int IsCustomCup(unsigned int cupId) {
 }
 
 // Scene field offsets (clFlowCup struct, 0x158 bytes total).
-static const int OFF_CURSOR     = 0x004;
-static const int OFF_SUBSTATE   = 0x00c;
-static const int OFF_FRAME_CTR  = 0x014;
-static const int OFF_PAGE_FLAG  = 0x118;
-static const int OFF_S148       = 0x148;  // sprite pointer used in page swap
-static const int OFF_S14C       = 0x14c;
-static const int OFF_S150       = 0x150;
-static const int OFF_GATE_FLAG0 = 0x154;  // enables cursor>6 on page 0 (omote)
-static const int OFF_GATE_FLAG1 = 0x155;  // enables cursor>6 on page 1 (ura)
+static const int OFF_CURSOR        = 0x004;
+static const int OFF_SUBSTATE      = 0x00c;
+static const int OFF_FRAME_CTR     = 0x014;
+static const int OFF_TROPHY_ENABLE = 0x01c;  // FUN_801c64dc: skip trophy block if 0
+static const int OFF_GLYPH_LEFT    = 0x100;  // u16* — banner-left frame slot
+static const int OFF_GLYPH_RIGHT   = 0x104;  // u16* — trophy frame slot
+static const int OFF_PAGE_FLAG     = 0x118;
+static const int OFF_S148          = 0x148;  // sprite pointer used in page swap
+static const int OFF_S14C          = 0x14c;
+static const int OFF_S150          = 0x150;
+static const int OFF_GATE_FLAG0    = 0x154;  // enables cursor>6 on page 0 (omote)
+static const int OFF_GATE_FLAG1    = 0x155;  // enables cursor>6 on page 1 (ura)
 
 static inline u8&  U8(void* p, int o)  { return *(u8*)((u8*)p + o); }
 static inline i32& I32(void* p, int o) { return *(i32*)((u8*)p + o); }
@@ -170,10 +190,14 @@ kmPatchExitPoint(CupUpdateEntryHook, 0x801c7730);
 //   inject 済み      & Dtor entry     : safety net で復元
 // 二重 inject / 二重 restore は flag で防御。
 
+// cursor 単位の inject 履歴 + vanilla 値 backup。
+// kCupPage2Courses[cursor] が custom cup_id を返す cursor だけ inject し、
+// その cursor の vanilla 値を save する。Restore は touched フラグで
+// inject した cursor だけ書き戻す (vanilla cup の cursor は触らない)。
 static u16  s_cupSelectVanillaIcon[8];
 static u16  s_cupSelectVanillaRibbon[8];
 static u16  s_cupSelectVanillaNameBot[8];
-static unsigned int s_cupSelectInjectCountActive = 0;
+static bool s_cupSelectTouched[8];
 static bool s_cupSelectInjected = false;
 
 // DAT_8049ad58: 9 entry × 12 byte (= 6 short)
@@ -190,43 +214,96 @@ static u16* const kCupTileTable = (u16*)0x8049ad58;
 // debug_overlay には出ないが、resourceId 経路は同じで binding と等価。
 static u16* const kCupNameBannerTable = (u16*)0x8049ade4;
 
-static void CupSelectTableInject_Apply() {
+// cup_id → CupSelectInject lookup。kCupSelectInjects は cups[] 順なので
+// 線形探索で十分 (custom cup 数 < 16 を想定)。vanilla cup (cup_id < 17)
+// は inject 対象外、NULL を返す。
+static const CupSelectInject* FindCupSelectInject(int cupId) {
+    if (cupId < 17) return 0;
+    for (unsigned int i = 0; i < kCupSelectInjectCount; ++i) {
+        if ((int)kCupSelectInjects[i].customCupId == cupId) {
+            return &kCupSelectInjects[i];
+        }
+    }
+    return 0;
+}
+
+// Apply 直後に各 cup-tile sprite の paramTable を新 ID で再構築する。
+// vanilla の CupTile_StateChange (FUN_801c6c0c) は cursor の state 変化時
+// にしか sprite を再 setup しない。書き換え後の DAT_8049ad58 値は state
+// 変化が起こるまで未反映 (= 古い vanilla ID で sprite が描画される)。
+//
+// 解決策: 各 cursor の現在 state を読み出し、同じ state を再渡しして
+// CupTile_StateChange を強制呼び出しする。state>=2 経路は内部で
+// Sprite_SetupAnim → Sprite_SetAnimParam(0x1777/0x1780, DAT_8049ad58 値)
+// を再実行するので、sprite の paramTable が新 (custom) ID で再構築される。
+//
+// scene 内 cup-tile entry layout (FUN_801c6c0c より):
+//   piVar5 = scene + cursor*0x10 + 0x20   (4 int = 16 byte/entry)
+//     piVar5[0] = state (1..6, 0 = uninitialized)
+//     piVar5[1..2] = anim ctr 等
+//     piVar5[3] = sprite handle
+//
+// state 1 (initial) は vanilla 上 piVar5 sprite 未作成のため skip。
+// state 2..6 のみ replay する (state==6 は FUN_8019ff6c(sprite, 0) のみで
+// param 再設定はないが安全で、state machine の前提条件を壊さない)。
+static const int OFF_CUPTILE_TABLE_BASE   = 0x20;
+static const int OFF_CUPTILE_ENTRY_STRIDE = 0x10;
+static const int OFF_CUPTILE_SPRITE       = 0x0c;  // piVar5[3]
+
+static void CupSelectTileSpriteRefresh(void* scene) {
+    int replayed = 0;
+    for (int cursor = 0; cursor < 8; ++cursor) {
+        u8* entry = (u8*)scene + OFF_CUPTILE_TABLE_BASE
+                                + cursor * OFF_CUPTILE_ENTRY_STRIDE;
+        int state = *(int*)entry;
+        if (state < 2 || state > 6) continue;
+        CupTile_StateChange(scene, cursor, state);
+        ++replayed;
+    }
+    DebugPrintfSafe("MKGP2: cup-tile state-replay refreshed %d/8 cursor\n",
+                    replayed);
+}
+
+static void CupSelectTableInject_Apply(void* scene) {
     if (s_cupSelectInjected) {
-        DebugPrintfSafe("MKGP2: cup-select inject SKIP (already active, n=%u)\n",
-                        s_cupSelectInjectCountActive);
+        DebugPrintfSafe("MKGP2: cup-select inject SKIP (already active)\n");
         return;
     }
-    unsigned int n = kCupSelectInjectCount;
-    if (n > 8) n = 8;
-    for (unsigned int i = 0; i < n; ++i) {
-        s_cupSelectVanillaIcon[i]    = kCupTileTable[i * 6 + 0];
-        s_cupSelectVanillaRibbon[i]  = kCupTileTable[i * 6 + 1];
-        s_cupSelectVanillaNameBot[i] = kCupNameBannerTable[i * 6 + 1];
-        kCupTileTable[i * 6 + 0]       = kCupSelectInjects[i].iconId;
-        kCupTileTable[i * 6 + 1]       = kCupSelectInjects[i].ribbonId;
-        kCupNameBannerTable[i * 6 + 1] = kCupSelectInjects[i].nameBotId;
+    int touchedCount = 0;
+    for (int cursor = 0; cursor < 8; ++cursor) {
+        int cupId = kCupPage2Courses[cursor];
+        const CupSelectInject* inj = FindCupSelectInject(cupId);
+        s_cupSelectTouched[cursor] = false;
+        if (!inj) continue;  // vanilla cup → 触らない
+        s_cupSelectVanillaIcon[cursor]    = kCupTileTable[cursor * 6 + 0];
+        s_cupSelectVanillaRibbon[cursor]  = kCupTileTable[cursor * 6 + 1];
+        s_cupSelectVanillaNameBot[cursor] = kCupNameBannerTable[cursor * 6 + 1];
+        kCupTileTable[cursor * 6 + 0]       = inj->iconId;
+        kCupTileTable[cursor * 6 + 1]       = inj->ribbonId;
+        kCupNameBannerTable[cursor * 6 + 1] = inj->nameBotId;
+        s_cupSelectTouched[cursor] = true;
+        ++touchedCount;
     }
-    s_cupSelectInjectCountActive = n;
     s_cupSelectInjected = true;
-    DebugPrintfSafe("MKGP2: cup-select inject n=%u (cursor[0] icon=0x%04x ribbon=0x%04x nameBot=0x%04x)\n",
-                    n,
-                    n > 0 ? (unsigned)kCupSelectInjects[0].iconId      : 0u,
-                    n > 0 ? (unsigned)kCupSelectInjects[0].ribbonId    : 0u,
-                    n > 0 ? (unsigned)kCupSelectInjects[0].nameBotId   : 0u);
+    // 既存 sprite handle を新 ID で再 setup。
+    CupSelectTileSpriteRefresh(scene);
+    DebugPrintfSafe("MKGP2: cup-select inject touched=%d/8 (cursor[0] cupId=%d)\n",
+                    touchedCount, kCupPage2Courses[0]);
 }
 
 static void CupSelectTableInject_Restore() {
     if (!s_cupSelectInjected) return;
-    unsigned int n = s_cupSelectInjectCountActive;
-    if (n > 8) n = 8;
-    for (unsigned int i = 0; i < n; ++i) {
-        kCupTileTable[i * 6 + 0]       = s_cupSelectVanillaIcon[i];
-        kCupTileTable[i * 6 + 1]       = s_cupSelectVanillaRibbon[i];
-        kCupNameBannerTable[i * 6 + 1] = s_cupSelectVanillaNameBot[i];
+    int restoredCount = 0;
+    for (int cursor = 0; cursor < 8; ++cursor) {
+        if (!s_cupSelectTouched[cursor]) continue;
+        kCupTileTable[cursor * 6 + 0]       = s_cupSelectVanillaIcon[cursor];
+        kCupTileTable[cursor * 6 + 1]       = s_cupSelectVanillaRibbon[cursor];
+        kCupNameBannerTable[cursor * 6 + 1] = s_cupSelectVanillaNameBot[cursor];
+        s_cupSelectTouched[cursor] = false;
+        ++restoredCount;
     }
-    s_cupSelectInjectCountActive = 0;
     s_cupSelectInjected = false;
-    DebugPrintfSafe("MKGP2: cup-select restore n=%u\n", n);
+    DebugPrintfSafe("MKGP2: cup-select restore touched=%d\n", restoredCount);
 }
 
 // --------- Forward transition: cursor>7 handling ------------------------
@@ -257,7 +334,7 @@ extern "C" void CupForwardTransition(void* scene) {
         // Direct-insert: cursor-indexed cup-tile resource を custom ID に
         // 書き換える。cursor 移動は scene 側がそのまま行うので、各 tile が
         // 自前 cup の icon/ribbon を表示する。
-        CupSelectTableInject_Apply();
+        CupSelectTableInject_Apply(scene);
     }
     // flag == 2: terminal, cursor already clamped above.
 }
@@ -324,6 +401,87 @@ asm void CupBackwardHook() {
 
 kmBranch(0x801c7d90, CupBackwardHook);
 kmPatchExitPoint(CupBackwardHook, 0x801c7e18);
+
+// --------- Trophy block direct-insert (C-2b) ----------------------------
+//
+// Vanilla FUN_801c64dc 末尾の trophy 書き込みブロック (0x801c6680..0x801c6730)
+// を hook で wholesale 置換する。元コードは:
+//
+//   if (scene[0x1c] != 0) {
+//       int q = (scene[0x118] == 0) ? 3 : 7;        // pageFlag→cup query index
+//       int unlocked = RoundIsUnlocked(g_playerData, q);
+//       if (unlocked == 1) {
+//           *glyphLeft  = 0x175c;                    // unlocked banner-left
+//           *glyphRight = DAT_8039b218[cursor*2]
+//                         + (scene[0x118] != 0 ? 8 : 0)   // page2 → +8 (gold base)
+//                         + 8;                            // unlocked → +8 (silver→gold)
+//       } else {
+//           *glyphLeft  = 0x175b;                    // locked banner-left
+//           *glyphRight = DAT_8039b218[cursor*2];    // bronze (locked)
+//       }
+//   }
+//
+// この +8/+16 罠が direct-insert を阻む (custom_id を inject しても +8 で
+// 隣接 slot に流れる)。slot 配置を再設計する代わりに、計算自体をここで
+// 置換して custom cup なら kCupSelectInjects[cursor].trophyId を直接書く。
+//
+// Vanilla cup 振る舞いは元計算をそのまま再現するので vanilla 表示は不変。
+//
+// Note: r27 は FUN_801c64dc 入口で `or r27,r3,r3` により scene を保持し、
+// 関数全体で callee-saved として一貫している。0x801c6680 時点で r27 = scene。
+extern "C" void Trophy_RewriteBlock(void* scene) {
+    EnsureDBATWidened();
+
+    // 元の `if (*(int *)(param_1 + 0x1c) == 0) skip` ガード。
+    if (I32(scene, OFF_TROPHY_ENABLE) == 0) return;
+
+    u8  pageFlag = U8(scene, OFF_PAGE_FLAG);
+    int queryIdx = (pageFlag == 0) ? 3 : 7;
+    char unlocked = RoundIsUnlocked(&g_playerData, queryIdx);
+
+    u16* glyphLeft  = *(u16**)((u8*)scene + OFF_GLYPH_LEFT);
+    u16* glyphRight = *(u16**)((u8*)scene + OFF_GLYPH_RIGHT);
+
+    *glyphLeft = (unlocked == 1) ? 0x175c : 0x175b;
+
+    int cursor = I32(scene, OFF_CURSOR);
+
+    // Custom path: page 2 で kCupPage2Courses[cursor] が指す custom cup の
+    // CupSelectInject に trophyId があれば custom_id を直接書く。lock 状態
+    // は無視 (yaml は trophy を 1 枚だけ受けるので locked/silver/gold 同一表示)。
+    bool customPath = false;
+    if (pageFlag == 2 && cursor >= 0 && cursor < 8) {
+        const CupSelectInject* inj =
+            FindCupSelectInject(kCupPage2Courses[cursor]);
+        if (inj && inj->trophyId != 0) {
+            *glyphRight = inj->trophyId;
+            customPath = true;
+        }
+    }
+
+    if (!customPath) {
+        // Vanilla 振る舞い再現。
+        u16  base = ((u16*)0x8039b218)[cursor * 2];
+        u16  add  = (pageFlag != 0) ? 8 : 0;
+        *glyphRight = (unlocked == 1) ? (u16)(base + add + 8) : base;
+    }
+}
+
+asm void Trophy_RewriteHook() {
+    nofralloc
+    stwu r1, -0x10(r1)
+    mflr r0
+    stw  r0, 0x14(r1)
+    or   r3, r27, r27   // r27 = scene (callee-saved within FUN_801c64dc)
+    bl   Trophy_RewriteBlock
+    lwz  r0, 0x14(r1)
+    mtlr r0
+    addi r1, r1, 0x10
+    blr
+}
+
+kmBranch(0x801c6680, Trophy_RewriteHook);
+kmPatchExitPoint(Trophy_RewriteHook, 0x801c6730);
 
 // --------- Course selection: page-aware SetCourseParams dispatch --------
 // Replaces the 8-way cursor dispatch at 0x801c80f4..0x801c81f0 (each cursor

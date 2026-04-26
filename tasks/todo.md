@@ -81,20 +81,15 @@
   - binding でも結果は同じだが、binding 廃止のため direct-insert 化
 - [ ] ビルド + Dolphin 動作確認
 
-### C-2b: trophy direct-insert (DAT_8039b218, 0x1EA2系) — Ghidra 偵察必要
-- **罠**: FUN_801c64dc 内で `glyphIdxRight = DAT_8039b218[cursor*2] + (unlocked ? 8 : 0)`。
-  custom_id を書き込んでも +8 で別 custom_id を参照する必要があり、IDS_PER_CUP=16 では
-  slot 2 + 8 = slot 10 が round[2].thumb と必然衝突。
-- 対策候補:
-  - (A) IDS_PER_CUP=32 拡張 + slot 再配置 (trophy_locked=0x4010, unlocked=0x4018 等)
-  - (B) FUN_801c64dc の +8 加算自体を hook で潰し、custom cup なら trophy_unlocked custom_id を別途返す
-  - (B) のほうが slot 配置の自由度が残る。先に Ghidra MCP で FUN_801c64dc を decompile して判断
-- [ ] FUN_801c64dc decompile + +8 加算箇所特定
-- [ ] (A)/(B) 選択
-- [ ] yaml schema に trophy_unlocked 追加 (なければ trophy で alias)
-- [ ] CupSelectInject に trophyId / trophyUnlockedId 追加
-- [ ] cup_page3 の Apply/Restore 拡張
-- [ ] ビルド + Dolphin 動作確認
+### C-2b: trophy direct-insert (DAT_8039b218, 0x1EA2系) — **完了**
+- 採用: (B) FUN_801c64dc 末尾の trophy 書き込みブロックを wholesale hook 置換
+- kmBranch(0x801c6680, Trophy_RewriteHook) + kmPatchExitPoint 0x801c6730
+- page 2 + custom cup なら CupSelectInject.trophyId を glyphRight に直書き、
+  vanilla の +8/+16 (locked/silver/gold) 罠を回避
+- cup-tile sprite refresh: FUN_801c6c0c (= CupTile_StateChange) を Apply 末尾で
+  各 cursor の現在 state で再呼び出し → Sprite_SetupAnim 経由で paramTable
+  が新 (custom) ID で再構築される
+- 全 8 cursor で 0x4000+ 表示確認済み
 
 ### C-2c: cup-name banner top direct-insert (DAT_8049ade4, 0x1758系)
 - [ ] yaml に `name_top` key 追加 (or `name` を top/bot 兼用にする方針決定)
@@ -112,10 +107,11 @@
 - [ ] OK なら最終削除
 
 ### C-4: round-select sub_index=0 entry inject (cup-name 0x16ED 等)
-- [ ] DAT_8049afa0[0] (cup-name) の inject
+- [x] DAT_8049afa0[alias_sub_index] (cup-name strip) の inject
+  - CupSelectInject に nameRoundSelectId 追加、PreInit/PreDtor で inject/restore
+  - 動作確認済み (0x4005 表示)
 - [ ] DAT_8039b308[0..7], DAT_8049af78[0] 等の他 sub_index 0 entry も round-select scope で inject
-- [ ] 既存 InjectRoundThumbs に統合
-- [ ] ビルド + 動作確認
+- [ ] その他確認: DAT_8049afa0 以外で round-select 中に表示される sub_index-indexed asset
 
 ### C-5: round-select の binding 削除
 - [ ] gen から round-select 系 binding を除外

@@ -85,6 +85,7 @@ clFlowCup_Update=0x801c772c
 clFlowCup_Dtor=0x801c88f4
 Sprite_SetupAnim=0x801a03dc
 Sprite_SetAnimParam=0x801a0374
+CupTile_StateChange=0x801c6c0c     # FUN_801c6c0c: per-cursor cup-tile state machine (rebuilds paramTable from DAT_8049ad58 on state>=2)
 SetCourseParams=0x8009cbfc
 
 # Round-unlock save data lookups (used in clFlowRound_Init).

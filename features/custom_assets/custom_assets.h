@@ -62,21 +62,29 @@ struct CupAliasEntry {
 //
 // 1 entry = 1 custom cup。配置 cursor は配列 index (= cups[] の順)。
 //
-// 対象テーブル:
-//   DAT_8049ad58 [cursor*6 short]  short[0]=iconId,    short[1]=ribbonId
-//   DAT_8049ade4 [cursor*6 short]  short[0]=nameTopId, short[1]=nameBotId
-//                                  (= DAT_8049ade6 - 2; immediate-draw 用)
+// 対象テーブル / 経路:
+//   DAT_8049ad58 [cursor*6 short]    short[0]=iconId,    short[1]=ribbonId
+//   DAT_8049ade4 [cursor*6 short]    short[0]=nameTopId, short[1]=nameBotId
+//                                    (= DAT_8049ade6 - 2; immediate-draw 用)
+//   trophyId は DAT_8039b218 への inject ではなく、FUN_801c64dc 末尾の
+//                trophy 書き込みブロックを wholesale hook 置換する経路で書く。
+//                vanilla の +8/+16 (locked/silver/gold) 罠を回避するため、
+//                custom cup では cursor から直接 trophyId を返す。
 //
-// Phase C-1: icon + ribbon (DAT_8049ad58) のみ direct-insert。
-// Phase C-2a: nameBotId (DAT_8049ade6, 0x1729系) を追加。
-// trophy (DAT_8039b218) と nameTop (0x1758系) は別 phase。
+// Phase C-1:  icon + ribbon (DAT_8049ad58) を direct-insert
+// Phase C-2a: nameBotId (DAT_8049ade6, 0x1729系) を direct-insert
+// Phase C-2b: trophyId (FUN_801c64dc 末尾 hook) を direct-insert
+// nameTop (0x1758系) は yaml schema 未対応 (C-2c)。
 struct CupSelectInject {
-    u8  customCupId;  // 対象 cup_id (>= 17) — debug 用
+    u8  customCupId;       // 対象 cup_id (>= 17) — debug 用
     u8  pad[3];
-    u16 iconId;       // → DAT_8049ad58[cursor*6+0]
-    u16 ribbonId;     // → DAT_8049ad58[cursor*6+1]
-    u16 nameBotId;    // → DAT_8049ade4[cursor*6+1] (= DAT_8049ade6[cursor*6+0])
-    u16 pad_0e;
+    // --- cup-select scene (page 2 cursor-indexed) ---
+    u16 iconId;            // → DAT_8049ad58[cursor*6+0]
+    u16 ribbonId;          // → DAT_8049ad58[cursor*6+1]
+    u16 nameBotId;         // → DAT_8049ade4[cursor*6+1] (= DAT_8049ade6[cursor*6+0])
+    u16 trophyId;          // → FUN_801c64dc 末尾 hook で glyphRight に直接書き込み
+    // --- round-select scene (alias-borrowed sub_index 経由) ---
+    u16 nameRoundSelectId; // → DAT_8049afa0[alias_sub_index]  (vanilla 0x16ED系)
 };
 
 // Per-round thumb resource id injection.

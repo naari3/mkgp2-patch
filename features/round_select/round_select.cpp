@@ -63,9 +63,14 @@ extern "C" {
 static const short* const kCupSubIndexTable = (const short*)0x8049af8c;
 // Cup-slot table base (16 bytes per cup, 4 rounds × 4 bytes).
 static u16* const kCupSlotTableBase = (u16*)0x8049aea0;
+// sub_index-indexed cup-name strip (vanilla 0x16ED..0x1708, 8 entries).
+// FUN_801c9288 等の round-select code が DAT_8049afa0[sub_index] を直接読む。
+static u16* const kCupNameRoundSelectTable = (u16*)0x8049afa0;
 
 static u16  s_savedSlot[8];          // 16 bytes of vanilla slot
 static int  s_savedSlotIdx = -1;     // sub_index of saved slot, -1 = nothing saved
+static u16  s_savedCupName        = 0;
+static int  s_savedCupNameSubIdx  = -1;
 
 // Look up our 8 inject ids for a custom cup_id. Returns NULL if no entry.
 static const RoundThumbInject* FindThumbInject(int customCupId) {
@@ -74,6 +79,44 @@ static const RoundThumbInject* FindThumbInject(int customCupId) {
             return &kRoundThumbInjects[i];
     }
     return 0;
+}
+
+// Look up the per-cup direct-insert struct (also used by cup_page3 for
+// cup-select scene). For round-select we only need nameRoundSelectId.
+static const CupSelectInject* FindCupSelectInject(int customCupId) {
+    for (unsigned int i = 0; i < kCupSelectInjectCount; ++i) {
+        if ((int)kCupSelectInjects[i].customCupId == customCupId)
+            return &kCupSelectInjects[i];
+    }
+    return 0;
+}
+
+// round-select の cup-name strip を direct-insert する。alias swap で
+// g_cupId=alias になるため、vanilla code は DAT_8049afa0[alias_sub_index]
+// を読む。alias=7 (Yoshi) なら sub_index=0 → DAT_8049afa0[0]。
+// 元 vanilla 値を s_savedCupName に保存し、PreDtor で復元する。
+static void InjectCupNameRoundSelect(int customCupId, int aliasCupId) {
+    if (s_savedCupNameSubIdx >= 0) return;  // 二重 inject 防御
+    const CupSelectInject* inj = FindCupSelectInject(customCupId);
+    if (!inj || inj->nameRoundSelectId == 0) return;
+    if (aliasCupId < 0 || aliasCupId > 8) return;
+    int subIdx = (int)kCupSubIndexTable[aliasCupId];
+    if (subIdx < 0 || subIdx >= 8) return;
+    s_savedCupName       = kCupNameRoundSelectTable[subIdx];
+    s_savedCupNameSubIdx = subIdx;
+    kCupNameRoundSelectTable[subIdx] = inj->nameRoundSelectId;
+    DebugPrintfSafe("MKGP2: cup-name RS inject sub=%d %04x -> %04x\n",
+                    subIdx, (unsigned)s_savedCupName,
+                    (unsigned)inj->nameRoundSelectId);
+}
+
+static void RestoreCupNameRoundSelect() {
+    if (s_savedCupNameSubIdx < 0) return;
+    kCupNameRoundSelectTable[s_savedCupNameSubIdx] = s_savedCupName;
+    DebugPrintfSafe("MKGP2: cup-name RS restore sub=%d -> %04x\n",
+                    s_savedCupNameSubIdx, (unsigned)s_savedCupName);
+    s_savedCupNameSubIdx = -1;
+    s_savedCupName       = 0;
 }
 
 // Manually preload our inject ids so the per-frame UV refresh path finds
@@ -189,6 +232,9 @@ extern "C" void RoundSelect_PreInit() {
     // and the custom_assets ResourceSlotLoadBranchHook reroutes the loader to
     // the filename path so our TPLs end up registered in the slot registry.
     InjectRoundThumbs(cup, alias);
+    // 同じく direct-insert: alias の sub_index に対応する DAT_8049afa0 entry
+    // を custom cup-name strip に上書き。vanilla 0x16ED系 binding に依存しない。
+    InjectCupNameRoundSelect(cup, alias);
     DebugPrintfSafe("MKGP2: round-select swap cupId %d -> %d (scope=%d)\n",
                     cup, alias, cup);
     DumpSlotRegistryFor("PreInit (after swap)");
@@ -197,7 +243,8 @@ extern "C" void RoundSelect_PreInit() {
 extern "C" void RoundSelect_PreDtor() {
     EnsureDBATWidened();
     if (g_customCupScope > 0) {
-        RestoreRoundThumbs();   // no-op when nothing was injected
+        RestoreRoundThumbs();          // no-op when nothing was injected
+        RestoreCupNameRoundSelect();   // 同上
         DebugPrintfSafe("MKGP2: round-select restore cupId %d -> %d\n",
                         (int)g_cupId, g_customCupScope);
         g_cupId = (unsigned int)g_customCupScope;
