@@ -83,24 +83,34 @@ CUSTOM_GROUPKEY_BASE = 0x4000   # must match custom_assets.h
 IDS_PER_CUP          = 16       # per-cup reserved id block
 U16_MAX = 0xFFFF
 
-# Cup-level asset slots (substitution-mapped via kBindings). Each entry:
-# (yaml key, vanilla resource id base, default size, slot offset inside cup
-# block, cup_indexed flag).
-#   cup_indexed = True   -> binding.from = vanilla_base + K for K in 0..7
-#   cup_indexed = False  -> binding.from = vanilla_base (single global id; the
-#                           cup_id gate still scopes which cup triggers it).
+# Cup-level asset slots. Each entry:
+# (yaml key, vanilla_base, default_size, slot_off, cup_indexed, emit_binding).
+#
+#   cup_indexed = True   -> when emit_binding, generate binding.from =
+#                           vanilla_base + K for K in 0..7
+#   cup_indexed = False  -> when emit_binding, single global binding.from =
+#                           vanilla_base (cup_id gate still scopes it)
+#   emit_binding = True  -> append to kBindings[]; binding lookup will remap
+#                           the vanilla id to the custom id when scope matches.
+#   emit_binding = False -> rely solely on direct-insert (cup_page3 writes the
+#                           custom id into the cursor-indexed / sub_index table
+#                           that vanilla code reads). Default for slots fully
+#                           covered by direct-insert; reduces per-frame binding
+#                           lookup noise. banner (0x175E) keeps emit_binding
+#                           because direct-insert isn't feasible (anim asset
+#                           内蔵 — see todo C-2d).
 CUP_ASSET_SLOTS = [
-    # key                , vanilla_base, default_size, slot_off, cup_indexed
-    ("icon"              , 0x1777, (128.0, 128.0),  0, True),
-    ("name"              , 0x1729, (256.0,  46.0),  1, True),
-    ("trophy"            , 0x1EA2, ( 92.0,  86.0),  2, True),
-    ("banner"            , 0x175E, (301.0, 125.0),  3, False),
+    # key                , vanilla_base, default_size, slot_off, cup_indexed, emit_binding
+    ("icon"              , 0x1777, (128.0, 128.0),  0, True,  False),
+    ("name"              , 0x1729, (256.0,  46.0),  1, True,  False),
+    ("trophy"            , 0x1EA2, ( 92.0,  86.0),  2, True,  False),
+    ("banner"            , 0x175E, (301.0, 125.0),  3, False, True),   # C-2d 未解決
     # Diagonal cup-name ribbon shown only on the hovered tile in cup-select.
     # Vanilla 0x1780..0x1787 in CUPsel02 atlas (148x64, group_key 0x0445).
-    ("cup_name_ribbon"   , 0x1780, (148.0,  64.0),  4, True),
+    ("cup_name_ribbon"   , 0x1780, (148.0,  64.0),  4, True,  False),
     # --- Round-select cup-level asset (require g_cupId == aliased cup id) ---
     # Cup-name strip top-left of round-select (COURSEname01 atlas crop).
-    ("name_roundselect"  , 0x16ED, (110.0,  67.0),  5, False),
+    ("name_roundselect"  , 0x16ED, (110.0,  67.0),  5, False, False),
 ]
 
 # Round-level asset slots. Per yaml round, allocates 2 ids (square + vertical
@@ -289,7 +299,7 @@ def collect_assets(cups):
             "name_round_select_id":    0,
         }
 
-        for key, vanilla_base, default_size, slot_off, cup_indexed in CUP_ASSET_SLOTS:
+        for key, vanilla_base, default_size, slot_off, cup_indexed, emit_binding in CUP_ASSET_SLOTS:
             png_rel = a_section.get(key)
             if png_rel is None:
                 continue
@@ -332,7 +342,11 @@ def collect_assets(cups):
 
             # Binding: when g_cupId == cup.cup_id, intercept the vanilla id
             # and serve the custom id. Cup-indexed slots emit 8 bindings
-            # (one per cursor position 0..7).
+            # (one per cursor position 0..7). Slots with emit_binding=False
+            # rely on direct-insert (cup_page3 writes custom ids into the
+            # cursor/sub_index table vanilla reads).
+            if not emit_binding:
+                continue
             if cup_indexed:
                 positions = range(8)
             else:
