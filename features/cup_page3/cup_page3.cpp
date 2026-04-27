@@ -130,27 +130,19 @@ extern "C" void CupForceGates(void* scene) {
     if (!scene) return;
     U8(scene, OFF_GATE_FLAG0) = 1;
     U8(scene, OFF_GATE_FLAG1) = 1;
-    // Pin g_cupId=17 + g_customCupScope=17 while the player is on page 3.
+    // g_customCupScope: ApplyBinding が "実際の custom cupId" を解決する
+    // ための scope holder。page 2 中だけ 17 を立てる (banner binding 0x175E
+    // → 0x4003 をこの scope check 経由で発火)。
     //
-    // Two distinct consumers depend on this:
-    //   1. binding gate — ApplyBinding (custom_assets.cpp) needs the
-    //      "effective cupId" to match cup_id=17 so the remaining banner
-    //      binding (0x175E → 0x4003) fires. ApplyBinding prefers
-    //      g_customCupScope over g_cupId when set, so the scope set is
-    //      sufficient for this side and is the long-term owner.
-    //   2. race scene handover — vanilla CupSelectDispatch on confirm reads
-    //      g_cupId to call SetCourseParams(g_cupId, ...), which is what the
-    //      race scene + cup_page3 BGM/weather hooks consume. There is no
-    //      vanilla cursor→cup_id mapping for page 2 (it didn't exist), so
-    //      without g_cupId=17 we'd hand off whichever leftover value g_cupId
-    //      had from page 0/1 cursor hover and the race would load that cup's
-    //      bgm/weather instead of test_cup's (= silent BGM).
-    //
-    // Long-term plan: hook CupSelectDispatch's confirm path to call
-    // SetCourseParams(custom_cup_id, ...) directly, then this g_cupId pin
-    // can be retired and only the scope set remains.
+    // 旧設計では同時に `*(u32*)0x806cf108u = 17u;` で g_cupId 自体も per-frame
+    // pin していたが、現状 g_cupId 17 への書き込みは:
+    //   - CupCursorUpdateDispatch: 0x801c64dc 経由の cursor-change 時に
+    //     SetCourseParams(kCupPage2Courses[cursor]=17, ...)
+    //   - CupSelectDispatch:       0x801c80f4 経由の confirm 時に同上
+    // で十分カバーされる。CupForwardTransition (page 1→2 突入) でも
+    // SetCourseParams(17) を 1 回明示しておけば、page 2 滞在中の vanilla
+    // 任意経路で g_cupId が 17 から外れる場面はないはず。
     if (U8(scene, OFF_PAGE_FLAG) == 2) {
-        *(u32*)0x806cf108u = 17u;
         g_customCupScope = 17;
     } else {
         g_customCupScope = 0;
@@ -340,6 +332,10 @@ extern "C" void CupForwardTransition(void* scene) {
         I32(scene, OFF_SUBSTATE)  = 4;
         I32(scene, OFF_FRAME_CTR) = 0;
         DebugPrintfSafe("MKGP2: cup page 1 -> 2 (new page)\n");
+        // page 2 突入時点で g_cupId を 17 に確定させる (CupForceGates の
+        // per-frame pin を撤去したため)。これ以後の cursor 移動 / confirm
+        // も SetCourseParams(17) を発行するので 17 のまま保持される。
+        SetCourseParams(kCupPage2Courses[0], 0, 0, 0);
         // Direct-insert: cursor-indexed cup-tile resource を custom ID に
         // 書き換える。cursor 移動は scene 側がそのまま行うので、各 tile が
         // 自前 cup の icon/ribbon を表示する。
