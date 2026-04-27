@@ -72,14 +72,12 @@
 - [x] ビルド成功 (79 hooks)
 - [x] Dolphin 動作確認: page 1↔2 で inject/restore 3 回往復 OK、debug_overlay で 0x4000/0x4004 表示確認、vanilla cup 壊れず
 
-### C-2a: cup-name banner bot direct-insert (DAT_8049ade6, 0x1729系)
-- [ ] CupSelectInject に nameBotId 追加 (custom_assets.h)
-- [ ] gen で yaml `name` から nameBotId を拾う
-- [ ] cup_page3 の Apply/Restore に DAT_8049ade6 inject 追加
-  - 同テーブルの top (DAT_8049ade4 / 0x1758系) は当面 vanilla 流用 (yaml schema 未対応 → C-2c)
-  - immediate-mode draw (clFlowCup_Draw 内 FUN_801a1174) なので debug_overlay には出ない
-  - binding でも結果は同じだが、binding 廃止のため direct-insert 化
-- [ ] ビルド + Dolphin 動作確認
+### C-2a: cup-name banner bot direct-insert (DAT_8049ade6, 0x1729系) — **完了**
+- [x] CupSelectInject に nameBotId 追加 (custom_assets.h)
+- [x] gen で yaml `name` から nameBotId を拾う
+- [x] cup_page3 の Apply/Restore に DAT_8049ade6 inject 追加
+- [x] commit 676afc3 + 実機確認 (test_cup_name.png 表示、dolphin.log で 0x4001 query 発火)
+- 注: vanilla の DAT_8049ade4 テーブル初期値は garbage に見えたが、page 0/1 では sprite 経路 (anim 0x18f) で描画され、page 2 のみ immediate-draw が active になる scratch 設計
 
 ### C-2b: trophy direct-insert (DAT_8039b218, 0x1EA2系) — **完了**
 - 採用: (B) FUN_801c64dc 末尾の trophy 書き込みブロックを wholesale hook 置換
@@ -91,31 +89,42 @@
   が新 (custom) ID で再構築される
 - 全 8 cursor で 0x4000+ 表示確認済み
 
-### C-2c: cup-name banner top direct-insert (DAT_8049ade4, 0x1758系)
-- [ ] yaml に `name_top` key 追加 (or `name` を top/bot 兼用にする方針決定)
-- [ ] CupSelectInject に nameTopId 追加
-- [ ] cup_page3 の Apply/Restore 拡張
-- [ ] ビルド + Dolphin 動作確認
+### C-2c: cup-name banner top direct-insert (DAT_8049ade4, 0x1758系) — **drop (現状不要)**
+- 0x1758系 (151×29) は banner block の左隣スペース。test_cup_name.png は nameBot (256×46) 単独で要件を満たすため、現状 customize したい cup yaml が無い
+- 機構自体は C-2a と完全対称、必要になった時点で 10 行ほどで再追加可能
+- 命名 (`top` 不適切問題) は再追加時に位置/役割を見て決める
 
-### C-2d: cup-select banner (0x175E, anim asset 内蔵) — 当面保留
-- vanilla の anim asset 内蔵描画なので sprite 経由でなく direct-insert 不可
-- 必要なら anim 自体を replace する別アプローチ要 (大規模)
+### C-2d: cup-select banner (0x175E, anim asset 内蔵) — **closed (won't fix)**
+- 0x175E は code 上 immediate 参照が `clFlowCup_Init` の PreloadResource 1 箇所のみ
+  (Find_BannerRange.java で全コード検索、2026-04-27)
+- 描画は anim asset (disk binary) 内に 0x175E が埋め込まれている形で、ロード後
+  runtime が anim data の image-id list を読んで GetResourceEntry を呼ぶ経路
+- vanilla の CUP_ASSET_SLOTS で banner は `cup_indexed=False` 単一 entry =
+  **vanilla 自体が 0x175E 1 個を 8 cups で共有**、cupNameSprite/cupSubTitleSprite
+  を per-cup で重ねて差別化している設計
+- 単純に anim file を replace すると全 vanilla cup の banner も test_cup 化け
+- per-cup 独自 anim file を作るには anim binary format のリバースが必要 = 数日仕事
+- 費用対効果: 得られるのは「最後の 1 件 binding 削除」のみ。現状の scope-aware
+  binding (kBindings=1, g_customCupScope=17 のとき発火) が **共有資源設計に対する
+  最適な実装**。closed する。
 
-### C-3: cup-select の kBindings entry 段階削除
-- [ ] gen で cup-select 系 binding (icon/ribbon/trophy/banner/name) を出さないオプション追加
-- [ ] 実行: 削除して動作確認 (= direct-insert のみで動くか)
-- [ ] OK なら最終削除
+### C-3: cup-select / round-select の kBindings 段階削除 — **部分完了**
+- [x] gen で `emit_binding` flag 追加、direct-insert で cover 済の slot は binding 出さない
+- [x] kBindings 34→1 (banner 0x175E のみ残、C-2d 未解決のため)
+- [x] 実機検証: cup-select page 2 + round-select で test_cup の全 asset 正常表示 (commit 5714226)
+- [ ] 最終削除 (= banner 1 件) は C-2d 解決後
 
-### C-4: round-select sub_index=0 entry inject (cup-name 0x16ED 等)
+### C-4: round-select sub_index=0 entry inject (cup-name 0x16ED 等) — **必要分完了**
 - [x] DAT_8049afa0[alias_sub_index] (cup-name strip) の inject
   - CupSelectInject に nameRoundSelectId 追加、PreInit/PreDtor で inject/restore
   - 動作確認済み (0x4005 表示)
-- [ ] DAT_8039b308[0..7], DAT_8049af78[0] 等の他 sub_index 0 entry も round-select scope で inject
-- [ ] その他確認: DAT_8049afa0 以外で round-select 中に表示される sub_index-indexed asset
+- [x] その他 sub_index-indexed asset の必要性確認 — 実機 debug_overlay 視認で「漏れている vanilla ID なし」(2026-04-27)
+  - DAT_8039b308 / DAT_8049af78 / DAT_8049af30 系は round-select scene 中に visible 描画されていない (= direct-insert 不要)
+  - 将来的に新規 cup を増やして見える要素が変わったら再偵察
 
-### C-5: round-select の binding 削除
-- [ ] gen から round-select 系 binding を除外
-- [ ] 動作確認
+### C-5: round-select の binding 削除 — **C-3 と同時に完了**
+- [x] gen から round-select 系 binding を除外 (`name_roundselect` slot に `emit_binding=False`)
+- [x] 動作確認 (commit 5714226 と同じ実機検証で完了)
 
 ### C-6: 後始末
 - [ ] cup_page3.cpp から `*(u32*)0x806cf108u = 17u;` を削除
