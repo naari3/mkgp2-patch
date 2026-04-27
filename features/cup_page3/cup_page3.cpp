@@ -130,21 +130,30 @@ extern "C" void CupForceGates(void* scene) {
     if (!scene) return;
     U8(scene, OFF_GATE_FLAG0) = 1;
     U8(scene, OFF_GATE_FLAG1) = 1;
-    // Pin g_cupId = 17 while the player is HOVERING page 3 so custom_assets'
-    // bindings (gated on g_cupId == 17) fire for every tile. We deliberately
-    // do NOT touch g_cupId on pages 0/1: an earlier version cleared it to 0
-    // there to flush stale test_cup leakage, but that also clobbered the
-    // SetCourseParams write made by CupSelectDispatch on confirm — meaning
-    // every omote/ura cup confirmation ended up running vanilla cup 0
-    // (test_course dev placeholder) instead of the selected cup.
+    // Pin g_cupId=17 + g_customCupScope=17 while the player is on page 3.
     //
-    // The leakage case (g_cupId stuck at 17 after a test_cup race when the
-    // player re-enters cup-select on page 0/1) is already handled implicitly
-    // by clFlowCup_Init -> FUN_801c64dc -> CupCursorUpdateDispatch (which
-    // installs SetCourseParams(CUP_COURSE_BY_CURSOR[cursor]) for non-page-2),
-    // so no explicit reset is needed.
+    // Two distinct consumers depend on this:
+    //   1. binding gate — ApplyBinding (custom_assets.cpp) needs the
+    //      "effective cupId" to match cup_id=17 so the remaining banner
+    //      binding (0x175E → 0x4003) fires. ApplyBinding prefers
+    //      g_customCupScope over g_cupId when set, so the scope set is
+    //      sufficient for this side and is the long-term owner.
+    //   2. race scene handover — vanilla CupSelectDispatch on confirm reads
+    //      g_cupId to call SetCourseParams(g_cupId, ...), which is what the
+    //      race scene + cup_page3 BGM/weather hooks consume. There is no
+    //      vanilla cursor→cup_id mapping for page 2 (it didn't exist), so
+    //      without g_cupId=17 we'd hand off whichever leftover value g_cupId
+    //      had from page 0/1 cursor hover and the race would load that cup's
+    //      bgm/weather instead of test_cup's (= silent BGM).
+    //
+    // Long-term plan: hook CupSelectDispatch's confirm path to call
+    // SetCourseParams(custom_cup_id, ...) directly, then this g_cupId pin
+    // can be retired and only the scope set remains.
     if (U8(scene, OFF_PAGE_FLAG) == 2) {
         *(u32*)0x806cf108u = 17u;
+        g_customCupScope = 17;
+    } else {
+        g_customCupScope = 0;
     }
 }
 
@@ -1003,18 +1012,16 @@ extern "C" void* WeatherInitCustom(void* state, int cupType) {
 
     u32 cupId = *(u32*)0x806cf108;
     const void* bgmPair = 0;
-    // Per-cup BGM pair buffer: 4 u16 in vanilla layout
-    //   [round0_L, round0_R, round1_L, round1_R]
-    // Built from CustomRound's bgmIdL/R (per-round) on each call. Single
-    // static slot is OK since WeatherInit fires once per scene entry.
-    static unsigned short s_perCupBgmPair[4];
+    // Vanilla BgmIdList layout: 2 u32 [long_id, short_id], read by
+    // FUN_8016b32c via `lwz` from (state+4)+0/+4. Map our per-round bgm_id
+    // into that slot — round 0 → [0], round 1 → [1] (clone if nRounds<2).
+    // Single static slot is OK since WeatherInit fires once per scene entry.
+    static unsigned int s_perCupBgmPair[2];
     const struct CustomCup* cup = FindCustomCup(cupId);
     if (cup != 0 && cup->nRounds > 0) {
-        s_perCupBgmPair[0] = (unsigned short)cup->rounds[0].bgmIdL;
-        s_perCupBgmPair[1] = (unsigned short)cup->rounds[0].bgmIdR;
         unsigned int r1 = (cup->nRounds >= 2) ? 1u : 0u;
-        s_perCupBgmPair[2] = (unsigned short)cup->rounds[r1].bgmIdL;
-        s_perCupBgmPair[3] = (unsigned short)cup->rounds[r1].bgmIdR;
+        s_perCupBgmPair[0] = cup->rounds[0].bgmIdL;
+        s_perCupBgmPair[1] = cup->rounds[r1].bgmIdL;
         bgmPair = (const void*)s_perCupBgmPair;
     }
     if (bgmPair == 0) {
