@@ -82,88 +82,19 @@ static void TryPreloadCustomAssetsAtCup17() {
     if (s_customPreloaded || s_inCustomPreload) return;
     if ((int)g_cupId != 17) return;
     s_inCustomPreload = true;
-    DebugPrintfSafe("MKGP2: ===== manual preload at cup=17 =====\n");
     for (unsigned int i = 0; i < kBindingCount; ++i) {
         const CupBinding& b = kBindings[i];
         if ((int)b.cupId != 17) continue;
-        int ret = PreloadResource((int)(u16)b.fromId);
-        DebugPrintfSafe("MKGP2:   PreloadResource(0x%04x) = %d\n",
-                        (int)(u16)b.fromId, ret);
+        PreloadResource((int)(u16)b.fromId);
     }
     s_inCustomPreload = false;
     s_customPreloaded = true;
-    // Verify by scanning slot registry. Print: total populated count, all
-    // populated slots, and dedicated check for our custom group_keys.
-    int* slots = (int*)0x806573e8;
-    int populated = 0;
-    int customFound = 0;
-    DebugPrintfSafe("MKGP2: --- slot registry dump (gk != -1) ---\n");
-    for (int i = 0; i < 600; ++i) {
-        int* slot = slots + i * 7;
-        int resId = slot[0];
-        int gk = slot[1];
-        int dataPtr = slot[2];
-        if (gk != -1) {
-            populated++;
-            // low 16 bits match our custom range (CUSTOM_GROUPKEY_BASE..+0x100).
-            bool isCustom = ((unsigned int)gk & 0xFFFF) >= 0x4000u &&
-                            ((unsigned int)gk & 0xFFFF) <= 0x4100u;
-            if (populated <= 20 || isCustom) {
-                DebugPrintfSafe("MKGP2:   slot[%d] resId=0x%04x gk=0x%08x data=%p\n",
-                                i, resId, gk, (void*)dataPtr);
-            }
-            if (isCustom) customFound++;
-        }
-    }
-    DebugPrintfSafe("MKGP2: total populated=%d, custom=%d\n", populated, customFound);
-}
-
-// Per-pair (from, cup) fire counter. Tracks first-seen + total count so we
-// can distinguish "binding fires every frame for all IDs" (downstream issue)
-// from "some IDs fire only once" (caching / early-return per SpriteHandle).
-// Cap at 64 unique entries.
-static const int kBindingFireMax = 64;
-struct BindingFireRecord { u16 from; s16 cup; u32 count; };
-static BindingFireRecord s_bindingFires[kBindingFireMax];
-static int s_bindingFireCount = 0;
-static u32 s_bindingFireTotal = 0;
-static u32 s_bindingFireNextReport = 1000;
-
-// --- Diagnostic: log ALL resource ids queried while g_cupId == 17, dedup'd. ---
-// Helps identify which vanilla ids drive the page-3 UI but aren't yet bound.
-// Tracks up to 64 unique ids per getter family.
-static const int kIdLogMax = 64;
-static u16 s_seenIds_GroupKey[kIdLogMax];
-static int s_seenIdsCount_GroupKey = 0;
-static u16 s_seenIds_FilePath[kIdLogMax];
-static int s_seenIdsCount_FilePath = 0;
-
-static inline bool LogQueriedIdOnce(u16 id, u16* set, int& count, const char* tag) {
-    if ((int)g_cupId != 17) return false;
-    for (int i = 0; i < count; ++i) {
-        if (set[i] == id) return false;
-    }
-    if (count >= kIdLogMax) return false;
-    set[count++] = id;
-    DebugPrintfSafe("MKGP2: cup17 %s queries 0x%04x (#%d)\n",
-                    tag, (int)id, count);
-    return true;
 }
 
 // g_customCupScope: when non-zero, overrides g_cupId for binding gate.
 // Used by features/round_select to keep bindings firing while g_cupId
 // is temporarily swapped to a vanilla alias cupId for OOB-safe table reads.
 extern "C" volatile int g_customCupScope = 0;
-
-// Scope-match diagnostic: cap at 30 events. Logs every binding fire while
-// g_customCupScope > 0 to verify round-select swap routes correctly.
-static int s_scopeMatchLogCount = 0;
-
-// Track scope-active resource queries that DIDN'T match any binding. Helps
-// distinguish "binding wrong" from "binding never queried".
-static const int kScopeMissMax = 64;
-static u16 s_scopeMissIds[kScopeMissMax];
-static int s_scopeMissCount = 0;
 
 static inline int ApplyBinding(int resourceId) {
     if (kBindingCount == 0) return resourceId;
@@ -176,69 +107,7 @@ static inline int ApplyBinding(int resourceId) {
         const CupBinding& b = kBindings[i];
         if ((b.cupId == -1 || (int)b.cupId == cup) &&
             (int)(u16)b.fromId == resourceId) {
-            int bound = (int)(u16)b.toId;
-            if (g_customCupScope > 0 && s_scopeMatchLogCount < 30) {
-                ++s_scopeMatchLogCount;
-                DebugPrintfSafe("MKGP2: scope-match #%d: 0x%04x -> 0x%04x "
-                                "(scope=%d, g_cupId=%d)\n",
-                                s_scopeMatchLogCount, resourceId, bound,
-                                g_customCupScope, (int)g_cupId);
-            }
-            // Per-pair counter
-            int pairIdx = -1;
-            for (int j = 0; j < s_bindingFireCount; ++j) {
-                if (s_bindingFires[j].from == (u16)resourceId &&
-                    s_bindingFires[j].cup  == (s16)cup) {
-                    pairIdx = j; break;
-                }
-            }
-            if (pairIdx == -1 && s_bindingFireCount < kBindingFireMax) {
-                pairIdx = s_bindingFireCount++;
-                s_bindingFires[pairIdx].from = (u16)resourceId;
-                s_bindingFires[pairIdx].cup  = (s16)cup;
-                s_bindingFires[pairIdx].count = 0;
-                DebugPrintfSafe("MKGP2: first fire: 0x%04x -> 0x%04x (cup=%d)\n",
-                                resourceId, bound, cup);
-            }
-            if (pairIdx >= 0) s_bindingFires[pairIdx].count++;
-
-            s_bindingFireTotal++;
-            if (s_bindingFireTotal >= s_bindingFireNextReport) {
-                s_bindingFireNextReport += 2000;
-                // Scan resource slot registry for any slot whose group_key
-                // falls in the custom range. Each slot = 28 bytes (7 dwords);
-                // slot[0]=resourceId, slot[1]=groupKey, slot[2]=resourceDataPtr.
-                int* slots = (int*)0x806573e8;
-                int found = 0;
-                for (int i = 0; i < 600; ++i) {
-                    int* slot = slots + i * 7;
-                    int gk = slot[1];
-                    if (gk >= 0x4000 && gk <= 0x4100) {
-                        DebugPrintfSafe("MKGP2: slot[%d] resId=0x%04x gk=0x%04x dataPtr=%p\n",
-                                        i, slot[0], gk, (void*)slot[2]);
-                        found++;
-                    }
-                }
-                if (found == 0) {
-                    DebugPrintfSafe("MKGP2: no custom slots registered (total=%u)\n",
-                                    s_bindingFireTotal);
-                }
-            }
-            return bound;
-        }
-    }
-    // Scope-active miss: track unique resource ids queried while scope > 0
-    // but didn't match any binding. Helps spot ids we forgot to bind.
-    if (g_customCupScope > 0 && s_scopeMissCount < kScopeMissMax) {
-        bool seen = false;
-        for (int i = 0; i < s_scopeMissCount; ++i) {
-            if (s_scopeMissIds[i] == (u16)resourceId) { seen = true; break; }
-        }
-        if (!seen) {
-            s_scopeMissIds[s_scopeMissCount++] = (u16)resourceId;
-            DebugPrintfSafe("MKGP2: scope-miss: 0x%04x (scope=%d, g_cupId=%d) #%d\n",
-                            resourceId, g_customCupScope, (int)g_cupId,
-                            s_scopeMissCount);
+            return (int)(u16)b.toId;
         }
     }
     return resourceId;
@@ -366,8 +235,6 @@ extern "C" int GetSlotIndex_Hook(int resourceId) {
 
 extern "C" int GetGroupKey_Hook(int resourceId) {
     EnsureDBATWidened();
-    LogQueriedIdOnce((u16)resourceId, s_seenIds_GroupKey,
-                     s_seenIdsCount_GroupKey, "GroupKey");
     resourceId = ApplyBinding(resourceId);
     const CustomResourceEntry* c = CustomResource_Lookup(resourceId);
     if (c) return (int)(unsigned int)c->group_key;   // u16 -> unsigned widen
@@ -451,8 +318,6 @@ static inline char* ResolveFilePath(unsigned int groupKey) {
 
 extern "C" char* GetFilePathPtr_Hook(int resourceId) {
     EnsureDBATWidened();
-    LogQueriedIdOnce((u16)resourceId, s_seenIds_FilePath,
-                     s_seenIdsCount_FilePath, "FilePath");
     resourceId = ApplyBinding(resourceId);
     // Extended-range (>= 0x2B00) uses a separate direct-indexed table; custom
     // IDs (>= CUSTOM_ID_BASE = 0x4000) must route through the groupKey path.
