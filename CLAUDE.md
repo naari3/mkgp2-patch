@@ -89,7 +89,11 @@ Grep は LSP が使えない場合やテキスト/パターン検索にのみ使
 
 ## 関連リソース
 
-- **解析ドキュメント**: `~/src/github.com/dolphin-emu/dolphin/mkgp2docs/` — 関数アドレス・構造体レイアウト・HSD コース format 等の調査結果。新しい hook を設計する前に必ず参照。
+- **解析ドキュメント**: `~/src/github.com/dolphin-emu/dolphin/mkgp2docs/` — 関数アドレス・構造体レイアウト・HSD コース format 等の調査結果。新しい hook を設計する前に必ず参照。特によく参照するもの:
+  - **UI スプライト / asset 関連**: `mkgp2_resource_asset_system.md` (ResourceEntry レイアウト、`Sprite_*Anim`、animId table 0x80496428、`< 0x1EC` gate、`ani_*.bin` / `tab_*.bin` format、`DAT_806cfd00` remap、共有資源パターンと per-cup 差し替え 4 選択肢)
+  - **コース / 衝突 / ジョイント**: `mkgp2_collision_bin_format.md`, `mkgp2_course_layout_system.md`, `mkgp2_course_joint_loader.md`, `mkgp2_course_scene_load.md`
+  - **HSD → Blender 視覚参照 pipeline**: `hsd_to_blender_visual_pipeline.md` (`.dat` から JSON+PNG bundle を吐いて Blender mesh+material を構築する read-only L1 pipeline。HSDLib の channel order quirk、unlit Emission shader 経路、`useVertexColor` の alpha pre-mul、`TObj.Blending` の罠など)
+  - **ISO 内ファイル位置**: `mkgp2_iso_dump_location.md`
 - **ライブメモリビューワ**: `~/src/github.com/naari3/mkgp2-view/` — Dolphin プロセスからアドレスを実時間読み取り。パッチ動作のデバッグに使用。MCPサーバー (`read_u32`, `get_game_state` 等) も提供。
 - **ISO 展開結果**: `C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files\` — コースモデル・コリジョン・テクスチャ等の全リソースが Dolphin dump + extract 済み。ファイル名命名規則の実物確認・没データ (test_course 等) 存在確認に使用。詳細は `mkgp2docs/mkgp2_iso_dump_location.md`。
 
@@ -170,9 +174,27 @@ mkgp2-patch/
 │       ├── gen_joints_header.py   # course_joints.yaml → generated_joints.h
 │       └── gen_mod_yaml.py
 ├── tools/
-│   └── gen_patch_map.py  # 全kmBranch/kmWriteスキャン → patch_map.md
+│   ├── gen_patch_map.py  # 全kmBranch/kmWriteスキャン → patch_map.md
+│   ├── analyze_line_y.py # _line.bin variant Y profile 計測
+│   ├── blender/          # Blender import/export スクリプト + addon
+│   │   ├── blender_addon_mkgp2_course/  # Blender addon (本体 + README)
+│   │   ├── blender_import_{hsd,collision,line,auto,course_all}.py
+│   │   ├── blender_export_{collision,line,auto}.py
+│   │   └── _line_roundtrip_test.py
+│   └── hsd/              # HSDLib 経由 .csx (dotnet-script)
+│       ├── hsd_export_for_blender.csx  # .dat → JSON + tex/*.png bundle
+│       ├── hsd_export_{textures,pobj}.csx
+│       ├── hsd_dump{,_textures}.csx
+│       └── hsd_add_alias_root.csx       # JObj alias root 追加 demo
 └── patch_map.md          # 自動生成 (gitignore)
 ```
+
+### Blender 経路 (course mesh / collision / path 編集)
+
+`tools/blender/` にコース編集 pipeline。`tools/blender/blender_addon_mkgp2_course/`
+の addon を Blender に install すると `View3D > N > MKGP2` タブと `File > Import/Export`
+メニューから per-asset import/export と Full Course (HSD + collision + line + auto 一括) が呼べる。
+詳細は addon README と `~/src/github.com/dolphin-emu/dolphin/mkgp2docs/hsd_to_blender_visual_pipeline.md`。
 
 ### 新機能追加フロー
 

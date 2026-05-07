@@ -26,3 +26,4 @@ tools/tpl_png/
 tools/*.decompressed.bin
 tools/resource_table.txt
 tools/__pycache__/
+tools/**/__pycache__/
