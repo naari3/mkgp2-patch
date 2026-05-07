@@ -34,6 +34,7 @@ import bpy
 import os
 import sys
 import importlib
+from pathlib import Path
 
 from bpy.types import Operator, Panel, AddonPreferences
 from bpy.props import StringProperty
@@ -136,6 +137,102 @@ def _seed_filepath(op_self, default_filename=""):
         op_self.filepath = os.path.join(base, default_filename)
     else:
         op_self.filepath = base + os.sep
+
+
+# ---------------------------------------------------------------------------
+# Custom-course collection helpers
+# ---------------------------------------------------------------------------
+#
+# A custom course is represented as a Blender collection tagged with
+# `mkgp2_kind = "course"` and the following filename / directory props:
+#
+#   mkgp2_course_name     human-readable identifier (also the collection name)
+#   mkgp2_collision_bin   filename for collision .bin
+#   mkgp2_line_bin        filename for _line.bin
+#   mkgp2_auto_f_bin      filename for _Auto.bin (forward direction)
+#   mkgp2_auto_r_bin      filename for _Auto_R.bin (reverse direction)
+#   mkgp2_bin_dir         absolute directory; empty means "use addon preference"
+#
+# All four child object roles (collision pair, line root, auto-F mesh,
+# auto-R mesh) live inside the course collection.  Auto meshes carry a
+# secondary `mkgp2_auto_role` custom prop ("F" or "R") so the exporter
+# can pick them apart without relying on a specific name suffix.
+
+ROOT_COLL_NAME = "MKGP2_Course"
+
+
+def _ensure_courses_root():
+    """Return (creating if needed) the top-level MKGP2_Course collection."""
+    coll = bpy.data.collections.get(ROOT_COLL_NAME)
+    if coll is None:
+        coll = bpy.data.collections.new(ROOT_COLL_NAME)
+        bpy.context.scene.collection.children.link(coll)
+    return coll
+
+
+def _find_parent_collection(child):
+    """bpy.data.collections has no parent ref, so walk every collection
+    looking for one that lists `child` among its children."""
+    for c in bpy.data.collections:
+        if any(cc is child for cc in c.children):
+            return c
+    if child in [cc for cc in bpy.context.scene.collection.children]:
+        return bpy.context.scene.collection
+    return None
+
+
+def _resolve_course_collection(context):
+    """Resolve the course collection from the current context.
+
+    Resolution order:
+      1. If the active layer collection is itself a course, return it.
+      2. Otherwise walk up the active object's collection chain looking
+         for the first ancestor with `mkgp2_kind == "course"`.
+    """
+    layer_coll = getattr(context.view_layer, "active_layer_collection", None)
+    if layer_coll is not None:
+        c = layer_coll.collection
+        if c.get("mkgp2_kind") == "course":
+            return c
+    obj = context.active_object
+    if obj is not None:
+        for c in obj.users_collection:
+            cur = c
+            visited = set()
+            while cur is not None and cur.name not in visited:
+                if cur.get("mkgp2_kind") == "course":
+                    return cur
+                visited.add(cur.name)
+                cur = _find_parent_collection(cur)
+    return None
+
+
+def _link_objs_to_collection(target_coll, objs):
+    """Move objects so that `target_coll` is their *only* collection.
+
+    Importers add objects to whatever collection was active when they
+    ran (typically the scene's master collection). Course import wants
+    them to live exclusively inside the course collection.
+    """
+    for o in objs:
+        for c in list(o.users_collection):
+            c.objects.unlink(o)
+        target_coll.objects.link(o)
+
+
+def _link_collections_to_collection(parent_coll, child_colls):
+    """Re-link a list of child collections so that they live exclusively
+    under `parent_coll`. Used to capture HSD's `mkgp2:<dat>` collection
+    (created by the HSD importer) into a course collection."""
+    scene_root = bpy.context.scene.collection
+    for cc in child_colls:
+        # Unlink from anywhere it currently sits
+        for c in bpy.data.collections:
+            if cc.name in [x.name for x in c.children]:
+                c.children.unlink(cc)
+        if cc.name in [x.name for x in scene_root.children]:
+            scene_root.children.unlink(cc)
+        parent_coll.children.link(cc)
 
 
 # ---------------------------------------------------------------------------
@@ -478,8 +575,6 @@ class MKGP2_OT_ExportFullCourse(Operator):
     )
 
     def execute(self, context):
-        import os
-        from pathlib import Path
         if not _need_modules(self):
             return {'CANCELLED'}
         if not self.bin_dir:
@@ -594,6 +689,297 @@ def _resolve_collision_pair_by_stem(stem):
     return cm, ws, None
 
 
+# ---------------------------------------------------------------------------
+# Custom-course operators (Phase B)
+# ---------------------------------------------------------------------------
+
+class MKGP2_OT_NewCourse(Operator):
+    """Create an empty MKGP2 course collection.
+
+    Filename custom properties default to `<name>.bin`, `<name>_line.bin`,
+    `<name>_Auto.bin`, `<name>_Auto_R.bin`. Edit the resulting collection's
+    custom properties to override individual filenames.
+    """
+    bl_idname = "scene.mkgp2_new_course"
+    bl_label = "New MKGP2 Course"
+    bl_options = {'UNDO'}
+
+    name: StringProperty(
+        name="Course name",
+        description="Becomes the collection name and the default filename stem",
+        default="my_course",
+    )
+    bin_dir: StringProperty(
+        name="bin directory",
+        description="Absolute folder the course .bin files will be written to. "
+                    "Empty = fall back to the addon's default bin directory.",
+        subtype='DIR_PATH',
+        default="",
+    )
+
+    def execute(self, context):
+        if not self.name:
+            self.report({'ERROR'}, "Course name required")
+            return {'CANCELLED'}
+        if bpy.data.collections.get(self.name) is not None:
+            self.report({'ERROR'}, f"Collection named '{self.name}' already exists")
+            return {'CANCELLED'}
+
+        parent = _ensure_courses_root()
+        coll = bpy.data.collections.new(self.name)
+        parent.children.link(coll)
+
+        coll["mkgp2_kind"] = "course"
+        coll["mkgp2_course_name"] = self.name
+        coll["mkgp2_collision_bin"] = f"{self.name}.bin"
+        coll["mkgp2_line_bin"] = f"{self.name}_line.bin"
+        coll["mkgp2_auto_f_bin"] = f"{self.name}_Auto.bin"
+        coll["mkgp2_auto_r_bin"] = f"{self.name}_Auto_R.bin"
+        coll["mkgp2_bin_dir"] = self.bin_dir or ""
+
+        self.report({'INFO'},
+            f"Created empty course '{self.name}' under {ROOT_COLL_NAME}/")
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        if not self.bin_dir:
+            self.bin_dir = _default_bin_dir()
+        return context.window_manager.invoke_props_dialog(self, width=440)
+
+
+def _on_course_collision_path_change(self, context):
+    """Auto-fill sibling filenames when the user picks the collision .bin."""
+    if not self.collision_path:
+        return
+    p = Path(self.collision_path)
+    if not p.exists():
+        return
+    stem = p.stem
+    parent_dir = p.parent
+    if not self.line_path:
+        guess = parent_dir / f"{stem}_line.bin"
+        if guess.exists():
+            self.line_path = str(guess)
+    if not self.auto_f_path:
+        guess = parent_dir / f"{stem}_Auto.bin"
+        if guess.exists():
+            self.auto_f_path = str(guess)
+    if not self.auto_r_path:
+        guess = parent_dir / f"{stem}_Auto_R.bin"
+        if guess.exists():
+            self.auto_r_path = str(guess)
+    if not self.name:
+        self.name = stem
+
+
+class MKGP2_OT_ImportCourse(Operator):
+    """Import a custom course from a 4-file .bin set into one collection.
+
+    Pick the collision .bin first; the other paths are auto-filled by
+    convention (<stem>_line.bin / <stem>_Auto.bin / <stem>_Auto_R.bin)
+    and can be overridden individually. Course name defaults to the
+    collision stem.
+    """
+    bl_idname = "scene.mkgp2_import_course"
+    bl_label = "Import MKGP2 Course (file-set)"
+    bl_options = {'UNDO'}
+
+    name: StringProperty(name="Course name", default="")
+    collision_path: StringProperty(
+        name="Collision .bin",
+        subtype='FILE_PATH',
+        update=_on_course_collision_path_change,
+    )
+    line_path: StringProperty(name="Line .bin", subtype='FILE_PATH')
+    auto_f_path: StringProperty(name="Auto F .bin", subtype='FILE_PATH')
+    auto_r_path: StringProperty(name="Auto R .bin", subtype='FILE_PATH')
+
+    def execute(self, context):
+        if not _need_modules(self):
+            return {'CANCELLED'}
+        if not self.collision_path:
+            self.report({'ERROR'}, "Collision .bin path is required")
+            return {'CANCELLED'}
+
+        # Course name: explicit > collision filename stem
+        course_name = (self.name or Path(self.collision_path).stem).strip()
+        if not course_name:
+            self.report({'ERROR'}, "Course name could not be derived")
+            return {'CANCELLED'}
+        if bpy.data.collections.get(course_name) is not None:
+            self.report({'ERROR'},
+                f"Collection '{course_name}' already exists; pick a different name")
+            return {'CANCELLED'}
+
+        bin_dir = str(Path(self.collision_path).parent)
+
+        parent = _ensure_courses_root()
+        coll = bpy.data.collections.new(course_name)
+        parent.children.link(coll)
+        coll["mkgp2_kind"] = "course"
+        coll["mkgp2_course_name"] = course_name
+        coll["mkgp2_collision_bin"] = Path(self.collision_path).name
+        coll["mkgp2_line_bin"] = Path(self.line_path).name if self.line_path else ""
+        coll["mkgp2_auto_f_bin"] = Path(self.auto_f_path).name if self.auto_f_path else ""
+        coll["mkgp2_auto_r_bin"] = Path(self.auto_r_path).name if self.auto_r_path else ""
+        coll["mkgp2_bin_dir"] = bin_dir
+
+        # Helper to capture newly created objects after each importer call
+        # and move them into the course collection.
+        def _capture_new(call):
+            before = set(bpy.data.objects)
+            call()
+            return [o for o in bpy.data.objects if o not in before]
+
+        try:
+            new_objs = _capture_new(lambda: col_imp.import_collision(self.collision_path))
+            _link_objs_to_collection(coll, new_objs)
+            if self.line_path:
+                new_objs = _capture_new(lambda: line_imp.import_line(self.line_path))
+                _link_objs_to_collection(coll, new_objs)
+            if self.auto_f_path:
+                new_objs = _capture_new(lambda: auto_imp.import_auto(self.auto_f_path))
+                for o in new_objs:
+                    o["mkgp2_auto_role"] = "F"
+                _link_objs_to_collection(coll, new_objs)
+            if self.auto_r_path:
+                new_objs = _capture_new(lambda: auto_imp.import_auto(self.auto_r_path))
+                for o in new_objs:
+                    o["mkgp2_auto_role"] = "R"
+                _link_objs_to_collection(coll, new_objs)
+        except Exception as ex:
+            self.report({'ERROR'}, f"Course import failed: {ex}")
+            return {'CANCELLED'}
+
+        n = len(coll.all_objects)
+        self.report({'INFO'},
+            f"Imported course '{course_name}' ({n} objects under {ROOT_COLL_NAME}/)")
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=600)
+
+
+class MKGP2_OT_ExportCourse(Operator):
+    """Write the active custom course back to the .bin files described
+    by its custom properties (collision/line/auto-F/auto-R).
+
+    The course collection is resolved from the active layer collection
+    or, failing that, by walking up from the active object's collections.
+    """
+    bl_idname = "scene.mkgp2_export_course"
+    bl_label = "Export MKGP2 Course"
+    bl_options = {'PRESET'}
+
+    def execute(self, context):
+        if not _need_modules(self):
+            return {'CANCELLED'}
+        coll = _resolve_course_collection(context)
+        if coll is None:
+            self.report({'ERROR'},
+                "No course collection in context. Activate a course collection "
+                "in the Outliner or pick an object that lives inside one.")
+            return {'CANCELLED'}
+
+        bin_dir_str = coll.get("mkgp2_bin_dir") or _default_bin_dir()
+        if not bin_dir_str:
+            self.report({'ERROR'},
+                f"Course '{coll.name}' has no bin directory set. "
+                "Edit the collection's custom properties or set the addon default.")
+            return {'CANCELLED'}
+        bin_dir = Path(bin_dir_str)
+        if not bin_dir.is_dir():
+            self.report({'ERROR'}, f"bin directory does not exist: {bin_dir}")
+            return {'CANCELLED'}
+
+        written = []
+        errors = []
+
+        # Collision pair
+        cf = coll.get("mkgp2_collision_bin")
+        if cf:
+            col_obj = next((o for o in coll.all_objects
+                            if o.name.startswith("CollisionMesh")), None)
+            wall_obj = next((o for o in coll.all_objects
+                             if o.name.startswith("WallSegments")), None)
+            if col_obj is None:
+                errors.append("collision: no CollisionMesh in course")
+            else:
+                try:
+                    out = bin_dir / cf
+                    triangles = col_exp.collect_triangles(col_obj)
+                    walls = col_exp.collect_wall_segments(wall_obj) if wall_obj else []
+                    reserved = bytes.fromhex(col_obj.get("reserved_hex", "0" * 32))
+                    size = col_exp.write_collision_bin(
+                        str(out), triangles, walls,
+                        col_obj["grid_width"], col_obj["grid_height"],
+                        col_obj["cell_size_x"], col_obj["cell_size_z"],
+                        col_obj["grid_origin_x"], col_obj["grid_origin_z"],
+                        reserved,
+                    )
+                    written.append((cf, size))
+                except Exception as ex:
+                    errors.append(f"collision: {ex}")
+
+        # Line
+        lf = coll.get("mkgp2_line_bin")
+        if lf:
+            root = next((o for o in coll.all_objects
+                         if o.type == 'EMPTY' and o.name.endswith("_line")), None)
+            if root is None:
+                errors.append("line: no <stem>_line empty in course")
+            else:
+                try:
+                    out = bin_dir / lf
+                    line_exp.export_line(str(out), obj=root)
+                    written.append((lf, out.stat().st_size if out.exists() else 0))
+                except Exception as ex:
+                    errors.append(f"line: {ex}")
+
+        # Auto F / R (matched by mkgp2_auto_role custom prop)
+        for prop_name, role_label in (("mkgp2_auto_f_bin", "F"),
+                                       ("mkgp2_auto_r_bin", "R")):
+            af = coll.get(prop_name)
+            if not af:
+                continue
+            obj = next((o for o in coll.all_objects
+                        if o.type == 'MESH'
+                        and o.get("mkgp2_auto_role") == role_label),
+                       None)
+            if obj is None:
+                # Fallback: best guess by name suffix.
+                if role_label == "R":
+                    obj = next((o for o in coll.all_objects
+                                if o.type == 'MESH' and o.name.endswith("_R")),
+                               None)
+                else:
+                    obj = next((o for o in coll.all_objects
+                                if o.type == 'MESH' and o.name.startswith("Auto_")
+                                and not o.name.endswith("_R")), None)
+            if obj is None:
+                errors.append(f"auto-{role_label}: no matching mesh in course")
+                continue
+            try:
+                out = bin_dir / af
+                auto_exp.export_auto(str(out), obj=obj)
+                written.append((af, out.stat().st_size if out.exists() else 0))
+            except Exception as ex:
+                errors.append(f"auto-{role_label}: {ex}")
+
+        for w_name, w_size in written:
+            print(f"  wrote {w_name} ({w_size} bytes)")
+        for e in errors:
+            self.report({'WARNING'}, e)
+            print(f"  ERR: {e}")
+        if errors:
+            self.report({'WARNING'},
+                f"Course '{coll.name}': wrote {len(written)} files, {len(errors)} errors")
+        else:
+            self.report({'INFO'},
+                f"Course '{coll.name}': wrote {len(written)} files to {bin_dir.name}/")
+        return {'FINISHED'}
+
+
 class MKGP2_OT_ReloadModules(Operator):
     """Re-import the course tool scripts (call after editing them)"""
     bl_idname = "mkgp2.reload_modules"
@@ -613,11 +999,38 @@ class MKGP2_OT_ReloadModules(Operator):
 # ---------------------------------------------------------------------------
 
 def _detect_export_target(obj):
-    """Inspect an object and return (hint_text, operator_id_or_None, icon).
+    """Inspect an object (or current context) and return (hint_text,
+    operator_id_or_None, icon).
 
-    Used by the sidebar panel to show what the active selection means and
-    which export operator would consume it.
+    A custom-course collection takes precedence: if the active layer
+    collection or the active object's collection chain is tagged
+    `mkgp2_kind == "course"`, the suggested operator is the
+    course-level export. Otherwise fall back to per-asset detection
+    based on naming + custom props.
     """
+    # 1) Active course collection wins, even with no active object.
+    layer_coll = getattr(bpy.context.view_layer, "active_layer_collection", None)
+    if layer_coll is not None:
+        c = layer_coll.collection
+        if c.get("mkgp2_kind") == "course":
+            return (f"course: {c.name}",
+                    "scene.mkgp2_export_course",
+                    'OUTLINER_COLLECTION')
+
+    # 2) Active object's chain belongs to a course collection.
+    if obj is not None:
+        for c in obj.users_collection:
+            cur = c
+            visited = set()
+            while cur is not None and cur.name not in visited:
+                if cur.get("mkgp2_kind") == "course":
+                    return (f"course: {cur.name} (via {obj.name})",
+                            "scene.mkgp2_export_course",
+                            'OUTLINER_COLLECTION')
+                visited.add(cur.name)
+                cur = _find_parent_collection(cur)
+
+    # 3) Per-asset detection (vanilla flow).
     if obj is None:
         return "(no active object)", None, 'INFO'
     stem = obj.get("mkgp2_collision_stem")
@@ -659,8 +1072,24 @@ class MKGP2_PT_CoursePanel(Panel):
         else:
             row.operator("export_mesh.mkgp2_collision_bin", text="Export this", icon='EXPORT')
 
+        # ---- Custom course (1 file-set per course, default workflow) ----
         box = layout.box()
-        box.label(text="Import per-asset:", icon='IMPORT')
+        box.label(text="Custom course:", icon='OUTLINER_COLLECTION')
+        col = box.column(align=True)
+        col.operator("scene.mkgp2_new_course", text="New (empty)")
+        col.operator("scene.mkgp2_import_course", text="Import file-set")
+        col.operator("scene.mkgp2_export_course", text="Export selected course")
+
+        # ---- Vanilla course (short/long pair, retained for round-trip) --
+        box = layout.box()
+        box.label(text="Vanilla course (short+long pair):", icon='WORLD')
+        col = box.column(align=True)
+        col.operator("import_scene.mkgp2_full_course", text="Import HSD + col + line + auto")
+        col.operator("export_scene.mkgp2_full_course", text="Export all collision / line / auto")
+
+        # ---- Per-asset (escape hatch) ----------------------------------
+        box = layout.box()
+        box.label(text="Per-asset import:", icon='IMPORT')
         col = box.column(align=True)
         col.operator("import_scene.mkgp2_hsd_json", text="HSD scene.json")
         col.operator("import_mesh.mkgp2_collision_bin", text="Collision (.bin)")
@@ -668,19 +1097,11 @@ class MKGP2_PT_CoursePanel(Panel):
         col.operator("import_mesh.mkgp2_auto_bin", text="Auto path (.bin)")
 
         box = layout.box()
-        box.label(text="Import full course:", icon='WORLD')
-        box.operator("import_scene.mkgp2_full_course", text="HSD + col + line + auto")
-
-        box = layout.box()
-        box.label(text="Export per-asset:", icon='EXPORT')
+        box.label(text="Per-asset export:", icon='EXPORT')
         col = box.column(align=True)
         col.operator("export_mesh.mkgp2_collision_bin", text="Collision (.bin)")
         col.operator("export_scene.mkgp2_line_bin", text="Line (.bin)")
         col.operator("export_scene.mkgp2_auto_bin", text="Auto path (.bin)")
-
-        box = layout.box()
-        box.label(text="Export full course:", icon='WORLD')
-        box.operator("export_scene.mkgp2_full_course", text="All collision / line / auto")
 
         layout.separator()
         layout.operator("mkgp2.reload_modules", text="Reload course modules", icon='FILE_REFRESH')
@@ -745,19 +1166,21 @@ def _default_bin_dir():
 
 def _menu_import(self, context):
     self.layout.separator()
+    self.layout.operator("scene.mkgp2_import_course", text="MKGP2 Course (file-set)")
+    self.layout.operator("import_scene.mkgp2_full_course", text="MKGP2 Vanilla Full Course")
     self.layout.operator("import_scene.mkgp2_hsd_json", text="MKGP2 HSD (scene.json)")
     self.layout.operator("import_mesh.mkgp2_collision_bin", text="MKGP2 Collision (.bin)")
     self.layout.operator("import_mesh.mkgp2_line_bin", text="MKGP2 Line (.bin)")
     self.layout.operator("import_mesh.mkgp2_auto_bin", text="MKGP2 Auto Path (.bin)")
-    self.layout.operator("import_scene.mkgp2_full_course", text="MKGP2 Full Course")
 
 
 def _menu_export(self, context):
     self.layout.separator()
+    self.layout.operator("scene.mkgp2_export_course", text="MKGP2 Course (active collection)")
+    self.layout.operator("export_scene.mkgp2_full_course", text="MKGP2 Vanilla Full Course")
     self.layout.operator("export_mesh.mkgp2_collision_bin", text="MKGP2 Collision (.bin)")
     self.layout.operator("export_scene.mkgp2_line_bin", text="MKGP2 Line (.bin)")
     self.layout.operator("export_scene.mkgp2_auto_bin", text="MKGP2 Auto Path (.bin)")
-    self.layout.operator("export_scene.mkgp2_full_course", text="MKGP2 Full Course")
 
 
 # ---------------------------------------------------------------------------
@@ -775,6 +1198,9 @@ CLASSES = (
     MKGP2_OT_ExportAuto,
     MKGP2_OT_ExportCollision,
     MKGP2_OT_ExportFullCourse,
+    MKGP2_OT_NewCourse,
+    MKGP2_OT_ImportCourse,
+    MKGP2_OT_ExportCourse,
     MKGP2_OT_ReloadModules,
     MKGP2_PT_CoursePanel,
 )
