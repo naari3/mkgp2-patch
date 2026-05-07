@@ -53,6 +53,7 @@ course_imp = None
 line_exp = None
 auto_exp = None
 col_exp = None
+validate = None
 
 
 def _user_path():
@@ -89,7 +90,7 @@ def reload_modules():
     Returns (ok: bool, error: Optional[str]).
     """
     global hsd_imp, col_imp, line_imp, auto_imp, course_imp
-    global line_exp, auto_exp, col_exp
+    global line_exp, auto_exp, col_exp, validate
 
     path = _resolve_source_path()
     if not os.path.isdir(path):
@@ -106,6 +107,7 @@ def reload_modules():
         line_exp = _import_or_reload("blender_export_line")
         auto_exp = _import_or_reload("blender_export_auto")
         col_exp = _import_or_reload("blender_export_collision")
+        validate = _import_or_reload("blender_validate")
     except Exception as ex:
         return False, f"import failed (path={path}): {ex}"
     return True, None
@@ -1033,6 +1035,53 @@ class MKGP2_OT_ExportCourse(Operator):
         return {'FINISHED'}
 
 
+class MKGP2_OT_ValidateCourse(Operator):
+    """Run integrity checks against the active course collection.
+
+    Validates collision (grid AABB / degenerate triangles / wall plane),
+    line round-trip, auto round-trip, and member naming. Issues are
+    emitted as Blender warnings and printed to the system console for
+    triage. A clean run reports INFO 'OK'.
+    """
+    bl_idname = "scene.mkgp2_validate_course"
+    bl_label = "Validate MKGP2 Course"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        if not _need_modules(self):
+            return {'CANCELLED'}
+        coll = _resolve_course_collection(context)
+        if coll is None:
+            self.report({'ERROR'},
+                "No course collection in context. Activate a course "
+                "collection in the Outliner or pick an object inside one.")
+            return {'CANCELLED'}
+
+        try:
+            issues = validate.validate_course(
+                coll,
+                line_imp=line_imp, line_exp=line_exp,
+                auto_imp=auto_imp, auto_exp=auto_exp,
+            )
+        except Exception as ex:
+            self.report({'ERROR'}, f"Validate failed: {ex}")
+            return {'CANCELLED'}
+
+        if not issues:
+            self.report({'INFO'},
+                f"Course '{coll.name}': OK ({len(coll.all_objects)} objects)")
+            print(f"[mkgp2 validate] {coll.name}: OK")
+            return {'FINISHED'}
+
+        self.report({'WARNING'},
+            f"Course '{coll.name}': {len(issues)} issue(s) -- see system console")
+        print(f"[mkgp2 validate] {coll.name}: {len(issues)} issue(s)")
+        for s in issues:
+            print(f"  - {s}")
+            self.report({'WARNING'}, s)
+        return {'FINISHED'}
+
+
 class MKGP2_OT_ReloadModules(Operator):
     """Re-import the course tool scripts (call after editing them)"""
     bl_idname = "mkgp2.reload_modules"
@@ -1132,6 +1181,8 @@ class MKGP2_PT_CoursePanel(Panel):
         col.operator("scene.mkgp2_new_course", text="New (empty)")
         col.operator("scene.mkgp2_import_course", text="Import file-set")
         col.operator("scene.mkgp2_export_course", text="Export selected course")
+        col.operator("scene.mkgp2_validate_course", text="Validate selected course",
+                     icon='CHECKMARK')
 
         # ---- Vanilla course (short/long pair, retained for round-trip) --
         box = layout.box()
@@ -1254,6 +1305,7 @@ CLASSES = (
     MKGP2_OT_NewCourse,
     MKGP2_OT_ImportCourse,
     MKGP2_OT_ExportCourse,
+    MKGP2_OT_ValidateCourse,
     MKGP2_OT_ReloadModules,
     MKGP2_PT_CoursePanel,
 )
