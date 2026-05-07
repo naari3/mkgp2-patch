@@ -23,7 +23,7 @@ button after editing the source.
 bl_info = {
     "name": "MKGP2 Course Tools",
     "author": "naari3",
-    "version": (0, 1, 2),
+    "version": (0, 1, 3),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > MKGP2  /  File > Import & Export",
     "description": "Import / export MKGP2 course resources (HSD mesh, collision, line waypoints, AI auto path)",
@@ -36,6 +36,7 @@ import sys
 import importlib
 from pathlib import Path
 
+import mathutils
 from bpy.types import Operator, Panel, AddonPreferences
 from bpy.props import StringProperty, IntProperty, BoolProperty, FloatProperty
 
@@ -947,6 +948,41 @@ class MKGP2_OT_ExportCourse(Operator):
             self.report({'ERROR'}, f"bin directory does not exist: {bin_dir}")
             return {'CANCELLED'}
 
+        # Freeze the course root (if any) for the duration of the
+        # export so user-applied root transforms don't bake into .bin.
+        course_root = _resolve_course_root(coll)
+        if course_root is not None:
+            ident_eps = 1e-5
+            world = course_root.matrix_world
+            is_ident = all(
+                abs(world[r][c] - (1.0 if r == c else 0.0)) < ident_eps
+                for r in range(4) for c in range(4)
+            )
+            if not is_ident:
+                self.report({'INFO'},
+                    f"Course root '{course_root.name}' has a non-identity "
+                    "transform; freezing it for export so output is "
+                    "world-relative.")
+
+        with _FreezeRoot(course_root):
+            written, errors = self._do_export(coll, bin_dir)
+
+        for w_name, w_size in written:
+            print(f"  wrote {w_name} ({w_size} bytes)")
+        for e in errors:
+            self.report({'WARNING'}, e)
+            print(f"  ERR: {e}")
+        if errors:
+            self.report({'WARNING'},
+                f"Course '{coll.name}': wrote {len(written)} files, {len(errors)} errors")
+        else:
+            self.report({'INFO'},
+                f"Course '{coll.name}': wrote {len(written)} files to {bin_dir.name}/")
+        return {'FINISHED'}
+
+    def _do_export(self, coll, bin_dir):
+        """Per-asset write phase. Runs inside _FreezeRoot so that
+        matrix_world reflects the un-rooted layout."""
         written = []
         errors = []
 
@@ -1021,18 +1057,7 @@ class MKGP2_OT_ExportCourse(Operator):
             except Exception as ex:
                 errors.append(f"auto-{role_label}: {ex}")
 
-        for w_name, w_size in written:
-            print(f"  wrote {w_name} ({w_size} bytes)")
-        for e in errors:
-            self.report({'WARNING'}, e)
-            print(f"  ERR: {e}")
-        if errors:
-            self.report({'WARNING'},
-                f"Course '{coll.name}': wrote {len(written)} files, {len(errors)} errors")
-        else:
-            self.report({'INFO'},
-                f"Course '{coll.name}': wrote {len(written)} files to {bin_dir.name}/")
-        return {'FINISHED'}
+        return written, errors
 
 
 class MKGP2_OT_ValidateCourse(Operator):
@@ -1349,6 +1374,127 @@ class MKGP2_OT_ShowCollisionMaterial(Operator):
         return {'FINISHED'}
 
 
+# ---- Coordinate root system (T2c) -----------------------------------------
+#
+# A course collection optionally contains a single "course root" empty
+# (named `<course>_root`, tagged `mkgp2_course_root=True`) that every
+# top-level course member is parented to with `matrix_parent_inverse =
+# identity`. Effects:
+#
+#   * The user can drag the root in the viewport to translate / rotate
+#     / scale the entire course as one rigid body, then experiment
+#     freely.
+#   * On export, the root is temporarily *frozen* to identity. Each
+#     child's `matrix_world` collapses to its `matrix_local` (= the
+#     original world matrix at parent-time) so the .bin output is
+#     unchanged regardless of where the user dragged the root.
+#
+# Parenting is done with parent_inverse=identity (NOT keep_transform).
+# That way "freeze to identity" is the simple expression
+# `child.matrix_world = child.matrix_local`, matching the vanilla case.
+
+
+COURSE_ROOT_PROP = "mkgp2_course_root"
+
+
+def _resolve_course_root(course_coll):
+    """Return the course-root empty for `course_coll`, or None."""
+    if course_coll is None:
+        return None
+    for o in course_coll.objects:
+        if o.type == 'EMPTY' and o.get(COURSE_ROOT_PROP):
+            return o
+    return None
+
+
+class _FreezeRoot:
+    """Context manager that snaps a course-root empty to identity for
+    the lifetime of the block, restoring its prior world matrix on exit.
+
+    Children parented with `matrix_parent_inverse = identity` see their
+    `matrix_world` collapse back to their `matrix_local`, which was
+    captured at parent-time as the *pre-root* world matrix. This makes
+    user offsets to the root invisible to the export pipeline.
+    """
+
+    def __init__(self, root_obj):
+        self.root = root_obj
+        self.saved = None
+
+    def __enter__(self):
+        if self.root is not None:
+            self.saved = self.root.matrix_world.copy()
+            self.root.matrix_world = mathutils.Matrix.Identity(4)
+            # Force Blender to flush parent->child world-matrix
+            # propagation now; export readers consult `matrix_world`
+            # directly and would otherwise see stale cached values.
+            try:
+                bpy.context.view_layer.update()
+            except Exception:
+                pass
+        return self
+
+    def __exit__(self, *exc):
+        if self.root is not None and self.saved is not None:
+            self.root.matrix_world = self.saved
+            try:
+                bpy.context.view_layer.update()
+            except Exception:
+                pass
+        return False
+
+
+class MKGP2_OT_AddCourseRoot(Operator):
+    """Wrap the active course collection's top-level members in a single
+    course-root empty so the entire course can be moved as one piece."""
+    bl_idname = "mkgp2.add_course_root"
+    bl_label = "Add course coordinate root"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        coll = _resolve_course_collection(context)
+        if coll is None:
+            self.report({'ERROR'},
+                "No course collection in context. Activate a course "
+                "collection or one of its members first.")
+            return {'CANCELLED'}
+
+        existing = _resolve_course_root(coll)
+        if existing is not None:
+            self.report({'INFO'}, f"Course '{coll.name}' already has a "
+                                   f"root: {existing.name}")
+            return {'CANCELLED'}
+
+        empty = bpy.data.objects.new(f"{coll.name}_root", None)
+        empty.empty_display_type = 'SPHERE'
+        empty.empty_display_size = 80.0
+        empty.show_name = True
+        empty[COURSE_ROOT_PROP] = True
+        coll.objects.link(empty)
+
+        # Parent every existing member with parent_inverse=identity.
+        # `obj.matrix_local` (= world before parenting because root is
+        # at origin) is preserved as the rest position; freeze-to-
+        # identity later collapses matrix_world back to matrix_local.
+        for obj in list(coll.objects):
+            if obj is empty:
+                continue
+            # Skip objects that already have a parent inside the course
+            # (e.g. LineVariant_* under <stem>_line) to keep grand-child
+            # chains intact. Re-parenting through the chain happens
+            # automatically because their parent will get parented to
+            # the empty.
+            if obj.parent is not None and obj.parent in coll.objects.values():
+                continue
+            obj.parent = empty
+            obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+
+        n = sum(1 for o in coll.objects if o.parent is empty)
+        self.report({'INFO'},
+            f"Created {empty.name} ({n} top-level children parented)")
+        return {'FINISHED'}
+
+
 # ---- Course origin marker -------------------------------------------------
 
 ORIGIN_MARKER_NAME = "MKGP2_OriginMarker"
@@ -1491,6 +1637,8 @@ class MKGP2_PT_CoursePanel(Panel):
         col.operator("scene.mkgp2_export_course", text="Export selected course")
         col.operator("scene.mkgp2_validate_course", text="Validate selected course",
                      icon='CHECKMARK')
+        col.operator("mkgp2.add_course_root", text="Add coordinate root",
+                     icon='EMPTY_AXIS')
 
         # ---- Vanilla course (short/long pair, retained for round-trip) --
         box = layout.box()
@@ -1654,6 +1802,7 @@ CLASSES = (
     MKGP2_OT_HideAllVariants,
     MKGP2_OT_ShowCollisionMaterial,
     MKGP2_OT_AddOriginMarker,
+    MKGP2_OT_AddCourseRoot,
     MKGP2_OT_ReloadModules,
     MKGP2_PT_CoursePanel,
 )

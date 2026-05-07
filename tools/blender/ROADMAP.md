@@ -2,14 +2,17 @@
 
 現状 (`v0.1.0`) と、次に何を積むかの整理。実装着手前に書き留めるためのドキュメント。
 
-## 現状 (v0.1.1, 2026-05-08)
+## 現状 (v0.1.3, 2026-05-08)
 
 | 機能 | 状態 |
 |---|---|
 | 旧 v0.1.0 の機能群 | OK |
-| Custom course 1 collection 1 round flow (`scene.mkgp2_new_course` / `scene.mkgp2_import_course` / `scene.mkgp2_export_course`) | OK (Phase B) |
-| `mkgp2_import_course` の HSD slot (任意の `scene.json` を course collection 内に nest) | OK (Phase B 追加) |
-| course collection の `mkgp2_hsd_dat` custom prop (元 .dat 名を保存) | OK |
+| Custom course 1 collection 1 round flow | OK (Phase B) |
+| `mkgp2_import_course` の HSD slot (任意 `scene.json` 取り込み) | OK (Phase B) |
+| course collection の `mkgp2_hsd_dat` custom prop | OK |
+| Validate Course operator (collision AABB / wall plane / line round-trip / auto round-trip / 命名規約) | OK (T1a, v0.1.2) |
+| Visualization: line variant 一括 hide/show, direction arrows 描画, waypoint index overlay, collision MaterialID viewport color, course origin marker | OK (T1b, v0.1.2) |
+| Coordinate root system (`MKGP2_OT_AddCourseRoot` + export 時 freeze) | OK (T2c, v0.1.3) |
 
 = **Custom course は 1 .dat (HSD road) + 4 .bin に集約**。HSD は `tools/hsd/hsd_export_for_blender.csx` で .dat → scene.json に展開した bundle を addon が任意で取り込む。export 側はまだ collision/line/auto のみ (HSD は read-only)。
 
