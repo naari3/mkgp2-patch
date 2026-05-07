@@ -24,6 +24,7 @@ import bpy
 import bmesh
 import struct
 import os
+from pathlib import Path
 from mathutils import Vector
 
 # ============================================================
@@ -226,6 +227,12 @@ def import_collision(path):
     print(f"\nLoading: {path}")
     header, triangles, wall_segments = parse_collision_bin(path)
 
+    # Stem (= filename without extension) used to keep short / long collisions
+    # distinct when both are imported into the same scene. Matching CollisionMesh
+    # / WallSegments objects share the same `mkgp2_collision_stem` custom prop
+    # so the exporter can pair them later.
+    stem = Path(path).stem
+
     normal_tris = [t for t in triangles if not t.is_special]
     special_tris = [t for t in triangles if t.is_special]
 
@@ -241,7 +248,7 @@ def import_collision(path):
     # Create collision mesh (all triangles in one object)
     all_tris = normal_tris + special_tris
     if all_tris:
-        obj = create_collision_mesh("CollisionMesh", all_tris)
+        obj = create_collision_mesh(f"CollisionMesh_{stem}", all_tris)
         # Store grid parameters as custom properties for export roundtrip
         obj["grid_width"] = header.grid_width
         obj["grid_height"] = header.grid_height
@@ -250,14 +257,16 @@ def import_collision(path):
         obj["grid_origin_x"] = header.grid_origin_x
         obj["grid_origin_z"] = header.grid_origin_z
         obj["reserved_hex"] = header.reserved.hex()
-        print(f"Created: CollisionMesh ({len(all_tris)} tris)")
+        obj["mkgp2_collision_stem"] = stem
+        print(f"Created: {obj.name} ({len(all_tris)} tris)")
         print(f"  Grid: {header.grid_width}x{header.grid_height}")
         print(f"  Cell: {header.cell_size_x} x {header.cell_size_z}")
         print(f"  Origin: ({header.grid_origin_x}, {header.grid_origin_z})")
 
     if wall_segments:
-        obj_walls = create_edge_wall_mesh("WallSegments", wall_segments)
-        print(f"Created: WallSegments ({len(wall_segments)} segments)")
+        obj_walls = create_edge_wall_mesh(f"WallSegments_{stem}", wall_segments)
+        obj_walls["mkgp2_collision_stem"] = stem
+        print(f"Created: {obj_walls.name} ({len(wall_segments)} segments)")
 
     mat_ids = set(t.material_id for t in triangles)
     print(f"\nMaterial IDs: {len(mat_ids)}")
