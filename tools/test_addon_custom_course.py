@@ -20,6 +20,7 @@ from pathlib import Path
 
 ADDON_DIR = r"C:\Users\naari\src\github.com\naari3\mkgp2-patch\tools\blender"
 BIN_DIR = Path(r"C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files")
+SCENE_JSON = Path(r"C:\Users\naari\Documents\blender\mr_highway_export\scene.json")
 
 
 def _collision_counts(path):
@@ -148,6 +149,42 @@ def main():
             f"detect should route course members to course export, got {op_id}"
         assert "course:" in hint
         print(f"[test] _detect_export_target picks course exporter: {hint}")
+
+        # ---- B4: Import Course with HSD slot --------------------------
+        # Confirms an HSD scene.json bundle nests inside the course
+        # collection and the .dat name lands on mkgp2_hsd_dat.
+        if not SCENE_JSON.exists():
+            print(f"[test] B4 SKIP: scene.json bundle not found at {SCENE_JSON}")
+        else:
+            colls_before = set(bpy.data.collections)
+            result = bpy.ops.scene.mkgp2_import_course(
+                'EXEC_DEFAULT',
+                name="vanilla_with_hsd",
+                collision_path=str(BIN_DIR / "mr_highway_short.bin"),
+                line_path="",
+                auto_f_path="",
+                auto_r_path="",
+                hsd_path=str(SCENE_JSON),
+            )
+            assert result == {'FINISHED'}, f"hsd import_course result: {result}"
+            course_h = bpy.data.collections.get("vanilla_with_hsd")
+            assert course_h is not None
+            dat_name = course_h.get("mkgp2_hsd_dat") or ""
+            assert dat_name, "mkgp2_hsd_dat should be populated from scene.json source_dat"
+            print(f"[test] B4 mkgp2_hsd_dat = {dat_name!r}")
+            new_colls = [c for c in bpy.data.collections
+                         if c not in colls_before and c is not course_h]
+            assert any(c.name in [cc.name for cc in course_h.children]
+                       for c in new_colls), \
+                "imported HSD collection should be nested under course collection"
+            # New HSD collection should be the source of dat_name (mkgp2_source_dat)
+            hsd_child = next((c for c in course_h.children
+                              if c.get("mkgp2_source_dat")), None)
+            assert hsd_child is not None, \
+                "no nested HSD collection with mkgp2_source_dat"
+            assert hsd_child.get("mkgp2_source_dat") == dat_name
+            n_hsd = sum(1 for o in hsd_child.all_objects if o.type == 'MESH')
+            print(f"[test] B4 HSD nest OK: {hsd_child.name} ({n_hsd} meshes)")
 
         addon.unregister()
         print("[test] PASS")

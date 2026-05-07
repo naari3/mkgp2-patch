@@ -2,6 +2,31 @@
 
 現状 (`v0.1.0`) と、次に何を積むかの整理。実装着手前に書き留めるためのドキュメント。
 
+## 現状 (v0.1.1, 2026-05-08)
+
+| 機能 | 状態 |
+|---|---|
+| 旧 v0.1.0 の機能群 | OK |
+| Custom course 1 collection 1 round flow (`scene.mkgp2_new_course` / `scene.mkgp2_import_course` / `scene.mkgp2_export_course`) | OK (Phase B) |
+| `mkgp2_import_course` の HSD slot (任意の `scene.json` を course collection 内に nest) | OK (Phase B 追加) |
+| course collection の `mkgp2_hsd_dat` custom prop (元 .dat 名を保存) | OK |
+
+= **Custom course は 1 .dat (HSD road) + 4 .bin に集約**。HSD は `tools/hsd/hsd_export_for_blender.csx` で .dat → scene.json に展開した bundle を addon が任意で取り込む。export 側はまだ collision/line/auto のみ (HSD は read-only)。
+
+## test_course の dev 残骸 (調査ログ, 2026-05-08)
+
+`features/cup_page3/files/` の test_course は ISO に 7 つ .dat があるが、実際 main.dol が runtime にロードするのは **`test_course_road.dat` 1 個のみ**。
+
+| ファイル | runtime 状態 |
+|---|---|
+| `test_course_road.dat` | ロード対象。`GetCourseModelFilename` (0x8009c418) → `PTR_s_test_course_road_dat_8040b940` テーブル経由 |
+| `test_course_f_ship.dat`, `test_course_start_gate.dat`, `test_course_coconut.dat` | .rodata に文字列+joint 名は残る (`0x8031cd94..0x8031ce1c`) が、`courseObjectTable` の cup0 slot (0x8040b960) が **全 NULL** で読まれない (course-object 残骸) |
+| `test_course_ground.dat`, `test_course_bm.dat`, `test_course_obj.dat` | main.dol に名前文字列すら無し (完全な ISO 残骸) |
+
+加えて `.rodata` 内に `test_course_ph_pos_a/b/c_joint`, `test_course_p_flower_joint`, `test_course_kinopio_byebye/jump/sit_joint`, `test_course_poihana_b/r_joint` が並ぶが、対応する .dat 名は無し — MR_highway の course-object set のコピーで、test_course 開発時に **MR の course-object .dat を joint 名解決経由で借用する設計** だったが未完成のまま放棄された痕跡。
+
+→ **結論**: vanilla mkgp2 でもカスタムコースでも、addon は **1 .dat = 1 round の単純合成** で十分。multi-.dat schema (`course_models.yaml` の `joints: []` 拡張など) は phantom problem だったのでスキップ。Phase B で `hsd_path` を 1 つ受け付けるだけで完結。
+
 ## 現状 (v0.1.0, 2026-05-07)
 
 | 機能 | 状態 |

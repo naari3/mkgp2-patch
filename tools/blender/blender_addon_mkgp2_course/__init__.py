@@ -23,7 +23,7 @@ button after editing the source.
 bl_info = {
     "name": "MKGP2 Course Tools",
     "author": "naari3",
-    "version": (0, 1, 0),
+    "version": (0, 1, 1),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > MKGP2  /  File > Import & Export",
     "description": "Import / export MKGP2 course resources (HSD mesh, collision, line waypoints, AI auto path)",
@@ -736,6 +736,9 @@ class MKGP2_OT_NewCourse(Operator):
         coll["mkgp2_auto_f_bin"] = f"{self.name}_Auto.bin"
         coll["mkgp2_auto_r_bin"] = f"{self.name}_Auto_R.bin"
         coll["mkgp2_bin_dir"] = self.bin_dir or ""
+        # HSD .dat is optional: leave empty so the user can later attach a
+        # bundle via Import Course or set the property by hand.
+        coll["mkgp2_hsd_dat"] = ""
 
         self.report({'INFO'},
             f"Created empty course '{self.name}' under {ROOT_COLL_NAME}/")
@@ -770,6 +773,17 @@ def _on_course_collision_path_change(self, context):
             self.auto_r_path = str(guess)
     if not self.name:
         self.name = stem
+    if not self.hsd_path:
+        # Conventional bundle layouts produced by hsd_export_for_blender.csx:
+        #   <hsd_export_dir>/scene.json (one bundle per .dat)
+        # Plain ".dat" siblings are not directly importable by Blender; pick a
+        # scene.json sibling if present so the user doesn't have to hunt.
+        for candidate in (parent_dir / f"{stem}_scene.json",
+                          parent_dir / f"{stem}.json",
+                          parent_dir / "scene.json"):
+            if candidate.exists():
+                self.hsd_path = str(candidate)
+                break
 
 
 class MKGP2_OT_ImportCourse(Operator):
@@ -793,6 +807,25 @@ class MKGP2_OT_ImportCourse(Operator):
     line_path: StringProperty(name="Line .bin", subtype='FILE_PATH')
     auto_f_path: StringProperty(name="Auto F .bin", subtype='FILE_PATH')
     auto_r_path: StringProperty(name="Auto R .bin", subtype='FILE_PATH')
+    hsd_path: StringProperty(
+        name="HSD scene.json",
+        description=(
+            "Optional HSD bundle (scene.json produced by hsd_export_for_blender.csx). "
+            "When given, the bundle's mesh collection is nested inside the course "
+            "collection. Leave empty to skip — a custom course can author collision/"
+            "line/auto without an HSD reference."
+        ),
+        subtype='FILE_PATH',
+    )
+    hsd_dat_filename: StringProperty(
+        name="HSD .dat filename",
+        description=(
+            "Name of the .dat the HSD bundle came from (e.g. test_course_road.dat). "
+            "Stored as mkgp2_hsd_dat on the course collection. Leave empty to use "
+            "the source_dat field embedded in scene.json."
+        ),
+        default="",
+    )
 
     def execute(self, context):
         if not _need_modules(self):
@@ -823,6 +856,7 @@ class MKGP2_OT_ImportCourse(Operator):
         coll["mkgp2_auto_f_bin"] = Path(self.auto_f_path).name if self.auto_f_path else ""
         coll["mkgp2_auto_r_bin"] = Path(self.auto_r_path).name if self.auto_r_path else ""
         coll["mkgp2_bin_dir"] = bin_dir
+        coll["mkgp2_hsd_dat"] = ""
 
         # Helper to capture newly created objects after each importer call
         # and move them into the course collection.
@@ -830,6 +864,11 @@ class MKGP2_OT_ImportCourse(Operator):
             before = set(bpy.data.objects)
             call()
             return [o for o in bpy.data.objects if o not in before]
+
+        def _capture_new_collections(call):
+            before = set(bpy.data.collections)
+            call()
+            return [c for c in bpy.data.collections if c not in before]
 
         try:
             new_objs = _capture_new(lambda: col_imp.import_collision(self.collision_path))
@@ -847,6 +886,20 @@ class MKGP2_OT_ImportCourse(Operator):
                 for o in new_objs:
                     o["mkgp2_auto_role"] = "R"
                 _link_objs_to_collection(coll, new_objs)
+            if self.hsd_path:
+                new_colls = _capture_new_collections(
+                    lambda: hsd_imp.import_scene(self.hsd_path))
+                _link_collections_to_collection(coll, new_colls)
+                # Capture .dat name: explicit override > nested collection's
+                # mkgp2_source_dat custom prop (set by the HSD importer).
+                dat_name = self.hsd_dat_filename.strip()
+                if not dat_name:
+                    for cc in new_colls:
+                        src = cc.get("mkgp2_source_dat")
+                        if src:
+                            dat_name = str(src)
+                            break
+                coll["mkgp2_hsd_dat"] = dat_name
         except Exception as ex:
             self.report({'ERROR'}, f"Course import failed: {ex}")
             return {'CANCELLED'}
