@@ -4,7 +4,7 @@
 
 カップセレクト / ラウンドセレクト で表示される全カスタムアセットを **直接挿入方式** (sprite に書き込まれる resourceId 自体を 0x4000+ に変更) へ統一する。**g_cupId override (現 round_select の Yoshi swap, cup_page3 の g_cupId=17 強制) を廃止**する。
 
-完了状態: debug_overlay で表示される resourceId が 全て 0x4000+ で統一、`g_customCupScope` swap 機構が消え、`kBindings[]` 廃止。
+完了状態 (改定): debug_overlay で表示される resourceId が **C-2d を除き** 0x4000+ で統一、cup_page3 の `g_cupId=17` per-frame 強制を廃止、`kBindings[]` は C-2d won't-fix の連鎖で **banner 0x175E 用 1 件のみ残存**。`g_customCupScope` も同じ理由で gate として残存。
 
 ---
 
@@ -126,16 +126,20 @@
 - [x] gen から round-select 系 binding を除外 (`name_roundselect` slot に `emit_binding=False`)
 - [x] 動作確認 (commit 5714226 と同じ実機検証で完了)
 
-### C-6: 後始末
-- [ ] cup_page3.cpp から `*(u32*)0x806cf108u = 17u;` を削除
-- [ ] custom_assets から `kBindings[]` 全廃 (関連 log/診断コード削除)
-- [ ] `g_customCupScope` 削除
-- [ ] ビルド + 動作確認
+### C-6: 後始末 — **部分完了 (残りは C-2d 連鎖で永続保留)**
+- [x] cup_page3.cpp から `*(u32*)0x806cf108u = 17u;` per-frame 強制を削除 (commit 729390e: "Retire per-frame g_cupId=17 pin in CupForceGates")
+- [x] ApplyBinding 診断 log を削除 (kBindings=1 entry になった時点で過剰、commit 730fe21)
+- [x] ビルド + 動作確認 (commit 5714226 / 729390e の実機検証で test_cup/Yoshi 両方 PASS)
+- [永続保留] `kBindings[]` 全廃 — C-2d won't-fix で banner 0x175E 用 1 件残存。
+  C-2d を将来再開する際 (= viable な 3 経路のいずれかを実装) に同時に削除可能
+- [永続保留] `g_customCupScope` 削除 — 上記 1 件が ApplyBinding を呼ぶ getter で
+  cup を判定するために使う。kBindings 全廃と表裏一体
 
-### C-5: 検証
-- [ ] cup-select page 2 で test_cup の icon/name/trophy/banner/ribbon が正常表示
-- [ ] round-select で cup name + 4 thumb が正常表示、レース突入 → 完走で問題なし
-- [ ] vanilla cup (Yoshi 等) が壊れていない
-- [ ] debug_overlay (mode 2/3) で全 sprite が 0x4000+ ID で表示
-- [ ] dolphin.log に新たな error/warning が出ていない
-- [ ] tasks/lessons.md に学びを追記
+### C-7: 実機 E2E 検証 — **完了 (commit 5714226 / 729390e / 0a8a39d で PASS)**
+- [x] cup-select page 2 で test_cup の icon/name/trophy/banner/ribbon が正常表示
+- [x] round-select で cup name + 4 thumb が正常表示、レース突入 → 完走で問題なし
+- [x] vanilla cup (Yoshi 等) が壊れていない (alias 機構の leak 防御 = `RoundIsUnlocked` wrapper)
+- [x] debug_overlay (mode 2/3) で test_cup の全 sprite が 0x4000+ ID で表示
+       (banner 0x175E のみ vanilla 流用 = C-2d 由来)
+- [x] BGM 無音化 fix (commit 0a8a39d: "Fix BGM silence on custom cup race entry" — bgmIdList layout 修正)
+- [ ] tasks/lessons.md に学びを追記 (= 直近 1 ヶ月の発見を整理、別タスク)
