@@ -23,7 +23,7 @@ button after editing the source.
 bl_info = {
     "name": "MKGP2 Course Tools",
     "author": "naari3",
-    "version": (0, 1, 1),
+    "version": (0, 1, 2),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > MKGP2  /  File > Import & Export",
     "description": "Import / export MKGP2 course resources (HSD mesh, collision, line waypoints, AI auto path)",
@@ -37,7 +37,7 @@ import importlib
 from pathlib import Path
 
 from bpy.types import Operator, Panel, AddonPreferences
-from bpy.props import StringProperty
+from bpy.props import StringProperty, IntProperty, BoolProperty, FloatProperty
 
 
 # ---------------------------------------------------------------------------
@@ -1082,6 +1082,314 @@ class MKGP2_OT_ValidateCourse(Operator):
         return {'FINISHED'}
 
 
+# ---------------------------------------------------------------------------
+# Visualization operators (T1b)
+# ---------------------------------------------------------------------------
+#
+# 5 small QoL features sharing infrastructure:
+#   T1b-1  show only one line variant / show all
+#   T1b-2  auto path direction arrows  (3D Viewport draw handler)
+#   T1b-3  waypoint index overlay       (3D Viewport draw handler)
+#   T1b-4  flatten collision material vertex color into face color
+#          (already populated as MaterialID by the importer; the operator
+#          just nudges the viewport into Solid + Attribute mode)
+#   T1b-5  course origin marker (empty at game-(0,0,0) under the active
+#          course collection)
+#
+# Draw-handler state lives on WindowManager so it survives panel
+# refreshes but does not poison .blend files (handlers are torn down on
+# unregister regardless).
+
+
+def _line_variants_under(root_obj):
+    """Return [(variant_index, mesh_obj), ...] sorted by index."""
+    out = []
+    if root_obj is None:
+        return out
+    for c in root_obj.children:
+        if c.type == 'MESH' and c.name.startswith("LineVariant_"):
+            try:
+                idx = int(c.name.split("_")[1])
+            except (ValueError, IndexError):
+                idx = 0
+            out.append((idx, c))
+    out.sort(key=lambda p: p[0])
+    return out
+
+
+def _resolve_line_root(context):
+    """Find a `<stem>_line` empty from the active object or course collection."""
+    obj = context.active_object
+    if obj is not None:
+        # Active is the root itself
+        if obj.type == 'EMPTY' and obj.name.endswith("_line"):
+            return obj
+        # Active is a variant -> walk up
+        if obj.parent is not None and obj.parent.type == 'EMPTY' \
+                and obj.parent.name.endswith("_line"):
+            return obj.parent
+    coll = _resolve_course_collection(context)
+    if coll is not None:
+        for o in coll.all_objects:
+            if o.type == 'EMPTY' and o.name.endswith("_line"):
+                return o
+    return None
+
+
+class MKGP2_OT_ShowOnlyVariant(Operator):
+    """Hide every line variant except the chosen one"""
+    bl_idname = "mkgp2.show_only_variant"
+    bl_label = "Show only this variant"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    variant_index: IntProperty(name="Variant", default=0, min=0)
+
+    def execute(self, context):
+        root = _resolve_line_root(context)
+        if root is None:
+            self.report({'ERROR'},
+                "No line root in context. Pick a <stem>_line empty or a "
+                "LineVariant_* mesh first.")
+            return {'CANCELLED'}
+        any_shown = False
+        for idx, m in _line_variants_under(root):
+            m.hide_viewport = (idx != self.variant_index)
+            any_shown = any_shown or (idx == self.variant_index)
+        if not any_shown:
+            self.report({'WARNING'},
+                f"No LineVariant_{self.variant_index}_* under '{root.name}'")
+        return {'FINISHED'}
+
+
+class MKGP2_OT_ShowAllVariants(Operator):
+    """Show every line variant under the active line root"""
+    bl_idname = "mkgp2.show_all_variants"
+    bl_label = "Show all variants"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        root = _resolve_line_root(context)
+        if root is None:
+            self.report({'ERROR'}, "No line root in context")
+            return {'CANCELLED'}
+        for _, m in _line_variants_under(root):
+            m.hide_viewport = False
+        return {'FINISHED'}
+
+
+class MKGP2_OT_HideAllVariants(Operator):
+    """Hide every line variant under the active line root"""
+    bl_idname = "mkgp2.hide_all_variants"
+    bl_label = "Hide all variants"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        root = _resolve_line_root(context)
+        if root is None:
+            self.report({'ERROR'}, "No line root in context")
+            return {'CANCELLED'}
+        for _, m in _line_variants_under(root):
+            m.hide_viewport = True
+        return {'FINISHED'}
+
+
+# ---- Draw handlers --------------------------------------------------------
+# A pair of toggles on WindowManager controls overlays:
+#   wm.mkgp2_show_arrows        — auto-path direction arrows
+#   wm.mkgp2_show_waypoint_ids  — line/auto waypoint index labels
+#
+# Handlers walk every visible Auto_* / LineVariant_* / <stem>_line member,
+# so they cover both vanilla Full Course imports and custom courses.
+
+_draw_handles = {"arrows": None, "waypoints": None}
+
+
+def _iter_arrow_targets():
+    """Yield (object, world_matrix) pairs whose edges should grow arrows."""
+    for o in bpy.context.scene.objects:
+        if o.hide_get() or o.type != 'MESH':
+            continue
+        if o.name.startswith("Auto_") or o.name.startswith("LineVariant_"):
+            yield o
+
+
+def _draw_arrows_callback():
+    import gpu
+    from gpu_extras.batch import batch_for_shader
+    from mathutils import Vector
+
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    shader.bind()
+
+    head_size = 0.7  # blender units; tune via WM if it becomes annoying
+    coords = []
+    for o in _iter_arrow_targets():
+        mw = o.matrix_world
+        # Walk along edges in vertex order (most importer-built meshes
+        # store edges as a chain v0->v1->v2->...).
+        verts = [mw @ v.co for v in o.data.vertices]
+        for i in range(len(verts) - 1):
+            a = verts[i]
+            b = verts[i + 1]
+            d = b - a
+            seg_len = d.length
+            if seg_len < 1e-4:
+                continue
+            d.normalize()
+            # Pick a perpendicular for the arrow head (project away from Z
+            # so head sits in the horizontal plane like the path).
+            perp = Vector((-d.y, d.x, 0.0))
+            if perp.length < 1e-4:
+                perp = Vector((1.0, 0.0, 0.0))
+            perp.normalize()
+            tip = b
+            base = b - d * head_size
+            l = base + perp * (head_size * 0.4)
+            r = base - perp * (head_size * 0.4)
+            coords.extend([tip, l])
+            coords.extend([tip, r])
+    if not coords:
+        return
+
+    if bpy.app.version >= (4, 0, 0):
+        gpu.state.line_width_set(1.5)
+    batch = batch_for_shader(shader, 'LINES', {"pos": coords})
+    shader.uniform_float("color", (1.0, 0.85, 0.1, 1.0))
+    batch.draw(shader)
+
+
+def _draw_waypoint_ids_callback():
+    import blf
+    from bpy_extras.view3d_utils import location_3d_to_region_2d
+
+    region = bpy.context.region
+    rv3d = bpy.context.region_data
+    if region is None or rv3d is None:
+        return
+
+    font_id = 0
+    blf.size(font_id, 11)
+    blf.color(font_id, 1.0, 1.0, 1.0, 1.0)
+
+    for o in _iter_arrow_targets():
+        mw = o.matrix_world
+        for v in o.data.vertices:
+            world = mw @ v.co
+            screen = location_3d_to_region_2d(region, rv3d, world)
+            if screen is None:
+                continue
+            blf.position(font_id, screen.x + 4, screen.y + 4, 0)
+            blf.draw(font_id, str(v.index))
+
+
+def _refresh_3d_views():
+    for w in bpy.context.window_manager.windows:
+        for area in w.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+
+def _set_overlay(kind, enable, callback):
+    """Idempotent toggle for a 3D Viewport draw handler."""
+    handle = _draw_handles.get(kind)
+    if enable:
+        if handle is None:
+            _draw_handles[kind] = bpy.types.SpaceView3D.draw_handler_add(
+                callback, (), 'WINDOW', 'POST_VIEW' if kind == 'arrows' else 'POST_PIXEL')
+    else:
+        if handle is not None:
+            try:
+                bpy.types.SpaceView3D.draw_handler_remove(handle, 'WINDOW')
+            except Exception:
+                pass
+            _draw_handles[kind] = None
+    _refresh_3d_views()
+
+
+def _on_show_arrows_toggle(self, context):
+    _set_overlay('arrows', bool(self.mkgp2_show_arrows),
+                 _draw_arrows_callback)
+
+
+def _on_show_waypoint_ids_toggle(self, context):
+    _set_overlay('waypoints', bool(self.mkgp2_show_waypoint_ids),
+                 _draw_waypoint_ids_callback)
+
+
+# ---- Material color viewport setup ----------------------------------------
+
+class MKGP2_OT_ShowCollisionMaterial(Operator):
+    """Switch the active 3D Viewport into Solid + Attribute color mode
+    so collision triangles render with their MaterialID color (set by
+    the importer)."""
+    bl_idname = "mkgp2.show_collision_material"
+    bl_label = "Show collision material color"
+
+    def execute(self, context):
+        view = context.space_data
+        if view is None or view.type != 'VIEW_3D':
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    view = area.spaces.active
+                    break
+        if view is None or view.type != 'VIEW_3D':
+            self.report({'ERROR'}, "No 3D Viewport found in current screen")
+            return {'CANCELLED'}
+        view.shading.type = 'SOLID'
+        view.shading.color_type = 'VERTEX'
+        # Make sure the active color attribute on every CollisionMesh
+        # member resolves to "MaterialID" so the color cycler picks it.
+        for o in bpy.data.objects:
+            if o.type == 'MESH' and o.name.startswith("CollisionMesh"):
+                ca = o.data.color_attributes
+                ml = ca.get("MaterialID")
+                if ml is not None:
+                    ca.active_color_index = list(ca).index(ml)
+        self.report({'INFO'}, "Viewport shading -> Solid + vertex color (MaterialID)")
+        return {'FINISHED'}
+
+
+# ---- Course origin marker -------------------------------------------------
+
+ORIGIN_MARKER_NAME = "MKGP2_OriginMarker"
+
+
+class MKGP2_OT_AddOriginMarker(Operator):
+    """Create (or move) an axis-cross empty at game (0,0,0) under the
+    active course collection. Helpful for orienting custom courses
+    relative to MKGP2's world origin."""
+    bl_idname = "mkgp2.add_origin_marker"
+    bl_label = "Add course origin marker"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        coll = _resolve_course_collection(context)
+        if coll is None:
+            # No course active -- still create one in the scene root so
+            # the user can see where world origin is.
+            coll = context.scene.collection
+        existing = bpy.data.objects.get(ORIGIN_MARKER_NAME)
+        if existing is not None:
+            # Re-link if it lost its parent collection.
+            if coll not in [c for c in existing.users_collection]:
+                for c in list(existing.users_collection):
+                    c.objects.unlink(existing)
+                coll.objects.link(existing)
+            existing.location = (0.0, 0.0, 0.0)
+            self.report({'INFO'}, f"Reused {ORIGIN_MARKER_NAME}")
+            return {'FINISHED'}
+
+        empty = bpy.data.objects.new(ORIGIN_MARKER_NAME, None)
+        empty.empty_display_type = 'PLAIN_AXES'
+        empty.empty_display_size = 100.0
+        empty.location = (0.0, 0.0, 0.0)
+        empty.show_in_front = True
+        empty.show_name = True
+        coll.objects.link(empty)
+        self.report({'INFO'}, f"Created {ORIGIN_MARKER_NAME} in '{coll.name}'")
+        return {'FINISHED'}
+
+
 class MKGP2_OT_ReloadModules(Operator):
     """Re-import the course tool scripts (call after editing them)"""
     bl_idname = "mkgp2.reload_modules"
@@ -1190,6 +1498,41 @@ class MKGP2_PT_CoursePanel(Panel):
         col = box.column(align=True)
         col.operator("import_scene.mkgp2_full_course", text="Import HSD + col + line + auto")
         col.operator("export_scene.mkgp2_full_course", text="Export all collision / line / auto")
+
+        # ---- Visualization (T1b) -------------------------------------
+        box = layout.box()
+        box.label(text="Visualization:", icon='HIDE_OFF')
+        wm = context.window_manager
+        # Overlay toggles
+        row = box.row(align=True)
+        row.prop(wm, "mkgp2_show_arrows", toggle=True,
+                 text="Direction arrows", icon='FORWARD')
+        row.prop(wm, "mkgp2_show_waypoint_ids", toggle=True,
+                 text="Waypoint #", icon='SORTBYEXT')
+        # Line variant visibility (only meaningful when a line root is
+        # locatable from context).
+        line_root = _resolve_line_root(context)
+        if line_root is not None:
+            n = len(_line_variants_under(line_root))
+            sub = box.column(align=True)
+            sub.label(text=f"Line variants ({n}) under '{line_root.name}':",
+                      icon='TRACKING')
+            grid = sub.grid_flow(row_major=True, columns=4, align=True)
+            for idx, _ in _line_variants_under(line_root):
+                op = grid.operator("mkgp2.show_only_variant",
+                                   text=f"v{idx}")
+                op.variant_index = idx
+            row = sub.row(align=True)
+            row.operator("mkgp2.show_all_variants", text="Show all",
+                         icon='HIDE_OFF')
+            row.operator("mkgp2.hide_all_variants", text="Hide all",
+                         icon='HIDE_ON')
+        # One-shot collision color helper + origin marker
+        row = box.row(align=True)
+        row.operator("mkgp2.show_collision_material",
+                     text="Color collision", icon='COLOR')
+        row.operator("mkgp2.add_origin_marker",
+                     text="Origin marker", icon='EMPTY_AXIS')
 
         # ---- Per-asset (escape hatch) ----------------------------------
         box = layout.box()
@@ -1306,6 +1649,11 @@ CLASSES = (
     MKGP2_OT_ImportCourse,
     MKGP2_OT_ExportCourse,
     MKGP2_OT_ValidateCourse,
+    MKGP2_OT_ShowOnlyVariant,
+    MKGP2_OT_ShowAllVariants,
+    MKGP2_OT_HideAllVariants,
+    MKGP2_OT_ShowCollisionMaterial,
+    MKGP2_OT_AddOriginMarker,
     MKGP2_OT_ReloadModules,
     MKGP2_PT_CoursePanel,
 )
@@ -1316,6 +1664,18 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.TOPBAR_MT_file_import.append(_menu_import)
     bpy.types.TOPBAR_MT_file_export.append(_menu_export)
+    # Overlay toggles. Stored on WindowManager so they don't pollute
+    # .blend files; the draw handler is torn down in unregister().
+    bpy.types.WindowManager.mkgp2_show_arrows = BoolProperty(
+        name="Auto/Line direction arrows",
+        default=False,
+        update=_on_show_arrows_toggle,
+    )
+    bpy.types.WindowManager.mkgp2_show_waypoint_ids = BoolProperty(
+        name="Waypoint index labels",
+        default=False,
+        update=_on_show_waypoint_ids_toggle,
+    )
     # Best-effort eager load so first import is fast and configuration errors
     # surface in the console instead of mid-operator.
     ok, err = reload_modules()
@@ -1324,6 +1684,14 @@ def register():
 
 
 def unregister():
+    # Tear down draw handlers first; tagging redraw against an unloaded
+    # callback would crash on the next viewport refresh.
+    _set_overlay('arrows', False, _draw_arrows_callback)
+    _set_overlay('waypoints', False, _draw_waypoint_ids_callback)
+    if hasattr(bpy.types.WindowManager, "mkgp2_show_arrows"):
+        del bpy.types.WindowManager.mkgp2_show_arrows
+    if hasattr(bpy.types.WindowManager, "mkgp2_show_waypoint_ids"):
+        del bpy.types.WindowManager.mkgp2_show_waypoint_ids
     bpy.types.TOPBAR_MT_file_import.remove(_menu_import)
     bpy.types.TOPBAR_MT_file_export.remove(_menu_export)
     for cls in reversed(CLASSES):
