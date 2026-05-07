@@ -133,6 +133,15 @@ def main():
         assert not issues, f"course should be clean again, got: {issues}"
         print("[test] V5 reverted course validates OK again")
 
+        # ---- 6) Sentinel empties (origin marker, course root) must
+        # not be flagged by the naming check.
+        bpy.ops.mkgp2.add_origin_marker()
+        bpy.ops.mkgp2.add_course_root()
+        issues = _run_validate()
+        assert not issues, \
+            f"origin marker / course root should be allowed, got: {issues}"
+        print("[test] V6 origin marker + course root pass naming check")
+
         addon.unregister()
         print("[test] PASS")
     except Exception:

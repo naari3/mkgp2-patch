@@ -280,6 +280,11 @@ def validate_auto_obj(auto_obj, *, auto_imp, auto_exp,
 # ---------------------------------------------------------------------------
 
 _NAMING_PREFIXES = ("CollisionMesh_", "WallSegments_", "LineVariant_", "Auto_")
+# Sentinel empties created by the addon itself (origin marker / course
+# coordinate root). The strings/prop names mirror the addon constants
+# but are hardcoded here so the validator stays self-contained.
+_ADDON_SENTINEL_NAME = "MKGP2_OriginMarker"
+_COURSE_ROOT_PROP = "mkgp2_course_root"
 
 
 def validate_naming(course_coll, *, max_examples=6):
@@ -292,6 +297,8 @@ def validate_naming(course_coll, *, max_examples=6):
       - <stem>_line               (empty)
       - LineVariant_<i>_<stem>    (mesh under the line empty)
       - Auto_<stem>               (mesh)
+      - MKGP2_OriginMarker         (addon-managed origin marker)
+      - <course>_root + mkgp2_course_root prop (T2c coord root)
       - HSD bundle members (live in a child collection, not directly
         in course_coll.objects)
     """
@@ -304,6 +311,11 @@ def validate_naming(course_coll, *, max_examples=6):
         if o.type == 'EMPTY' and o.name.endswith("_line"):
             continue
         if o.type == 'MESH' and any(o.name.startswith(p) for p in _NAMING_PREFIXES):
+            continue
+        # Addon-managed sentinels are not file-bound assets; they exist
+        # as authoring helpers and shouldn't show up as warnings.
+        if o.type == 'EMPTY' and (o.name == _ADDON_SENTINEL_NAME or
+                                  o.get(_COURSE_ROOT_PROP)):
             continue
         weird.append(o.name)
 
