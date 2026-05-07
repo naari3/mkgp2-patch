@@ -258,12 +258,14 @@ def validate_auto_obj(auto_obj, *, auto_imp, auto_exp,
             return issues
 
         try:
-            records = auto_imp.parse_auto_bin(out)
+            parsed = auto_imp.parse_auto_bin(out)
         except Exception as ex:
             issues.append(f"auto[{auto_obj.name}]: re-parse raised "
                           f"{type(ex).__name__}: {ex}")
             return issues
 
+    # parse_auto_bin returns (records, terminator_count). Pick the list.
+    records = parsed[0] if isinstance(parsed, tuple) else parsed
     expected = len(auto_obj.data.vertices)
     if abs(len(records) - expected) > 1:
         issues.append(

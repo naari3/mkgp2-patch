@@ -23,7 +23,7 @@ button after editing the source.
 bl_info = {
     "name": "MKGP2 Course Tools",
     "author": "naari3",
-    "version": (0, 1, 3),
+    "version": (0, 1, 4),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > MKGP2  /  File > Import & Export",
     "description": "Import / export MKGP2 course resources (HSD mesh, collision, line waypoints, AI auto path)",
@@ -1060,6 +1060,152 @@ class MKGP2_OT_ExportCourse(Operator):
         return written, errors
 
 
+class MKGP2_OT_PromoteVanilla(Operator):
+    """Wrap each course currently sitting at the scene root (after a
+    Vanilla Full Course import) into a tagged `mkgp2_kind=course`
+    collection under MKGP2_Course/ so Validate / Export / Add coordinate
+    root act on it.
+
+    Discovery:
+      - Each `CollisionMesh_<canonical>` defines one course.
+      - Sibling members are picked up by name convention:
+          WallSegments_<canonical>
+          <canonical>_line_line       (empty -- importer doubles "_line")
+          LineVariant_*_<canonical>_line
+          Auto_<canonical>_Auto       (tagged mkgp2_auto_role="F")
+          Auto_<canonical>_Auto_R     (tagged mkgp2_auto_role="R")
+      - HSD bundles `mkgp2:<dat>` whose .dat name contains the
+        canonical stem (case-insensitive) are nested into the course
+        collection. A vanilla course typically has the short bundle
+        only; long is left without an HSD nest.
+
+    Re-running on an already-promoted scene is safe: existing
+    `mkgp2_kind=course` collections and HSD bundles already nested in
+    one are skipped.
+    """
+    bl_idname = "scene.mkgp2_promote_vanilla"
+    bl_label = "Promote vanilla import to course(s)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        # Discover canonical stems from CollisionMesh_* objects that
+        # do *not* already live inside a course collection.
+        candidates = {}  # stem -> CollisionMesh object
+        for o in bpy.data.objects:
+            if not o.name.startswith("CollisionMesh_"):
+                continue
+            stem = o.name[len("CollisionMesh_"):]
+            # Strip Blender's ".001" disambiguation suffix
+            stem = stem.split(".", 1)[0]
+            if any(c.get("mkgp2_kind") == "course" for c in o.users_collection):
+                continue
+            candidates.setdefault(stem, o)
+
+        if not candidates:
+            self.report({'WARNING'},
+                "No vanilla course found at the scene root. "
+                "Either nothing was imported yet or every course is "
+                "already promoted.")
+            return {'CANCELLED'}
+
+        bin_dir = _default_bin_dir()
+        parent = _ensure_courses_root()
+        promoted = []
+
+        for canonical in sorted(candidates):
+            existing = bpy.data.collections.get(canonical)
+            if existing is not None:
+                self.report({'WARNING'},
+                    f"Collection '{canonical}' already exists; skipping. "
+                    "Rename it first if you want a fresh promote.")
+                continue
+
+            members = self._gather_members(canonical)
+            if not members:
+                continue
+
+            coll = bpy.data.collections.new(canonical)
+            parent.children.link(coll)
+            coll["mkgp2_kind"] = "course"
+            coll["mkgp2_course_name"] = canonical
+            coll["mkgp2_collision_bin"] = f"{canonical}.bin"
+            coll["mkgp2_line_bin"] = f"{canonical}_line.bin"
+            coll["mkgp2_auto_f_bin"] = f"{canonical}_Auto.bin"
+            coll["mkgp2_auto_r_bin"] = f"{canonical}_Auto_R.bin"
+            coll["mkgp2_bin_dir"] = bin_dir or ""
+            coll["mkgp2_hsd_dat"] = ""
+
+            _link_objs_to_collection(coll, members)
+
+            # Auto F/R role tagging (the per-asset Auto importer doesn't
+            # set this; the Custom course flow does).
+            for o in members:
+                if o.name == f"Auto_{canonical}_Auto":
+                    o["mkgp2_auto_role"] = "F"
+                elif o.name == f"Auto_{canonical}_Auto_R":
+                    o["mkgp2_auto_role"] = "R"
+
+            # HSD bundle: the closest mkgp2:<dat> whose .dat name
+            # contains the canonical stem and that isn't already
+            # nested in a different course.
+            hsd = self._find_matching_hsd(canonical)
+            if hsd is not None:
+                _link_collections_to_collection(coll, [hsd])
+                coll["mkgp2_hsd_dat"] = str(hsd.get("mkgp2_source_dat", ""))
+
+            promoted.append(canonical)
+
+        if not promoted:
+            self.report({'WARNING'},
+                "Found candidate stems but nothing got promoted "
+                "(name conflict on every one). Resolve and retry.")
+            return {'CANCELLED'}
+
+        self.report({'INFO'},
+            f"Promoted {len(promoted)} course(s): {', '.join(promoted)}")
+        return {'FINISHED'}
+
+    def _gather_members(self, canonical):
+        """Pick every scene-root object whose name fits the vanilla
+        layout for `canonical`."""
+        prefix_line_var = f"LineVariant_"
+        suffix_line_var = f"_{canonical}_line"
+        members = []
+        for o in bpy.data.objects:
+            # Skip objects already in a course collection (re-run safety)
+            if any(c.get("mkgp2_kind") == "course" for c in o.users_collection):
+                continue
+            n = o.name
+            # Strip Blender ".001" suffix for the name comparisons that
+            # follow; we want all variants of the canonical stem.
+            base = n.split(".", 1)[0]
+            if base in (
+                f"CollisionMesh_{canonical}",
+                f"WallSegments_{canonical}",
+                f"{canonical}_line_line",
+                f"Auto_{canonical}_Auto",
+                f"Auto_{canonical}_Auto_R",
+            ):
+                members.append(o)
+                continue
+            if base.startswith(prefix_line_var) and base.endswith(suffix_line_var):
+                members.append(o)
+        return members
+
+    def _find_matching_hsd(self, canonical):
+        canon_lower = canonical.lower()
+        for coll in bpy.data.collections:
+            if not coll.name.startswith("mkgp2:"):
+                continue
+            host = _find_parent_collection(coll)
+            if host is not None and host.get("mkgp2_kind") == "course":
+                continue  # already nested in a course
+            dat_lower = coll.name[len("mkgp2:"):].lower()
+            if canon_lower in dat_lower:
+                return coll
+        return None
+
+
 class MKGP2_OT_ValidateCourse(Operator):
     """Run integrity checks against the active course collection.
 
@@ -1646,6 +1792,8 @@ class MKGP2_PT_CoursePanel(Panel):
         col = box.column(align=True)
         col.operator("import_scene.mkgp2_full_course", text="Import HSD + col + line + auto")
         col.operator("export_scene.mkgp2_full_course", text="Export all collision / line / auto")
+        col.operator("scene.mkgp2_promote_vanilla",
+                     text="Promote to course collection(s)", icon='OUTLINER_COLLECTION')
 
         # ---- Visualization (T1b) -------------------------------------
         box = layout.box()
@@ -1797,6 +1945,7 @@ CLASSES = (
     MKGP2_OT_ImportCourse,
     MKGP2_OT_ExportCourse,
     MKGP2_OT_ValidateCourse,
+    MKGP2_OT_PromoteVanilla,
     MKGP2_OT_ShowOnlyVariant,
     MKGP2_OT_ShowAllVariants,
     MKGP2_OT_HideAllVariants,
