@@ -1,6 +1,6 @@
 hsdraw/__init__.py,sha256=4UBXeLypulFwmGXs1msQd7wX0Df-793E4brd42w7GLQ,107
 hsdraw/hsdraw.pyd,sha256=QQ88Eb8C0tVtDdRWSRv2btrJlmjo-dUV9cthEGzRxq4,1004032
-hsdraw-0.0.1.dist-info/METADATA,sha256=mIfaoFi_Ct-Gkhz1wnkwMOxQ37AhlrPQPu108cNIF5U,8809
+hsdraw-0.0.1.dist-info/METADATA,sha256=VW9R9kvHw1WXLkDrRK84c8x0eSwjoFDCHGvwg2ut-5g,8826
 hsdraw-0.0.1.dist-info/WHEEL,sha256=gXPnzSzx5vdYKHxhDYVt-C4eXbt3uxomOiEDn4ehIhw,95
-hsdraw-0.0.1.dist-info/sboms/hsdraw-py.cyclonedx.json,sha256=ebwoQfKTipI7CX4-XoWjITddc_eac91GiXj7ArxiRp4,54322
+hsdraw-0.0.1.dist-info/sboms/hsdraw-py.cyclonedx.json,sha256=yV22ISRqEHX3VbfrRe-o5II_KBH9pBlnJKEnPTUPPHI,54322
 hsdraw-0.0.1.dist-info/RECORD,,
