@@ -23,7 +23,7 @@ button after editing the source.
 bl_info = {
     "name": "MKGP2 Course Tools",
     "author": "naari3",
-    "version": (0, 2, 0),
+    "version": (0, 2, 1),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > MKGP2  /  File > Import & Export",
     "description": "Import / export MKGP2 course resources (HSD mesh, collision, line waypoints, AI auto path)",
@@ -1973,6 +1973,126 @@ class MKGP2_OT_PromoteVanilla(Operator):
         return _find_unhosted_hsd_for(canonical)
 
 
+class MKGP2_OT_PromoteVisToHSD(Operator):
+    """Promote a `vis:<name>` editor-only collection to a fresh HSD .dat.
+
+    Walks every mesh + material slot in the collection, builds one POBJ
+    per slot via the vendored hsdraw `MeshBuilder`, packs the chain
+    under a single root JObj and writes the result.  The output is a
+    self-contained course .dat (a vanilla .dat is borrowed as the
+    structural base; everything except `scene_data` is stripped, and
+    `scene_data.JOBJDescs[0].RootJoint` is repointed at the synthesized
+    JObj so the game's loader picks up our geometry).
+
+    Phase 1 scope (matches hsdraw POBJ writer): F32x3 position + RGBA8
+    color attribute group, TRIANGLE / TRIANGLE_STRIP primitives.
+    Material color comes from each slot's Principled BSDF base color.
+    No textures / UVs / normals / envelope rigging in this pass.
+    """
+    bl_idname = "scene.mkgp2_promote_vis_to_hsd"
+    bl_label = "Promote vis: collection to HSD .dat"
+    bl_options = {'PRESET'}
+
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default="*.dat", options={'HIDDEN'})
+
+    base_dat: StringProperty(
+        name="Structural base .dat",
+        description="Vanilla course .dat to use as the SObj template. "
+                    "Defaults to MR_highway_short_A.dat under the addon's "
+                    "Vanilla bin directory if blank.",
+        subtype='FILE_PATH',
+        default="",
+    )
+
+    def _resolve_vis(self, context):
+        layer = getattr(context.view_layer, "active_layer_collection", None)
+        if layer is not None:
+            c = layer.collection
+            if c.name.startswith("vis:"):
+                return c
+        obj = context.active_object
+        if obj is not None:
+            for c in obj.users_collection:
+                if c.name.startswith("vis:"):
+                    return c
+        return None
+
+    def invoke(self, context, event):
+        vis = self._resolve_vis(context)
+        if vis is None:
+            self.report({'ERROR'},
+                "No vis: collection in context. Activate one in the "
+                "Outliner or pick an object that lives inside one.")
+            return {'CANCELLED'}
+        if not self.filepath:
+            stem = vis.name[len("vis:"):] if vis.name.startswith("vis:") else vis.name
+            out_dir = _output_bin_dir() or os.path.expanduser("~")
+            self.filepath = os.path.join(out_dir, f"{stem}.dat")
+        if not self.base_dat:
+            van = _vanilla_bin_dir()
+            if van:
+                guess = os.path.join(van, "MR_highway_short_A.dat")
+                if os.path.isfile(guess):
+                    self.base_dat = guess
+        return context.window_manager.invoke_props_dialog(self, width=520)
+
+    def draw(self, context):
+        layout = self.layout
+        vis = self._resolve_vis(context)
+        if vis is not None:
+            layout.label(text=f"vis: {vis.name}", icon='OUTLINER_COLLECTION')
+        layout.prop(self, "filepath")
+        layout.prop(self, "base_dat")
+        if self.filepath and _is_inside_vanilla(self.filepath):
+            layout.label(text="WARN: output is inside vanilla bin -- refused",
+                         icon='ERROR')
+
+    def execute(self, context):
+        if not HSDRAW_AVAILABLE:
+            self.report({'ERROR'},
+                "hsdraw is not vendored for this platform; cannot synthesize "
+                "POBJ. See addon vendor/<platform>/ docs.")
+            return {'CANCELLED'}
+        vis = self._resolve_vis(context)
+        if vis is None:
+            self.report({'ERROR'},
+                "No vis: collection in context. Activate one in the "
+                "Outliner or pick an object that lives inside one.")
+            return {'CANCELLED'}
+        if not self.filepath:
+            self.report({'ERROR'}, "Output filepath required")
+            return {'CANCELLED'}
+        if _refuse_if_vanilla(self, self.filepath, what="promoted HSD .dat"):
+            return {'CANCELLED'}
+
+        base = self.base_dat.strip()
+        if not base:
+            van = _vanilla_bin_dir()
+            if van:
+                base = os.path.join(van, "MR_highway_short_A.dat")
+        if not base or not os.path.isfile(base):
+            self.report({'ERROR'},
+                "Structural base .dat not set and no fallback found. Pick "
+                "a vanilla course .dat in the dialog.")
+            return {'CANCELLED'}
+
+        from . import _promote_vis_to_hsd
+        try:
+            stats = _promote_vis_to_hsd.promote_vis_to_dat(
+                vis, base, self.filepath,
+            )
+        except Exception as ex:
+            self.report({'ERROR'}, f"Promote failed: {ex}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'},
+            f"Wrote {Path(self.filepath).name}: {stats['dobj_count']} DObjs, "
+            f"{stats['total_verts']} verts, {stats['total_tris']} tris, "
+            f"{stats['output_size']} bytes")
+        return {'FINISHED'}
+
+
 class MKGP2_OT_ValidateCourse(Operator):
     """Run integrity checks against the active course collection.
 
@@ -2554,6 +2674,8 @@ class MKGP2_PT_CoursePanel(Panel):
                      icon='EMPTY_AXIS')
         col.operator("scene.mkgp2_attach_hsd", text="Attach HSD bundle",
                      icon='LINK_BLEND')
+        col.operator("scene.mkgp2_promote_vis_to_hsd",
+                     text="Promote vis: → HSD .dat", icon='MESH_DATA')
 
         # ---- Vanilla course (short/long pair, retained for round-trip) --
         box = layout.box()
@@ -2920,6 +3042,7 @@ CLASSES = (
     MKGP2_OT_ExportCourse,
     MKGP2_OT_ValidateCourse,
     MKGP2_OT_PromoteVanilla,
+    MKGP2_OT_PromoteVisToHSD,
     MKGP2_OT_AttachHsdToCourse,
     MKGP2_OT_ShowOnlyVariant,
     MKGP2_OT_ShowAllVariants,
