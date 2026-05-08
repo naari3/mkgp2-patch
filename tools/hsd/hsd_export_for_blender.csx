@@ -66,7 +66,12 @@ record JointDto(
     float[] translation, float[] rotation, float[] scale,
     float[] world_matrix, string parent, List<string> children);
 
-record TextureDto(string id, string file, int width, int height, string format);
+// `gx_file` / `gx_size` are emitted from the M1 onwards: raw GX-encoded
+// byte payload (the same bytes HSD_Image attaches at offset 0). Re-import
+// stashes the format / dimensions on the Blender Image so the M3 unified
+// exporter can bypass re-encoding when the user hasn't touched the PNG.
+record TextureDto(string id, string file, int width, int height, string format,
+                  string gx_file, int gx_size);
 
 record TextureRefDto(string tex_id, string tex_map_id, string wrap_s, string wrap_t,
                      int repeat_s, int repeat_t, string mag_filter, string color_op, string alpha_op,
@@ -116,7 +121,14 @@ string InternTexture(HSD_TOBJ t) {
                     for (int i = 0; i + 2 < rgba.Length; i += 4) { var tmp = rgba[i]; rgba[i] = rgba[i+2]; rgba[i+2] = tmp; }
                 using var bmp = SixLabors.ImageSharp.Image.LoadPixelData<Rgba32>(rgba, w, h);
                 bmp.SaveAsPng(Path.Combine(texDir, $"{sha}.png"));
-                textures.Add(new TextureDto(sha, $"tex/{sha}.png", w, h, img.Format.ToString()));
+                // Stash the raw GX-encoded payload alongside the PNG so M3's
+                // unified writer can bypass re-encoding when the user hasn't
+                // touched the texture in Blender. `img.ImageData` is the same
+                // byte sequence HSD_Image's offset-0 leaf carries.
+                File.WriteAllBytes(Path.Combine(texDir, $"{sha}.gx"), img.ImageData);
+                textures.Add(new TextureDto(
+                    sha, $"tex/{sha}.png", w, h, img.Format.ToString(),
+                    $"tex/{sha}.gx", img.ImageData.Length));
                 imageIdBySha[sha] = sha;
             } else {
                 Console.WriteLine($"  WARN: tex {sha} decoded length mismatch ({rgba?.Length}/{w*h*4})");
@@ -320,5 +332,7 @@ Console.WriteLine($"  meshes: {meshes.Count}");
 long jsonSize = new FileInfo(Path.Combine(outDir, "scene.json")).Length;
 long texTotal = 0;
 foreach (var f in Directory.GetFiles(texDir, "*.png")) texTotal += new FileInfo(f).Length;
+long gxTotal = 0;
+foreach (var f in Directory.GetFiles(texDir, "*.gx")) gxTotal += new FileInfo(f).Length;
 Console.WriteLine($"  scene.json: {jsonSize:N0} bytes");
-Console.WriteLine($"  textures total: {texTotal:N0} bytes");
+Console.WriteLine($"  textures total: {texTotal:N0} bytes (PNG) + {gxTotal:N0} bytes (GX)");
