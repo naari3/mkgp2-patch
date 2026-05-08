@@ -284,86 +284,14 @@ def _run_csx_for_dat(dat_path, out_dir, *, timeout=240):
     return scene_json
 
 
-def _resolve_writer_csx_path():
-    """Path to tools/hsd/hsd_import_from_blender.csx."""
-    src = _resolve_source_path()  # .../tools/blender
-    return os.path.normpath(os.path.join(src, "..", "hsd",
-                                         "hsd_import_from_blender.csx"))
-
-
-def _run_writer_csx(base_dat, bundle_dir, out_dat, *, timeout=240):
-    """Run hsd_import_from_blender.csx <base.dat> <bundle.dir> <out.dat>.
-
-    Raises RuntimeError on any failure with captured stderr/stdout for
-    triage. Returns the (str) path to the produced .dat.
-    """
-    csx = _resolve_writer_csx_path()
-    if not os.path.isfile(csx):
-        raise RuntimeError(
-            f"writer csx not found at {csx}. Is the addon installed via "
-            "a junction back into tools/blender?"
-        )
-    dotnet = _resolve_dotnet_script()
-    if not dotnet:
-        raise RuntimeError(
-            "dotnet-script not found. Install it with "
-            "`dotnet tool install --global dotnet-script` or set the "
-            "addon preference `dotnet_script_path`."
-        )
-
-    os.makedirs(os.path.dirname(out_dat), exist_ok=True)
-    cmd = [dotnet, csx, "--", str(base_dat), str(bundle_dir), str(out_dat)]
-    proc = subprocess.run(cmd, capture_output=True, text=True,
-                          timeout=timeout)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"writer csx returned {proc.returncode} for "
-            f"{os.path.basename(base_dat)} -> {os.path.basename(out_dat)}\n"
-            f"stdout: {proc.stdout.strip()[:800]}\n"
-            f"stderr: {proc.stderr.strip()[:800]}"
-        )
-    if not os.path.isfile(out_dat):
-        raise RuntimeError(
-            f"writer csx finished but did not produce {out_dat}\n"
-            f"stdout: {proc.stdout.strip()[:500]}"
-        )
-    return out_dat
-
-
-def _run_writer_py(base_dat, bundle_dir, out_dat):
-    """In-process Rust (`hsdraw`) writer path, equivalent to
-    `_run_writer_csx`. Imports the addon's `_hsd_writer` Python port at
-    call time so it's not a hard dependency at addon load (the csx path
-    works without `hsdraw` available)."""
-    if not HSDRAW_AVAILABLE:
-        raise RuntimeError(
-            "hsdraw is not vendored for this platform; the Rust writer "
-            "path is unavailable. Either run `python -m maturin build "
-            "--release` in the hsdraw repo and copy the wheel under "
-            f"vendor/, or switch the writer backend preference to 'csx'.")
-    from . import _hsd_writer
-    os.makedirs(os.path.dirname(out_dat), exist_ok=True)
-    _hsd_writer.import_from_scene_json(
-        str(base_dat), str(bundle_dir), str(out_dat),
-        verbose=True,
-    )
-    return str(out_dat)
-
-
-def _run_writer(base_dat, bundle_dir, out_dat):
-    """Dispatch to the writer backend selected via addon preferences.
-    Falls back to csx automatically if hsdraw is requested but not
-    available -- prevents a hard break for users with a stripped-down
-    vendor/ tree."""
-    backend = "rust"
-    try:
-        prefs = bpy.context.preferences.addons[__name__].preferences
-        backend = (getattr(prefs, "hsd_writer_backend", "rust") or "rust").lower()
-    except Exception:
-        pass
-    if backend == "rust" and HSDRAW_AVAILABLE:
-        return _run_writer_py(base_dat, bundle_dir, out_dat)
-    return _run_writer_csx(base_dat, bundle_dir, out_dat)
+# M3b retired the `_run_writer_*` family along with the
+# `MKGP2_OT_PromoteVisToHSD` operator. The unified MKGP2_OT_ExportHSD
+# now invokes `_export_mkgp2_bundle` (for HSD bundles) or
+# `_promote_vis_to_hsd` (for vis: collections) directly via the
+# vendored hsdraw extension. The `_hsd_writer.py` Python port and
+# `tools/hsd/hsd_import_from_blender.csx` still live in-tree as
+# reference / batch-processing helpers but are not on the addon's
+# execute path anymore.
 
 
 def _find_vanilla_dat(bin_dir, prefix, round_label):
@@ -534,22 +462,46 @@ class MKGP2_OT_ImportHSD(Operator):
         return {'RUNNING_MODAL'}
 
 
+def _resolve_vis_collection(context):
+    """Find a `vis:<name>` editor-only collection from the active
+    layer collection, or by walking the active object's collection
+    chain. Returns None if none in scope."""
+    layer = getattr(context.view_layer, "active_layer_collection", None)
+    if layer is not None:
+        c = layer.collection
+        if c.name.startswith("vis:"):
+            return c
+    obj = context.active_object
+    if obj is not None:
+        for c in obj.users_collection:
+            if c.name.startswith("vis:"):
+                return c
+    return None
+
+
 class MKGP2_OT_ExportHSD(Operator):
-    """Write the active HSD bundle collection back to a .dat file via
-    hsd_import_from_blender.csx.
+    """Write an HSD .dat from the active context.
 
-    Phase 2 v0 wiring — re-emits the collection's stashed scene.json
-    (mkgp2_joints + mkgp2_joint_aliases) verbatim and runs the writer
-    csx with the bundle's source vanilla .dat as the structural base.
-    Mesh / material / texture content stays at byte-equivalent of the
-    base; structural changes (joint TRS / flags / hierarchy / aliases)
-    that are made on the bundle's stashed JSON props will land in the
-    output .dat.
+    Dispatcher: handles two source kinds in one operator (M3b unification).
 
-    Geometry edit (vertex moves on existing meshes) and brand-new
-    meshes are NOT supported in this phase — the writer csx itself
-    does not yet rebuild POBJ display lists. Edits done in Blender's
-    mesh editor will silently revert in the output.
+      * **HSD bundle** (`mkgp2:<dat>` collection with stashed
+        `mkgp2_joints` + `mkgp2_joint_aliases` + `mkgp2_scene_json`):
+        invokes `_export_mkgp2_bundle.export_bundle_to_dat`. Vanilla
+        `.dat` is no longer read -- the new writer reconstructs the
+        scene from scratch via `hsdraw`. Mesh edits (vertex moves,
+        material color changes) and texture edits (in-Blender or via
+        external editor) are reflected; untouched textures bypass the
+        encoder via the M2-stashed raw GX bytes.
+
+      * **vis: editor-only collection** (`vis:<name>` populated with
+        Blender meshes + Principled BSDF materials): invokes
+        `_promote_vis_to_hsd.promote_vis_to_dat` with a vanilla `.dat`
+        as structural template. Promotion synthesizes one POBJ per
+        (mesh, material slot), single root JObj, scene_data RootJoint
+        repointed.
+
+    The dispatcher prefers an HSD bundle if both are reachable from
+    context (the bundle is the typical edit target).
     """
     bl_idname = "export_scene.mkgp2_hsd_json"
     bl_label = "Export MKGP2 HSD (.dat)"
@@ -558,72 +510,79 @@ class MKGP2_OT_ExportHSD(Operator):
     filepath: StringProperty(subtype='FILE_PATH')
     filter_glob: StringProperty(default="*.dat", options={'HIDDEN'})
 
-    def execute(self, context):
+    # Optional structural base for the vis: branch. The bundle branch
+    # ignores it (everything comes from stash + scene.json).
+    base_dat: StringProperty(
+        name="Structural base .dat (vis: only)",
+        description="Vanilla .dat to use as the SObj template for the "
+                    "vis: collection branch. Ignored when exporting an "
+                    "HSD bundle.",
+        subtype='FILE_PATH',
+        default="",
+    )
+
+    def _resolve_target(self, context):
+        """Decide which branch to take. Returns ('bundle', coll) or
+        ('vis', coll) or (None, None) on no match."""
         bundle = _resolve_hsd_bundle_collection(context)
-        if bundle is None:
-            self.report({'ERROR'},
-                "No HSD bundle in context. Activate an `mkgp2:<dat>` "
-                "collection in the Outliner or pick an object that lives "
-                "inside one.")
-            return {'CANCELLED'}
+        if bundle is not None:
+            return "bundle", bundle
+        vis = _resolve_vis_collection(context)
+        if vis is not None:
+            return "vis", vis
+        return None, None
 
-        source_dat = bundle.get("mkgp2_source_dat", "")
-        if not source_dat:
+    def execute(self, context):
+        if not HSDRAW_AVAILABLE:
             self.report({'ERROR'},
-                f"Bundle '{bundle.name}' has no `mkgp2_source_dat` "
-                "property set; cannot identify base .dat.")
+                "hsdraw is not vendored for this platform; the unified "
+                "HSD exporter requires it. See addon vendor/<platform>/.")
             return {'CANCELLED'}
-
-        # Resolve the base .dat (the unmodified vanilla source the bundle
-        # was originally extracted from). Look it up from the vanilla bin
-        # directory preference; the writer csx will read from this file
-        # but never write to it.
-        van_dir = _vanilla_bin_dir()
-        if not van_dir:
+        kind, coll = self._resolve_target(context)
+        if kind is None:
             self.report({'ERROR'},
-                "Vanilla bin directory not configured in addon "
-                "preferences; cannot resolve base .dat.")
+                "No HSD bundle or vis: collection in context. Activate "
+                "an `mkgp2:<dat>` (re-export) or `vis:<name>` "
+                "(synthesize) collection in the Outliner first.")
             return {'CANCELLED'}
-        base_dat = Path(van_dir) / source_dat
-        if not base_dat.is_file():
-            self.report({'ERROR'},
-                f"Base .dat '{source_dat}' not found under the vanilla "
-                f"bin directory ({van_dir}). Re-extract the ROM or "
-                "correct the preference.")
-            return {'CANCELLED'}
-
         if not self.filepath:
             self.report({'ERROR'}, "No output filepath set.")
             return {'CANCELLED'}
         if _refuse_if_vanilla(self, self.filepath, what="HSD .dat"):
             return {'CANCELLED'}
 
-        # Materialize a temp bundle dir holding scene.json built from
-        # the collection's stashed props. We don't need the tex/*.png
-        # subdir because the writer csx (Phase 1 scope) doesn't read
-        # textures.
-        try:
-            joints = json.loads(bundle.get("mkgp2_joints", "[]"))
-            aliases = json.loads(bundle.get("mkgp2_joint_aliases", "{}"))
-        except json.JSONDecodeError as ex:
+        if kind == "bundle":
+            return self._execute_bundle(context, coll)
+        elif kind == "vis":
+            return self._execute_vis(context, coll)
+        return {'CANCELLED'}
+
+    def _execute_bundle(self, context, bundle):
+        scene_json = bundle.get("mkgp2_scene_json", "")
+        if not scene_json or not Path(scene_json).is_file():
             self.report({'ERROR'},
-                f"Bundle '{bundle.name}' has malformed stashed JSON: {ex}")
+                f"Bundle '{bundle.name}' has no usable mkgp2_scene_json "
+                f"prop ({scene_json!r}). Re-import the .dat with the "
+                "M2-capable importer to re-stash it.")
             return {'CANCELLED'}
 
         # Sync joint parent / children from any Empty hierarchy that was
-        # built at import time (Phase 2 v2). Each Empty has a
-        # `mkgp2_jobj_id` custom prop; its `.parent.mkgp2_jobj_id`
-        # supplies the joint's parent. Empties absent from the bundle
-        # collection (older imports without joint Empties) are skipped
-        # gracefully -- the stashed JSON's parent/children chain is
-        # used as-is.
+        # built at import time. Each Empty carries a `mkgp2_jobj_id`
+        # custom prop; its `.parent.mkgp2_jobj_id` supplies the joint's
+        # parent. The stashed JSON is rewritten so the new exporter sees
+        # the Empty tree as source of truth.
+        try:
+            joints = json.loads(bundle.get("mkgp2_joints", "[]"))
+        except json.JSONDecodeError as ex:
+            self.report({'ERROR'},
+                f"Bundle '{bundle.name}' has malformed mkgp2_joints: {ex}")
+            return {'CANCELLED'}
         empty_by_id = {}
         for o in bundle.objects:
             if o.type == 'EMPTY' and o.get("mkgp2_jobj_id"):
                 empty_by_id[o["mkgp2_jobj_id"]] = o
         if empty_by_id:
             joint_by_id = {j["id"]: j for j in joints if isinstance(j, dict)}
-            # Reset all parent / children to rebuild from the Empty tree
             for j in joints:
                 j["parent"] = None
                 j["children"] = []
@@ -634,59 +593,92 @@ class MKGP2_OT_ExportHSD(Operator):
                     pid = e.parent["mkgp2_jobj_id"]
                     if pid in joint_by_id:
                         joint_by_id[jid]["parent"] = pid
-                        # children order: by Empty's index in parent's
-                        # children Object list (matches Outliner)
                         if jid not in joint_by_id[pid]["children"]:
                             joint_by_id[pid]["children"].append(jid)
-            # Persist the rebuilt parent/children back to the bundle's
-            # stashed JSON so subsequent re-exports stay consistent and
-            # the Empty tree is the source of truth.
             bundle["mkgp2_joints"] = json.dumps(joints)
 
-        scene = {
-            "source_dat": source_dat,
-            "tex_dir": "tex",
-            "textures": [],
-            "materials": [],
-            "joints": joints,
-            "joint_aliases": aliases,
-            "meshes": [],
-        }
-        bundle_dir = tempfile.mkdtemp(prefix="mkgp2_hsd_export_")
+        from . import _export_mkgp2_bundle
         try:
-            with open(os.path.join(bundle_dir, "scene.json"), "w",
-                      encoding="utf-8") as f:
-                json.dump(scene, f)
+            stats = _export_mkgp2_bundle.export_bundle_to_dat(
+                bundle, scene_json, self.filepath,
+            )
+        except _export_mkgp2_bundle.TextureBuildError as ex:
+            self.report({'ERROR'}, f"Texture failure: {ex}")
+            return {'CANCELLED'}
+        except Exception as ex:
+            self.report({'ERROR'}, f"HSD bundle export failed: {ex}")
+            return {'CANCELLED'}
 
-            try:
-                _run_writer(str(base_dat), bundle_dir, self.filepath)
-            except RuntimeError as ex:
-                self.report({'ERROR'}, f"HSD writer failed: {ex}")
-                return {'CANCELLED'}
-        finally:
-            shutil.rmtree(bundle_dir, ignore_errors=True)
-
-        size = Path(self.filepath).stat().st_size
         self.report({'INFO'},
-            f"Wrote {Path(self.filepath).name} ({size} bytes) using base "
-            f"{source_dat}")
+            f"Wrote {Path(self.filepath).name} "
+            f"({stats['output_size']} bytes): "
+            f"{stats['meshes']} meshes / {stats['verts']} verts / "
+            f"{stats['textures']} textures "
+            f"(bypass={stats['tex_bypass']}, "
+            f"reencode={stats['tex_reencode']})")
+        return {'FINISHED'}
+
+    def _execute_vis(self, context, vis):
+        # vis: branch needs a structural base .dat as the SObj template
+        # (the promote pipeline still piggybacks on a vanilla scene_data
+        # to source SObj/JOBJDescs/JObjDesc layout). Default to
+        # MR_highway_short_A.dat under the vanilla bin dir if blank.
+        base = self.base_dat.strip()
+        if not base:
+            van = _vanilla_bin_dir()
+            if van:
+                guess = os.path.join(van, "MR_highway_short_A.dat")
+                if os.path.isfile(guess):
+                    base = guess
+        if not base or not os.path.isfile(base):
+            self.report({'ERROR'},
+                "vis: branch needs a structural base .dat. Pick one in "
+                "the operator dialog (base_dat) or configure Vanilla "
+                "bin directory in addon preferences so the default "
+                "MR_highway_short_A.dat is reachable.")
+            return {'CANCELLED'}
+
+        from . import _promote_vis_to_hsd
+        try:
+            stats = _promote_vis_to_hsd.promote_vis_to_dat(
+                vis, base, self.filepath,
+            )
+        except Exception as ex:
+            self.report({'ERROR'}, f"vis: promote failed: {ex}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'},
+            f"Wrote {Path(self.filepath).name}: {stats['dobj_count']} "
+            f"DObjs, {stats['total_verts']} verts, "
+            f"{stats['total_tris']} tris, {stats['output_size']} bytes")
         return {'FINISHED'}
 
     def invoke(self, context, event):
-        bundle = _resolve_hsd_bundle_collection(context)
-        if bundle is None:
+        kind, coll = self._resolve_target(context)
+        if kind is None:
             self.report({'ERROR'},
-                "No HSD bundle in context. Activate an `mkgp2:<dat>` "
-                "collection or pick an object inside one.")
+                "No HSD bundle or vis: collection in context. Activate "
+                "an `mkgp2:<dat>` or `vis:<name>` collection first.")
             return {'CANCELLED'}
         if not self.filepath:
-            source_dat = bundle.get("mkgp2_source_dat", "")
-            base_name = source_dat or "out.dat"
-            out_dir = _output_bin_dir() or _vanilla_bin_dir() or ""
+            if kind == "bundle":
+                base_name = coll.get("mkgp2_source_dat", "") or "out.dat"
+            else:
+                stem = coll.name[len("vis:"):] if coll.name.startswith("vis:") else coll.name
+                base_name = f"{stem}.dat"
+            out_dir = _output_bin_dir() or ""
             if out_dir:
                 self.filepath = os.path.join(out_dir, base_name)
             else:
                 self.filepath = base_name
+        # vis: branch defaults base_dat once -- the user can override in
+        # the dialog via the operator props panel before confirming.
+        if kind == "vis" and not self.base_dat:
+            van = _vanilla_bin_dir()
+            if van:
+                guess = os.path.join(van, "MR_highway_short_A.dat")
+                if os.path.isfile(guess):
+                    self.base_dat = guess
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
@@ -1973,124 +1965,11 @@ class MKGP2_OT_PromoteVanilla(Operator):
         return _find_unhosted_hsd_for(canonical)
 
 
-class MKGP2_OT_PromoteVisToHSD(Operator):
-    """Promote a `vis:<name>` editor-only collection to a fresh HSD .dat.
-
-    Walks every mesh + material slot in the collection, builds one POBJ
-    per slot via the vendored hsdraw `MeshBuilder`, packs the chain
-    under a single root JObj and writes the result.  The output is a
-    self-contained course .dat (a vanilla .dat is borrowed as the
-    structural base; everything except `scene_data` is stripped, and
-    `scene_data.JOBJDescs[0].RootJoint` is repointed at the synthesized
-    JObj so the game's loader picks up our geometry).
-
-    Phase 1 scope (matches hsdraw POBJ writer): F32x3 position + RGBA8
-    color attribute group, TRIANGLE / TRIANGLE_STRIP primitives.
-    Material color comes from each slot's Principled BSDF base color.
-    No textures / UVs / normals / envelope rigging in this pass.
-    """
-    bl_idname = "scene.mkgp2_promote_vis_to_hsd"
-    bl_label = "Promote vis: collection to HSD .dat"
-    bl_options = {'PRESET'}
-
-    filepath: StringProperty(subtype='FILE_PATH')
-    filter_glob: StringProperty(default="*.dat", options={'HIDDEN'})
-
-    base_dat: StringProperty(
-        name="Structural base .dat",
-        description="Vanilla course .dat to use as the SObj template. "
-                    "Defaults to MR_highway_short_A.dat under the addon's "
-                    "Vanilla bin directory if blank.",
-        subtype='FILE_PATH',
-        default="",
-    )
-
-    def _resolve_vis(self, context):
-        layer = getattr(context.view_layer, "active_layer_collection", None)
-        if layer is not None:
-            c = layer.collection
-            if c.name.startswith("vis:"):
-                return c
-        obj = context.active_object
-        if obj is not None:
-            for c in obj.users_collection:
-                if c.name.startswith("vis:"):
-                    return c
-        return None
-
-    def invoke(self, context, event):
-        vis = self._resolve_vis(context)
-        if vis is None:
-            self.report({'ERROR'},
-                "No vis: collection in context. Activate one in the "
-                "Outliner or pick an object that lives inside one.")
-            return {'CANCELLED'}
-        if not self.filepath:
-            stem = vis.name[len("vis:"):] if vis.name.startswith("vis:") else vis.name
-            out_dir = _output_bin_dir() or os.path.expanduser("~")
-            self.filepath = os.path.join(out_dir, f"{stem}.dat")
-        if not self.base_dat:
-            van = _vanilla_bin_dir()
-            if van:
-                guess = os.path.join(van, "MR_highway_short_A.dat")
-                if os.path.isfile(guess):
-                    self.base_dat = guess
-        return context.window_manager.invoke_props_dialog(self, width=520)
-
-    def draw(self, context):
-        layout = self.layout
-        vis = self._resolve_vis(context)
-        if vis is not None:
-            layout.label(text=f"vis: {vis.name}", icon='OUTLINER_COLLECTION')
-        layout.prop(self, "filepath")
-        layout.prop(self, "base_dat")
-        if self.filepath and _is_inside_vanilla(self.filepath):
-            layout.label(text="WARN: output is inside vanilla bin -- refused",
-                         icon='ERROR')
-
-    def execute(self, context):
-        if not HSDRAW_AVAILABLE:
-            self.report({'ERROR'},
-                "hsdraw is not vendored for this platform; cannot synthesize "
-                "POBJ. See addon vendor/<platform>/ docs.")
-            return {'CANCELLED'}
-        vis = self._resolve_vis(context)
-        if vis is None:
-            self.report({'ERROR'},
-                "No vis: collection in context. Activate one in the "
-                "Outliner or pick an object that lives inside one.")
-            return {'CANCELLED'}
-        if not self.filepath:
-            self.report({'ERROR'}, "Output filepath required")
-            return {'CANCELLED'}
-        if _refuse_if_vanilla(self, self.filepath, what="promoted HSD .dat"):
-            return {'CANCELLED'}
-
-        base = self.base_dat.strip()
-        if not base:
-            van = _vanilla_bin_dir()
-            if van:
-                base = os.path.join(van, "MR_highway_short_A.dat")
-        if not base or not os.path.isfile(base):
-            self.report({'ERROR'},
-                "Structural base .dat not set and no fallback found. Pick "
-                "a vanilla course .dat in the dialog.")
-            return {'CANCELLED'}
-
-        from . import _promote_vis_to_hsd
-        try:
-            stats = _promote_vis_to_hsd.promote_vis_to_dat(
-                vis, base, self.filepath,
-            )
-        except Exception as ex:
-            self.report({'ERROR'}, f"Promote failed: {ex}")
-            return {'CANCELLED'}
-
-        self.report({'INFO'},
-            f"Wrote {Path(self.filepath).name}: {stats['dobj_count']} DObjs, "
-            f"{stats['total_verts']} verts, {stats['total_tris']} tris, "
-            f"{stats['output_size']} bytes")
-        return {'FINISHED'}
+# MKGP2_OT_PromoteVisToHSD was retired in M3b: vis: collections are
+# now exported through the unified MKGP2_OT_ExportHSD operator (its
+# execute() dispatches to `_promote_vis_to_hsd.promote_vis_to_dat`
+# whenever the active layer collection is `vis:*`). The legacy
+# `scene.mkgp2_promote_vis_to_hsd` bl_idname is no longer registered.
 
 
 class MKGP2_OT_ValidateCourse(Operator):
@@ -2674,8 +2553,9 @@ class MKGP2_PT_CoursePanel(Panel):
                      icon='EMPTY_AXIS')
         col.operator("scene.mkgp2_attach_hsd", text="Attach HSD bundle",
                      icon='LINK_BLEND')
-        col.operator("scene.mkgp2_promote_vis_to_hsd",
-                     text="Promote vis: → HSD .dat", icon='MESH_DATA')
+        # vis: → .dat used to live behind a dedicated button; M3b folded
+        # it into MKGP2_OT_ExportHSD's dispatcher, so users now activate
+        # the vis: collection and click "HSD bundle (.dat)" below.
 
         # ---- Vanilla course (short/long pair, retained for round-trip) --
         box = layout.box()
@@ -2737,7 +2617,7 @@ class MKGP2_PT_CoursePanel(Panel):
         col.operator("export_scene.mkgp2_line_bin", text="Line (.bin)")
         col.operator("export_scene.mkgp2_auto_bin", text="Auto path (.bin)")
         col.operator("export_scene.mkgp2_hsd_json",
-                     text="HSD bundle (.dat) [structural only]")
+                     text="HSD bundle (.dat)")
 
         layout.separator()
         layout.operator("mkgp2.reload_modules", text="Reload course modules", icon='FILE_REFRESH')
@@ -2863,26 +2743,9 @@ class MKGP2AddonPreferences(AddonPreferences):
         default="",
     )
 
-    hsd_writer_backend: bpy.props.EnumProperty(
-        name="HSD writer backend",
-        description=(
-            "Which writer the Export HSD operator uses. The Rust path "
-            "(`hsdraw` vendored under addon/vendor/<platform>/) is "
-            "byte-identical to the dotnet-script + HSDLib path on the "
-            "vanilla parity corpus and is preferred. Falls back to csx "
-            "automatically if the vendored wheel is missing for the "
-            "current platform."
-        ),
-        items=[
-            ('rust', "Rust (hsdraw)",
-             "In-process via the vendored cp37-abi3 wheel. No external "
-             "dependency. Recommended."),
-            ('csx', "csx (HSDLib via dotnet-script)",
-             "Fallback / for cross-checking. Requires dotnet-script to "
-             "be installed."),
-        ],
-        default='rust',
-    )
+    # (M3b removed `hsd_writer_backend`: there's only one writer path now,
+    # the in-process `hsdraw` extension; the CSX/HSDLib detour is gone
+    # from the operator's execute path.)
 
     def draw(self, context):
         layout = self.layout
@@ -2917,12 +2780,12 @@ class MKGP2AddonPreferences(AddonPreferences):
                        f"{'' if os.path.isfile(cs) else ' (missing!)'}")
         col.separator()
         col.label(text="HSD writer (Export HSD):")
-        col.prop(self, "hsd_writer_backend")
         if HSDRAW_AVAILABLE:
             col.label(text=f"  hsdraw vendored: yes (v{HSDRAW_VERSION})",
                       icon='CHECKMARK')
         else:
-            col.label(text="  hsdraw vendored: no -- falls back to csx",
+            col.label(text="  hsdraw vendored: no -- export operator will "
+                          "refuse until the wheel is installed",
                       icon='ERROR')
         layout.operator("mkgp2.reload_modules", icon='FILE_REFRESH')
 
@@ -3013,7 +2876,7 @@ def _menu_export(self, context):
     self.layout.separator()
     self.layout.operator("scene.mkgp2_export_course", text="MKGP2 Course (active collection)")
     self.layout.operator("export_scene.mkgp2_full_course", text="MKGP2 Vanilla Full Course")
-    self.layout.operator("export_scene.mkgp2_hsd_json", text="MKGP2 HSD (.dat) [structural only]")
+    self.layout.operator("export_scene.mkgp2_hsd_json", text="MKGP2 HSD (.dat)")
     self.layout.operator("export_mesh.mkgp2_collision_bin", text="MKGP2 Collision (.bin)")
     self.layout.operator("export_scene.mkgp2_line_bin", text="MKGP2 Line (.bin)")
     self.layout.operator("export_scene.mkgp2_auto_bin", text="MKGP2 Auto Path (.bin)")
@@ -3042,7 +2905,6 @@ CLASSES = (
     MKGP2_OT_ExportCourse,
     MKGP2_OT_ValidateCourse,
     MKGP2_OT_PromoteVanilla,
-    MKGP2_OT_PromoteVisToHSD,
     MKGP2_OT_AttachHsdToCourse,
     MKGP2_OT_ShowOnlyVariant,
     MKGP2_OT_ShowAllVariants,

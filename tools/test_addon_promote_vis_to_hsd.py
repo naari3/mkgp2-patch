@@ -1,10 +1,14 @@
-"""Verify the Promote vis: -> HSD .dat operator.
+"""Verify the unified Export HSD operator's vis: branch (M3b retired
+the dedicated `scene.mkgp2_promote_vis_to_hsd` operator and folded the
+promote pipeline into `export_scene.mkgp2_hsd_json`).
 
 Pipeline:
   1) Synthesize a small `vis:test_oval` collection (2 cubes, 2 colored
      materials) at the scene root.
   2) Activate the vis: layer collection and invoke
-     `scene.mkgp2_promote_vis_to_hsd` (EXEC_DEFAULT).
+     `export_scene.mkgp2_hsd_json` (EXEC_DEFAULT). The operator's
+     dispatcher branches to the vis: promote path because the active
+     collection name starts with `vis:`.
   3) Verify the output .dat exists at the expected path with a sane
      size (markedly smaller than the structural base .dat -- the bulk
      of MR_highway_short_A is GC'd once non-`scene_data` roots are
@@ -117,14 +121,14 @@ def main():
 
             _activate_layer_for(vis)
 
-            # ---- 2) Invoke operator --------------------------------
-            result = bpy.ops.scene.mkgp2_promote_vis_to_hsd(
+            # ---- 2) Invoke unified operator (vis: branch) -----------
+            result = bpy.ops.export_scene.mkgp2_hsd_json(
                 'EXEC_DEFAULT',
                 filepath=out_dat,
                 base_dat=str(base_dat),
             )
-            assert result == {'FINISHED'}, f"promote: {result}"
-            print(f"[test] operator returned FINISHED")
+            assert result == {'FINISHED'}, f"export (vis: branch): {result}"
+            print(f"[test] operator returned FINISHED (vis: branch)")
 
             # ---- 3) File exists + size sanity ----------------------
             assert os.path.isfile(out_dat), f"writer did not produce {out_dat}"
@@ -184,7 +188,7 @@ def main():
         _activate_layer_for(vis)
         evil = str(Path(VANILLA_BIN) / "evil.dat")
         try:
-            result = bpy.ops.scene.mkgp2_promote_vis_to_hsd(
+            result = bpy.ops.export_scene.mkgp2_hsd_json(
                 'EXEC_DEFAULT',
                 filepath=evil,
                 base_dat=str(base_dat),

@@ -17,14 +17,30 @@ Coverage:
 import bpy
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import traceback
 from pathlib import Path
 
 ADDON_DIR = r"C:\Users\naari\src\github.com\naari3\mkgp2-patch\tools\blender"
-SCENE_JSON = r"C:\Users\naari\Documents\blender\mr_highway_export\scene.json"
 VANILLA_BIN = r"C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files"
+BASE_DAT_NAME = "MR_highway_short_A.dat"
+
+
+def _ensure_bundle(addon, base_dat, out_dir):
+    """Regenerate scene.json via M1+ csx so the bundle carries the M2
+    GX metadata the unified exporter requires."""
+    csx = addon._resolve_csx_path()
+    dotnet = addon._resolve_dotnet_script()
+    if not Path(csx).is_file() or dotnet is None:
+        raise RuntimeError("dotnet-script / csx unavailable")
+    proc = subprocess.run(
+        [dotnet, csx, "--", str(base_dat), str(out_dir)],
+        capture_output=True, text=True, timeout=240)
+    if proc.returncode != 0:
+        raise RuntimeError(f"csx failed: {proc.stderr[-500:]}")
+    return str(Path(out_dir) / "scene.json")
 
 
 def _activate_layer_for(coll):
@@ -50,15 +66,26 @@ def main():
     print("[test] addon registered")
 
     try:
-        if not Path(SCENE_JSON).is_file():
-            print(f"[test] SKIP: scene.json bundle not found at {SCENE_JSON}")
+        if not addon.HSDRAW_AVAILABLE:
+            print("[test] SKIP: hsdraw not vendored")
+            return
+        if addon._resolve_dotnet_script() is None:
+            print("[test] SKIP: dotnet-script not found")
+            return
+        base_dat = Path(VANILLA_BIN) / BASE_DAT_NAME
+        if not base_dat.is_file():
+            print(f"[test] SKIP: base .dat missing at {base_dat}")
             return
         addon._vanilla_bin_dir = lambda: VANILLA_BIN
         addon._output_bin_dir = lambda: tempfile.gettempdir()
 
+        bundle_dir = tempfile.mkdtemp(prefix="mkgp2_joint_empties_")
+        scene_json = _ensure_bundle(addon, base_dat, bundle_dir)
+        print(f"[test] regenerated bundle: {scene_json}")
+
         # ---- 1) Import builds Empty hierarchy -----------------------
         result = bpy.ops.import_scene.mkgp2_hsd_json('EXEC_DEFAULT',
-                                                     filepath=SCENE_JSON)
+                                                     filepath=scene_json)
         assert result == {'FINISHED'}
         bundle = next((c for c in bpy.data.collections
                        if c.name.startswith("mkgp2:")), None)
