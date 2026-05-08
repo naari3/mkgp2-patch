@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "version": 1,
-  "serialNumber": "urn:uuid:0d4c5669-910f-4f91-9481-09c2f5bfd10a",
+  "serialNumber": "urn:uuid:c7f3c433-cbba-47d2-a8cb-d331a89a39c6",
   "metadata": {
-    "timestamp": "2026-05-08T08:26:14.290285000Z",
+    "timestamp": "2026-05-08T09:54:09.462625300Z",
     "tools": [
       {
         "vendor": "CycloneDX",
@@ -682,6 +682,33 @@
     },
     {
       "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#libm@0.2.16",
+      "author": "Alex Crichton <alex@alexcrichton.com>, Amanieu d'Antras <amanieu@gmail.com>, Jorge Aparicio <japaricious@gmail.com>, Trevor Gross <tg@trevorgross.com>",
+      "name": "libm",
+      "version": "0.2.16",
+      "description": "libm in pure Rust",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/libm@0.2.16",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/compiler-builtins"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#memchr@2.8.0",
       "author": "Andrew Gallant <jamslam@gmail.com>, bluss",
       "name": "memchr",
@@ -1317,6 +1344,37 @@
     },
     {
       "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#texpresso@2.0.2",
+      "author": "Jan Solanti <jhs@psonet.com>",
+      "name": "texpresso",
+      "version": "2.0.2",
+      "description": "A pure Rust texture compression suite",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8550677e2259d675a7841cb1403db35f330cc9e58674c8c5caa12dd12c51dc71"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/texpresso@2.0.2",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/jansol/texpresso"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/jansol/texpresso"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.18",
       "author": "David Tolnay <dtolnay@gmail.com>",
       "name": "thiserror-impl",
@@ -1478,6 +1536,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.149",
         "registry+https://github.com/rust-lang/crates.io-index#sha1@0.11.0",
+        "registry+https://github.com/rust-lang/crates.io-index#texpresso@2.0.2",
         "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.18"
       ]
     },
@@ -1581,6 +1640,9 @@
     },
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.186"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#libm@0.2.16"
     },
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#memchr@2.8.0"
@@ -1715,6 +1777,12 @@
     },
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#target-lexicon@0.13.5"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#texpresso@2.0.2",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#libm@0.2.16"
+      ]
     },
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.18",
