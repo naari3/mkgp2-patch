@@ -23,7 +23,7 @@ button after editing the source.
 bl_info = {
     "name": "MKGP2 Course Tools",
     "author": "naari3",
-    "version": (0, 1, 4),
+    "version": (0, 1, 5),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > MKGP2  /  File > Import & Export",
     "description": "Import / export MKGP2 course resources (HSD mesh, collision, line waypoints, AI auto path)",
@@ -1060,6 +1060,90 @@ class MKGP2_OT_ExportCourse(Operator):
         return written, errors
 
 
+def _find_unhosted_hsd_for(canonical):
+    """Pick a `mkgp2:<dat>` bundle whose .dat name contains `canonical`
+    (case-insensitive) and that does NOT already live inside a
+    course-tagged collection. Returns None if no match.
+
+    Used by Promote (auto-discover at promote time) and by
+    AttachHsdToCourse (after-the-fact wiring of a bundle imported
+    later).
+    """
+    canon_lower = canonical.lower()
+    for coll in bpy.data.collections:
+        if not coll.name.startswith("mkgp2:"):
+            continue
+        host = _find_parent_collection(coll)
+        if host is not None and host.get("mkgp2_kind") == "course":
+            continue
+        dat_lower = coll.name[len("mkgp2:"):].lower()
+        if canon_lower in dat_lower:
+            return coll
+    return None
+
+
+class MKGP2_OT_AttachHsdToCourse(Operator):
+    """Nest a scene-root HSD bundle (`mkgp2:<dat>`) under the active
+    course collection.
+
+    Matching: the bundle's .dat name is checked against the course
+    canonical name (collection name OR `mkgp2_course_name` prop)
+    case-insensitive substring. A long course gets the bundle whose
+    .dat name contains 'long', short gets 'short'.
+
+    Cancels if the course already has a nested HSD bundle (use a fresh
+    course or strip it manually first), or if no eligible bundle
+    matches.
+    """
+    bl_idname = "scene.mkgp2_attach_hsd"
+    bl_label = "Attach HSD bundle to course"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        coll = _resolve_course_collection(context)
+        if coll is None:
+            self.report({'ERROR'},
+                "No course collection in context. Activate a course "
+                "collection or one of its members first.")
+            return {'CANCELLED'}
+
+        # Refuse if a bundle is already nested -- silently overwriting
+        # the link drops orphan meshes into bpy.data.collections.
+        existing = next((c for c in coll.children
+                         if c.name.startswith("mkgp2:")), None)
+        if existing is not None:
+            self.report({'WARNING'},
+                f"'{coll.name}' already has '{existing.name}' nested. "
+                "Detach it manually first if you really want to swap.")
+            return {'CANCELLED'}
+
+        canonical = str(coll.get("mkgp2_course_name") or coll.name)
+        hsd = _find_unhosted_hsd_for(canonical)
+        if hsd is None:
+            # Help the user diagnose: list the candidates we saw.
+            roots = [c.name for c in bpy.data.collections
+                     if c.name.startswith("mkgp2:")
+                     and not (
+                         _find_parent_collection(c) is not None
+                         and _find_parent_collection(c).get("mkgp2_kind") == "course"
+                     )]
+            hint = (f"Available unhosted bundles: {roots}. "
+                    "Generate the matching .dat scene.json via "
+                    "tools/hsd/hsd_export_for_blender.csx and re-import."
+                    if roots else
+                    "No unhosted mkgp2:<dat> collection in the scene.")
+            self.report({'ERROR'},
+                f"No HSD bundle name contains '{canonical}'. {hint}")
+            return {'CANCELLED'}
+
+        _link_collections_to_collection(coll, [hsd])
+        coll["mkgp2_hsd_dat"] = str(hsd.get("mkgp2_source_dat", ""))
+        self.report({'INFO'},
+            f"Nested {hsd.name} under '{coll.name}' "
+            f"(mkgp2_hsd_dat='{coll['mkgp2_hsd_dat']}')")
+        return {'FINISHED'}
+
+
 class MKGP2_OT_PromoteVanilla(Operator):
     """Wrap each course currently sitting at the scene root (after a
     Vanilla Full Course import) into a tagged `mkgp2_kind=course`
@@ -1193,17 +1277,7 @@ class MKGP2_OT_PromoteVanilla(Operator):
         return members
 
     def _find_matching_hsd(self, canonical):
-        canon_lower = canonical.lower()
-        for coll in bpy.data.collections:
-            if not coll.name.startswith("mkgp2:"):
-                continue
-            host = _find_parent_collection(coll)
-            if host is not None and host.get("mkgp2_kind") == "course":
-                continue  # already nested in a course
-            dat_lower = coll.name[len("mkgp2:"):].lower()
-            if canon_lower in dat_lower:
-                return coll
-        return None
+        return _find_unhosted_hsd_for(canonical)
 
 
 class MKGP2_OT_ValidateCourse(Operator):
@@ -1785,6 +1859,8 @@ class MKGP2_PT_CoursePanel(Panel):
                      icon='CHECKMARK')
         col.operator("mkgp2.add_course_root", text="Add coordinate root",
                      icon='EMPTY_AXIS')
+        col.operator("scene.mkgp2_attach_hsd", text="Attach HSD bundle",
+                     icon='LINK_BLEND')
 
         # ---- Vanilla course (short/long pair, retained for round-trip) --
         box = layout.box()
@@ -1946,6 +2022,7 @@ CLASSES = (
     MKGP2_OT_ExportCourse,
     MKGP2_OT_ValidateCourse,
     MKGP2_OT_PromoteVanilla,
+    MKGP2_OT_AttachHsdToCourse,
     MKGP2_OT_ShowOnlyVariant,
     MKGP2_OT_ShowAllVariants,
     MKGP2_OT_HideAllVariants,
