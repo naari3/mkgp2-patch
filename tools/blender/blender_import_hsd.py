@@ -42,6 +42,7 @@ Limitations (PoC):
 """
 
 import bpy
+import hashlib
 import json
 import os
 import sys
@@ -59,6 +60,26 @@ def game_to_blender(x, y, z):
 
 
 def make_image(tex, base_dir, image_cache):
+    """Load the texture PNG and stash the metadata the M3 unified
+    exporter needs for bypass-vs-reencode dispatch:
+
+      mkgp2_png_hash    SHA-1 of the PNG file content as imported. The
+                        exporter recomputes this against the (possibly
+                        edited) Blender Image and compares to detect
+                        whether the user touched the texture.
+      mkgp2_gx_path     absolute path to the raw GX-encoded payload
+                        (`tex/<sha>.gx`) the csx wrote alongside the PNG.
+      mkgp2_gx_format   original GX format name ("CMP" / "RGB5A3" /
+                        "RGBA8" / "RGB565" / ...). Used to pick the
+                        encoder and to refuse format-changing edits.
+      mkgp2_gx_width / mkgp2_gx_height
+                        original source dimensions. Resize is rejected
+                        in M3 (encoder requires matching dimensions).
+
+    Old bundles (csx pre-M1) lack `gx_file` in the texture DTO. We log
+    a warning, leave the .gx props unset, and let the exporter fall back
+    to forced re-encoding for those Images.
+    """
     tex_id = tex['id']
     if tex_id in image_cache:
         return image_cache[tex_id]
@@ -68,6 +89,29 @@ def make_image(tex, base_dir, image_cache):
         return None
     img = bpy.data.images.load(str(png_path), check_existing=True)
     img.alpha_mode = 'STRAIGHT'
+    # PNG content hash is computed against the file currently on disk
+    # (which is what `bpy.data.images.load` just read, before the user
+    # has had any chance to edit). The exporter re-derives the live
+    # hash from `Image.pixels` for comparison.
+    try:
+        img['mkgp2_png_hash'] = hashlib.sha1(png_path.read_bytes()).hexdigest()
+    except Exception as ex:
+        print(f"  WARN: PNG hash failed for {png_path.name}: {ex}")
+    gx_file = tex.get('gx_file')
+    if gx_file:
+        gx_path = (base_dir / gx_file).resolve()
+        img['mkgp2_gx_path'] = str(gx_path)
+        img['mkgp2_gx_format'] = tex.get('format', '')
+        img['mkgp2_gx_width'] = int(tex.get('width', 0))
+        img['mkgp2_gx_height'] = int(tex.get('height', 0))
+        img['mkgp2_gx_size'] = int(tex.get('gx_size', 0))
+        if not gx_path.exists():
+            print(f"  WARN: gx_file referenced but missing: {gx_path}")
+    else:
+        # Legacy bundle (pre-M1) -- exporter will be forced to re-encode
+        # via gx_encode() since there is no source GX payload to bypass.
+        print(f"  WARN: texture {tex_id} has no gx_file (legacy bundle); "
+              "M3 export will re-encode this one even if untouched")
     image_cache[tex_id] = img
     return img
 
@@ -419,6 +463,11 @@ def import_scene(scene_json_path):
     coll['mkgp2_source_dat'] = scene['source_dat']
     coll['mkgp2_joint_aliases'] = json.dumps(scene['joint_aliases'])
     coll['mkgp2_joints'] = json.dumps(scene['joints'])
+    # Path back to scene.json so the M3 unified exporter can re-read
+    # materials / textures (those aren't stashed on the Blender side --
+    # importer translates them into Blender materials whose render-flag /
+    # color-op metadata is hard to round-trip back from Blender alone).
+    coll['mkgp2_scene_json'] = str(scene_json_path)
 
     # 6. Joint hierarchy as Outliner-visible Empty metadata.
     #
