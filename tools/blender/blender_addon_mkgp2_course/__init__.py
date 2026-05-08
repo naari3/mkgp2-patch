@@ -23,7 +23,7 @@ button after editing the source.
 bl_info = {
     "name": "MKGP2 Course Tools",
     "author": "naari3",
-    "version": (0, 1, 5),
+    "version": (0, 1, 6),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > MKGP2  /  File > Import & Export",
     "description": "Import / export MKGP2 course resources (HSD mesh, collision, line waypoints, AI auto path)",
@@ -32,7 +32,10 @@ bl_info = {
 
 import bpy
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import importlib
 from pathlib import Path
 
@@ -140,6 +143,107 @@ def _seed_filepath(op_self, default_filename=""):
         op_self.filepath = os.path.join(base, default_filename)
     else:
         op_self.filepath = base + os.sep
+
+
+# ---------------------------------------------------------------------------
+# csx (HSD export pipeline) helpers
+# ---------------------------------------------------------------------------
+#
+# `tools/hsd/hsd_export_for_blender.csx` extracts an HSD .dat file into
+# a Blender-friendly bundle (scene.json + tex/<sha1>.png). Vanilla
+# course .dat names follow the fixed `<Prefix>_<round>_A.dat` pattern,
+# so the addon can run the csx automatically given just bin_dir +
+# prefix and hide scene.json entirely as an internal representation.
+#
+# Strategy: locate dotnet-script, run csx via subprocess, return the
+# generated scene.json path. Errors surface via raised exceptions; the
+# operator turns them into Blender ERROR reports.
+
+
+def _resolve_dotnet_script():
+    """Locate the `dotnet-script` launcher.
+
+    Precedence:
+      1. Addon preference `dotnet_script_path` if set and existing.
+      2. `dotnet-script` on PATH.
+      3. Default `dotnet tool install` location:
+           %USERPROFILE%/.dotnet/tools/dotnet-script(.exe)
+    """
+    try:
+        prefs = bpy.context.preferences.addons[__name__].preferences
+        p = (prefs.dotnet_script_path or "").strip()
+        if p and os.path.isfile(p):
+            return p
+    except Exception:
+        pass
+    p = shutil.which("dotnet-script")
+    if p:
+        return p
+    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    for cand in ("dotnet-script.exe", "dotnet-script"):
+        full = os.path.join(home, ".dotnet", "tools", cand)
+        if os.path.isfile(full):
+            return full
+    return None
+
+
+def _resolve_csx_path():
+    """Path to tools/hsd/hsd_export_for_blender.csx."""
+    src = _resolve_source_path()  # .../tools/blender
+    return os.path.normpath(os.path.join(src, "..", "hsd",
+                                         "hsd_export_for_blender.csx"))
+
+
+def _run_csx_for_dat(dat_path, out_dir, *, timeout=240):
+    """Run hsd_export_for_blender.csx <dat_path> <out_dir> via dotnet-script.
+
+    Raises RuntimeError on any failure (with the captured stderr/stdout
+    appended for triage). Returns the path to <out_dir>/scene.json.
+    """
+    csx = _resolve_csx_path()
+    if not os.path.isfile(csx):
+        raise RuntimeError(
+            f"csx script not found at {csx}. Is the addon installed via a "
+            "junction back into tools/blender? Adjust source_modules_path."
+        )
+    dotnet = _resolve_dotnet_script()
+    if not dotnet:
+        raise RuntimeError(
+            "dotnet-script not found. Install it with "
+            "`dotnet tool install --global dotnet-script` or set the "
+            "addon preference `dotnet_script_path`."
+        )
+
+    os.makedirs(out_dir, exist_ok=True)
+    cmd = [dotnet, csx, "--", str(dat_path), str(out_dir)]
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"csx returned {proc.returncode} for {os.path.basename(dat_path)}\n"
+            f"stdout: {proc.stdout.strip()[:500]}\n"
+            f"stderr: {proc.stderr.strip()[:500]}"
+        )
+    scene_json = os.path.join(out_dir, "scene.json")
+    if not os.path.isfile(scene_json):
+        raise RuntimeError(
+            f"csx finished but did not produce scene.json at {scene_json}\n"
+            f"stdout: {proc.stdout.strip()[:500]}"
+        )
+    return scene_json
+
+
+def _find_vanilla_dat(bin_dir, prefix, round_label):
+    """Locate the vanilla .dat for `<prefix>_<round>_A` in `bin_dir`,
+    matching case-insensitively. Returns Path or None."""
+    bin_dir = Path(bin_dir)
+    expected = f"{prefix.lower()}_{round_label.lower()}_a.dat"
+    if not bin_dir.is_dir():
+        return None
+    for p in bin_dir.iterdir():
+        if p.name.lower() == expected and p.is_file():
+            return p
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -342,14 +446,30 @@ class MKGP2_OT_ImportAuto(Operator):
 
 
 class MKGP2_OT_ImportFullCourse(Operator):
-    """Load HSD scene + collision + line + auto for one course in a single shot"""
+    """Load HSD scene (auto-extracted via csx) + collision + line + auto
+    for one vanilla course.
+
+    Default flow (scene_json blank): the addon runs
+    `tools/hsd/hsd_export_for_blender.csx` over
+    `<bin_dir>/<Prefix>_short_A.dat` and `<Prefix>_long_A.dat`,
+    importing each generated bundle. csx + dotnet-script are auto
+    detected; override paths in addon preferences if needed.
+
+    Manual flow (scene_json filled): treat the explicit bundle as
+    short, then sweep collision/line/auto by suffix as before. Useful
+    when you've pre-generated a single scene.json.
+    """
     bl_idname = "import_scene.mkgp2_full_course"
     bl_label = "Import MKGP2 Full Course"
     bl_options = {'PRESET', 'UNDO'}
 
     scene_json: StringProperty(
-        name="scene.json",
-        description="HSD bundle JSON (sibling tex/ folder is read alongside)",
+        name="scene.json (legacy)",
+        description=(
+            "Optional explicit HSD bundle. Leave empty to let the "
+            "addon auto-discover and run csx on the matching .dat "
+            "files in bin directory."
+        ),
         subtype='FILE_PATH',
     )
     bin_dir: StringProperty(
@@ -371,18 +491,74 @@ class MKGP2_OT_ImportFullCourse(Operator):
     def execute(self, context):
         if not _need_modules(self):
             return {'CANCELLED'}
-        if not self.scene_json:
-            self.report({'ERROR'}, "scene.json path required")
-            return {'CANCELLED'}
         if not self.bin_dir or not self.prefix:
             self.report({'ERROR'}, "bin directory and prefix required")
             return {'CANCELLED'}
         try:
-            course_imp.import_course(self.scene_json, self.bin_dir, self.prefix)
+            if self.scene_json:
+                # Legacy single-bundle path; preserved so existing
+                # workflows that pre-extracted scene.json keep working.
+                course_imp.import_course(self.scene_json, self.bin_dir,
+                                         self.prefix)
+            else:
+                # Auto path: csx on each round's .dat, then sweep .bin set.
+                self._auto_import(self.bin_dir, self.prefix)
         except Exception as ex:
             self.report({'ERROR'}, f"Full course import failed: {ex}")
             return {'CANCELLED'}
         return {'FINISHED'}
+
+    def _auto_import(self, bin_dir, prefix):
+        """Run csx over every <Prefix>_<round>_A.dat we can find,
+        import each bundle, then sweep the standard .bin filenames."""
+        bin_dir_p = Path(bin_dir)
+
+        # 1) HSD bundles per round
+        bundles = []
+        for round_label in ("short", "long"):
+            dat = _find_vanilla_dat(bin_dir_p, prefix, round_label)
+            if dat is None:
+                print(f"[mkgp2 full] no .dat for {round_label} "
+                      f"(<{prefix}>_{round_label}_A.dat); HSD skipped")
+                continue
+            out_dir = tempfile.mkdtemp(
+                prefix=f"mkgp2_hsd_{prefix}_{round_label}_")
+            try:
+                scene_json = _run_csx_for_dat(str(dat), out_dir)
+            except Exception as ex:
+                # Make HSD failures non-fatal: collision/line/auto are
+                # still importable without the visual reference.
+                print(f"[mkgp2 full] HSD csx failed for {dat.name}: {ex}")
+                continue
+            print(f"[mkgp2 full] csx OK: {dat.name} -> {scene_json}")
+            bundles.append(scene_json)
+
+        for sj in bundles:
+            try:
+                hsd_imp.import_scene(sj)
+            except Exception as ex:
+                print(f"[mkgp2 full] hsd import failed for {sj}: {ex}")
+
+        # 2) Collision / Line / Auto, mirroring blender_import_course_all.
+        for round_label in ("short", "long"):
+            self._import_round_bins(bin_dir_p, prefix, round_label)
+
+    def _import_round_bins(self, bin_dir_p, prefix, round_label):
+        targets = (
+            (f"{prefix}_{round_label}.bin", col_imp.import_collision),
+            (f"{prefix}_{round_label}_line.bin", line_imp.import_line),
+            (f"{prefix}_{round_label}_Auto.bin", auto_imp.import_auto),
+            (f"{prefix}_{round_label}_Auto_R.bin", auto_imp.import_auto),
+        )
+        for fname, fn in targets:
+            p = bin_dir_p / fname
+            if not p.exists():
+                print(f"[mkgp2 full] missing {fname}; skipping")
+                continue
+            try:
+                fn(str(p))
+            except Exception as ex:
+                print(f"[mkgp2 full] error importing {fname}: {ex}")
 
 
 class MKGP2_OT_ExportLine(Operator):
@@ -1955,6 +2131,17 @@ class MKGP2AddonPreferences(AddonPreferences):
         default="",
     )
 
+    dotnet_script_path: StringProperty(
+        name="dotnet-script path (optional)",
+        description=(
+            "Override for the dotnet-script launcher. Leave empty to "
+            "auto-detect via PATH and ~/.dotnet/tools/. Required only "
+            "if Vanilla auto-import via csx fails to find dotnet-script."
+        ),
+        subtype='FILE_PATH',
+        default="",
+    )
+
     def draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
@@ -1964,6 +2151,14 @@ class MKGP2AddonPreferences(AddonPreferences):
         col.separator()
         col.label(text="Course assets:")
         col.prop(self, "default_bin_dir")
+        col.separator()
+        col.label(text="HSD pipeline (Vanilla auto-import):")
+        col.prop(self, "dotnet_script_path")
+        ds = _resolve_dotnet_script()
+        col.label(text=f"  Resolved dotnet-script: {ds or '(not found)'}")
+        cs = _resolve_csx_path()
+        col.label(text=f"  Resolved csx: {cs}"
+                       f"{'' if os.path.isfile(cs) else ' (missing!)'}")
         layout.operator("mkgp2.reload_modules", icon='FILE_REFRESH')
 
 
