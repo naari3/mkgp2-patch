@@ -579,6 +579,129 @@ class MKGP2_OT_ExportHSD(Operator):
         return {'RUNNING_MODAL'}
 
 
+# ---------------------------------------------------------------------------
+# HSD bundle: alias edit operators
+# ---------------------------------------------------------------------------
+#
+# The HSD reader stashes `joint_aliases` (public root symbol -> jobj_id)
+# on the bundle collection as a JSON-encoded string custom property. The
+# writer reads it back from the same prop. These operators wrap the dict
+# editing so users don't have to poke at the raw JSON via Blender's
+# custom-property panel.
+#
+# UI lives in the `MKGP2_PT_HsdAliasPanel` sub-panel (only visible when
+# an HSD bundle is in context).
+
+def _bundle_load_aliases(coll):
+    """Parse coll's mkgp2_joint_aliases JSON. Returns ({}, error_str) on
+    malformed input."""
+    raw = coll.get("mkgp2_joint_aliases", "{}")
+    try:
+        d = json.loads(raw) if raw else {}
+        if not isinstance(d, dict):
+            return {}, f"mkgp2_joint_aliases is not a dict: {type(d).__name__}"
+        return d, None
+    except json.JSONDecodeError as ex:
+        return {}, f"malformed JSON: {ex}"
+
+
+def _bundle_save_aliases(coll, aliases):
+    """Persist the alias dict back to the bundle's stashed prop."""
+    coll["mkgp2_joint_aliases"] = json.dumps(aliases)
+
+
+def _bundle_load_joint_ids(coll):
+    """Returns the list of joint IDs in the bundle's joints stash, or
+    [] if the prop is missing / malformed."""
+    raw = coll.get("mkgp2_joints", "[]")
+    try:
+        joints = json.loads(raw) if raw else []
+    except json.JSONDecodeError:
+        return []
+    return [j.get("id", "") for j in joints if isinstance(j, dict) and j.get("id")]
+
+
+class MKGP2_OT_HsdAliasAdd(Operator):
+    """Add a public root alias to the active HSD bundle's stashed
+    joint_aliases dict.
+
+    The alias name is the public symbol that game code will look up
+    (e.g. `MR_highway_inu_joint`); the target joint id is one of the
+    bundle's `jobj_<n>` entries from its joints list. On the next
+    Export HSD, the writer csx will splice this name into file.Roots
+    pointing at the same struct as the target joint.
+    """
+    bl_idname = "scene.mkgp2_hsd_alias_add"
+    bl_label = "Add HSD alias"
+    bl_options = {'INTERNAL'}
+
+    name: StringProperty(name="Alias name")
+    target_id: StringProperty(name="Target joint id")
+
+    def execute(self, context):
+        bundle = _resolve_hsd_bundle_collection(context)
+        if bundle is None:
+            self.report({'ERROR'}, "No HSD bundle in context")
+            return {'CANCELLED'}
+        name = self.name.strip()
+        target = self.target_id.strip()
+        if not name:
+            self.report({'ERROR'}, "Alias name is required")
+            return {'CANCELLED'}
+        if not target:
+            self.report({'ERROR'}, "Target joint id is required")
+            return {'CANCELLED'}
+        valid_ids = set(_bundle_load_joint_ids(bundle))
+        if target not in valid_ids:
+            self.report({'ERROR'},
+                f"Target '{target}' is not a known joint id in this bundle "
+                f"({len(valid_ids)} candidates: jobj_0..jobj_{len(valid_ids)-1})")
+            return {'CANCELLED'}
+        aliases, err = _bundle_load_aliases(bundle)
+        if err is not None:
+            self.report({'ERROR'}, f"Bundle stash unreadable: {err}")
+            return {'CANCELLED'}
+        if name in aliases:
+            self.report({'WARNING'},
+                f"Alias '{name}' already exists -> {aliases[name]}; "
+                f"overwriting with {target}")
+        aliases[name] = target
+        _bundle_save_aliases(bundle, aliases)
+        self.report({'INFO'}, f"Added alias '{name}' -> {target}")
+        return {'FINISHED'}
+
+
+class MKGP2_OT_HsdAliasRemove(Operator):
+    """Remove a public root alias entry from the active HSD bundle's
+    stashed joint_aliases dict. The next Export HSD will drop the
+    corresponding entry from file.Roots."""
+    bl_idname = "scene.mkgp2_hsd_alias_remove"
+    bl_label = "Remove HSD alias"
+    bl_options = {'INTERNAL'}
+
+    name: StringProperty(name="Alias name")
+
+    def execute(self, context):
+        bundle = _resolve_hsd_bundle_collection(context)
+        if bundle is None:
+            self.report({'ERROR'}, "No HSD bundle in context")
+            return {'CANCELLED'}
+        if not self.name:
+            self.report({'ERROR'}, "Alias name required")
+            return {'CANCELLED'}
+        aliases, err = _bundle_load_aliases(bundle)
+        if err is not None:
+            self.report({'ERROR'}, f"Bundle stash unreadable: {err}")
+            return {'CANCELLED'}
+        if self.name not in aliases:
+            self.report({'WARNING'}, f"Alias '{self.name}' not present, no-op")
+            return {'CANCELLED'}
+        old_target = aliases.pop(self.name)
+        _bundle_save_aliases(bundle, aliases)
+        self.report({'INFO'}, f"Removed alias '{self.name}' (was -> {old_target})")
+        return {'FINISHED'}
+
+
 class MKGP2_OT_ImportCollision(Operator):
     """Import a course collision .bin (CollisionMesh + WallSegments)"""
     bl_idname = "import_mesh.mkgp2_collision_bin"
@@ -2393,6 +2516,70 @@ class MKGP2_PT_CoursePanel(Panel):
         layout.label(text=f"src: {_resolve_source_path()}", icon='FILE_FOLDER')
 
 
+class MKGP2_PT_HsdAliasPanel(Panel):
+    """Sub-panel for editing the active HSD bundle's public root alias
+    table. Only visible when an HSD bundle is in context (active layer
+    collection or active object's parent chain has `mkgp2_source_dat`).
+    """
+    bl_label = "HSD aliases"
+    bl_idname = "MKGP2_PT_hsd_alias_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'MKGP2'
+    bl_parent_id = "MKGP2_PT_course_panel"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _resolve_hsd_bundle_collection(context) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        bundle = _resolve_hsd_bundle_collection(context)
+        if bundle is None:
+            layout.label(text="(no HSD bundle in context)", icon='INFO')
+            return
+        layout.label(text=f"bundle: {bundle.name}",
+                     icon='OUTLINER_COLLECTION')
+
+        aliases, err = _bundle_load_aliases(bundle)
+        if err is not None:
+            layout.label(text=err, icon='ERROR')
+            return
+
+        if aliases:
+            layout.label(text=f"Current aliases ({len(aliases)}):")
+            box = layout.box()
+            for name in sorted(aliases.keys()):
+                row = box.row(align=True)
+                row.label(text=name)
+                row.label(text=f"-> {aliases[name]}")
+                op = row.operator("scene.mkgp2_hsd_alias_remove",
+                                  text="", icon='X')
+                op.name = name
+        else:
+            layout.label(text="No aliases declared.", icon='INFO')
+
+        # Add row
+        wm = context.window_manager
+        layout.separator()
+        layout.label(text="Add alias:")
+        box = layout.box()
+        box.prop(wm, "mkgp2_alias_new_name", text="Name")
+        box.prop(wm, "mkgp2_alias_new_target", text="Target")
+        op = box.operator("scene.mkgp2_hsd_alias_add",
+                          text="Add", icon='ADD')
+        op.name = wm.mkgp2_alias_new_name
+        op.target_id = wm.mkgp2_alias_new_target
+
+        # Joint id hint -- show count + first few candidates
+        ids = _bundle_load_joint_ids(bundle)
+        if ids:
+            layout.label(text=f"Available joint ids: {len(ids)} "
+                              f"(jobj_0..jobj_{len(ids)-1})",
+                         icon='INFO')
+
+
 # ---------------------------------------------------------------------------
 # Preferences
 # ---------------------------------------------------------------------------
@@ -2582,6 +2769,8 @@ CLASSES = (
     MKGP2AddonPreferences,
     MKGP2_OT_ImportHSD,
     MKGP2_OT_ExportHSD,
+    MKGP2_OT_HsdAliasAdd,
+    MKGP2_OT_HsdAliasRemove,
     MKGP2_OT_ImportCollision,
     MKGP2_OT_ImportLine,
     MKGP2_OT_ImportAuto,
@@ -2604,6 +2793,7 @@ CLASSES = (
     MKGP2_OT_AddCourseRoot,
     MKGP2_OT_ReloadModules,
     MKGP2_PT_CoursePanel,
+    MKGP2_PT_HsdAliasPanel,
 )
 
 
@@ -2624,6 +2814,20 @@ def register():
         default=False,
         update=_on_show_waypoint_ids_toggle,
     )
+    # Transient input fields for the HSD alias add row. Stored on
+    # WindowManager so they don't pollute .blend files; the panel
+    # always shows them blank on first open.
+    bpy.types.WindowManager.mkgp2_alias_new_name = StringProperty(
+        name="New alias name",
+        description=(
+            "Public root symbol that game code will look up "
+            "(e.g. MR_highway_inu_joint)"
+        ),
+    )
+    bpy.types.WindowManager.mkgp2_alias_new_target = StringProperty(
+        name="New alias target",
+        description="Target joint id (jobj_<n> from the bundle's joints list)",
+    )
     # Best-effort eager load so first import is fast and configuration errors
     # surface in the console instead of mid-operator.
     ok, err = reload_modules()
@@ -2640,6 +2844,10 @@ def unregister():
         del bpy.types.WindowManager.mkgp2_show_arrows
     if hasattr(bpy.types.WindowManager, "mkgp2_show_waypoint_ids"):
         del bpy.types.WindowManager.mkgp2_show_waypoint_ids
+    if hasattr(bpy.types.WindowManager, "mkgp2_alias_new_name"):
+        del bpy.types.WindowManager.mkgp2_alias_new_name
+    if hasattr(bpy.types.WindowManager, "mkgp2_alias_new_target"):
+        del bpy.types.WindowManager.mkgp2_alias_new_target
     bpy.types.TOPBAR_MT_file_import.remove(_menu_import)
     bpy.types.TOPBAR_MT_file_export.remove(_menu_export)
     for cls in reversed(CLASSES):
