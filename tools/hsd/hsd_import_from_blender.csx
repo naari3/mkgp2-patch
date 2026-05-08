@@ -9,8 +9,9 @@
 //   - Applies these structural edits expressed in scene.json:
 //     1. `joint_aliases` -> file.Roots additions (and removal of stale
 //        non-`scene_data` roots not present in the JSON map)
-//     2. (deferred) joint hierarchy parent/children rewiring
-//     3. (deferred) joint flag / TRS overrides
+//     2. per-joint flag / TRS sync (translation, rotation, scale,
+//        JOBJ_FLAG bits) from JSON onto the matched HSD_JOBJ
+//     3. (deferred) joint hierarchy parent/children rewiring
 //   - Saves the result to <out.dat>.
 //
 // Geometry / material / texture edits are NOT yet supported. A future
@@ -160,6 +161,59 @@ foreach (var r in toRemove)
 
 Console.WriteLine($"aliases : added={added} repointed={repointed} removed={removed}");
 Console.WriteLine($"final   : roots={file.Roots.Count}");
+
+// ---- Sync per-joint flags + TRS --------------------------------------
+// Each JSON joint has flags[], translation[3], rotation[3], scale[3].
+// For joints that exist in the loaded tree, overwrite the matching JOBJ
+// fields from JSON (only when they differ — avoids dirtying clean structs).
+
+JOBJ_FLAG ParseFlagList(JsonElement arr)
+{
+    JOBJ_FLAG bits = 0;
+    foreach (var e in arr.EnumerateArray())
+    {
+        var name = e.GetString();
+        if (string.IsNullOrEmpty(name) || name == "NULL") continue;
+        if (Enum.TryParse<JOBJ_FLAG>(name, out var v)) bits |= v;
+        else Console.WriteLine($"  WARN: unknown JOBJ_FLAG '{name}'");
+    }
+    return bits;
+}
+
+float ReadF(JsonElement arr, int idx) => arr[idx].GetSingle();
+
+int trsChanged = 0, flagsChanged = 0;
+JsonElement jointsElem;
+if (sceneJson.TryGetProperty("joints", out jointsElem))
+{
+    foreach (var jdto in jointsElem.EnumerateArray())
+    {
+        var jid = jdto.GetProperty("id").GetString();
+        if (!jobjById.TryGetValue(jid, out var j)) continue;
+
+        // flags
+        var newFlags = ParseFlagList(jdto.GetProperty("flags"));
+        if (j.Flags != newFlags) { j.Flags = newFlags; flagsChanged++; }
+
+        // TRS
+        var t = jdto.GetProperty("translation");
+        var r = jdto.GetProperty("rotation");
+        var s = jdto.GetProperty("scale");
+        bool moved =
+            j.TX != ReadF(t, 0) || j.TY != ReadF(t, 1) || j.TZ != ReadF(t, 2) ||
+            j.RX != ReadF(r, 0) || j.RY != ReadF(r, 1) || j.RZ != ReadF(r, 2) ||
+            j.SX != ReadF(s, 0) || j.SY != ReadF(s, 1) || j.SZ != ReadF(s, 2);
+        if (moved)
+        {
+            j.TX = ReadF(t, 0); j.TY = ReadF(t, 1); j.TZ = ReadF(t, 2);
+            j.RX = ReadF(r, 0); j.RY = ReadF(r, 1); j.RZ = ReadF(r, 2);
+            j.SX = ReadF(s, 0); j.SY = ReadF(s, 1); j.SZ = ReadF(s, 2);
+            trsChanged++;
+        }
+    }
+}
+Console.WriteLine($"joints  : flags-changed={flagsChanged} trs-changed={trsChanged}");
+
 
 // ---- Save -------------------------------------------------------------
 file.Save(outPath);
