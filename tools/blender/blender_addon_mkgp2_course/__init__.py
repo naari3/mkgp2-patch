@@ -1266,13 +1266,6 @@ class MKGP2_OT_NewCourse(Operator):
         description="Becomes the collection name and the default filename stem",
         default="my_course",
     )
-    bin_dir: StringProperty(
-        name="bin directory",
-        description="Absolute folder the course .bin files will be written to. "
-                    "Empty = fall back to the addon's default bin directory.",
-        subtype='DIR_PATH',
-        default="",
-    )
 
     def execute(self, context):
         if not self.name:
@@ -1292,7 +1285,12 @@ class MKGP2_OT_NewCourse(Operator):
         coll["mkgp2_line_bin"] = f"{self.name}_line.bin"
         coll["mkgp2_auto_f_bin"] = f"{self.name}_Auto.bin"
         coll["mkgp2_auto_r_bin"] = f"{self.name}_Auto_R.bin"
-        coll["mkgp2_bin_dir"] = self.bin_dir or ""
+        # mkgp2_bin_dir is left empty so Export Course's destination
+        # dialog falls through to the addon preference at write time.
+        # A per-course override can still be set later by editing the
+        # collection's custom property, or implicitly by Export Course
+        # remembering the user's last destination pick.
+        coll["mkgp2_bin_dir"] = ""
         # HSD .dat is optional: leave empty so the user can later attach a
         # bundle via Import Course or set the property by hand.
         coll["mkgp2_hsd_dat"] = ""
@@ -1302,10 +1300,6 @@ class MKGP2_OT_NewCourse(Operator):
         return {'FINISHED'}
 
     def invoke(self, context, event):
-        if not self.bin_dir:
-            # New course is authoring-side: target is the writable
-            # output directory.
-            self.bin_dir = _output_bin_dir()
         return context.window_manager.invoke_props_dialog(self, width=440)
 
 

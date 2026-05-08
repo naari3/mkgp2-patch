@@ -42,7 +42,6 @@ def main():
         result = bpy.ops.scene.mkgp2_new_course(
             'EXEC_DEFAULT',
             name="my_track",
-            bin_dir=str(BIN_DIR),
         )
         assert result == {'FINISHED'}, f"new_course result: {result}"
         coll = bpy.data.collections.get("my_track")
@@ -52,7 +51,9 @@ def main():
         assert coll.get("mkgp2_line_bin") == "my_track_line.bin"
         assert coll.get("mkgp2_auto_f_bin") == "my_track_Auto.bin"
         assert coll.get("mkgp2_auto_r_bin") == "my_track_Auto_R.bin"
-        assert coll.get("mkgp2_bin_dir") == str(BIN_DIR)
+        # New course leaves mkgp2_bin_dir blank so Export's destination
+        # dialog / preference fallback drives the write location.
+        assert coll.get("mkgp2_bin_dir") == ""
         # Confirm it lives under MKGP2_Course/
         root = bpy.data.collections.get("MKGP2_Course")
         assert root is not None
