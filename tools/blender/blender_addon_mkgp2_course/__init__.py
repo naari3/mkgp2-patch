@@ -23,7 +23,7 @@ button after editing the source.
 bl_info = {
     "name": "MKGP2 Course Tools",
     "author": "naari3",
-    "version": (0, 1, 6),
+    "version": (0, 1, 7),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > MKGP2  /  File > Import & Export",
     "description": "Import / export MKGP2 course resources (HSD mesh, collision, line waypoints, AI auto path)",
@@ -127,16 +127,23 @@ def _need_modules(op):
     return ok
 
 
-def _seed_filepath(op_self, default_filename=""):
-    """Initialize op_self.filepath from the addon's default bin directory.
+def _seed_filepath(op_self, default_filename="", *, prefer_output=False):
+    """Initialize op_self.filepath from a configured bin directory.
 
-    Used by per-asset importers/exporters so the file browser opens in the
-    user's configured course-asset directory instead of `<repo>` or wherever
-    Blender's last cwd was.
+    Used by per-asset importers/exporters so the file browser opens in
+    the user's configured course-asset directory instead of `<repo>`
+    or wherever Blender's last cwd was.
+
+    `prefer_output=True` opens in the output directory (suitable for
+    Export operators); the default is the vanilla directory which is
+    where Import operators expect to start.
     """
     if op_self.filepath:
         return  # caller already chose something
-    base = _default_bin_dir()
+    if prefer_output:
+        base = _output_bin_dir() or _vanilla_bin_dir()
+    else:
+        base = _vanilla_bin_dir()
     if not base:
         return
     if default_filename:
@@ -485,7 +492,8 @@ class MKGP2_OT_ImportFullCourse(Operator):
 
     def invoke(self, context, event):
         if not self.bin_dir:
-            self.bin_dir = _default_bin_dir()
+            # Vanilla full-course import reads from the read-only dump.
+            self.bin_dir = _vanilla_bin_dir()
         return context.window_manager.invoke_props_dialog(self, width=520)
 
     def execute(self, context):
@@ -577,6 +585,8 @@ class MKGP2_OT_ExportLine(Operator):
         if obj is None:
             self.report({'ERROR'}, "Select a line root empty or any variant mesh first")
             return {'CANCELLED'}
+        if _refuse_if_vanilla(self, self.filepath, what="line .bin"):
+            return {'CANCELLED'}
         try:
             line_exp.export_line(self.filepath, obj=obj)
         except Exception as ex:
@@ -592,8 +602,9 @@ class MKGP2_OT_ExportLine(Operator):
                 root = obj if obj.name.endswith("_line") else obj.parent
                 if root is not None and root.name.endswith("_line"):
                     disk_stem = root.name[:-len("_line")]
-                    _seed_filepath(self, default_filename=f"{disk_stem}.bin")
-        _seed_filepath(self)
+                    _seed_filepath(self, default_filename=f"{disk_stem}.bin",
+                                   prefer_output=True)
+        _seed_filepath(self, prefer_output=True)
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
@@ -614,6 +625,8 @@ class MKGP2_OT_ExportAuto(Operator):
         if obj is None:
             self.report({'ERROR'}, "Select an auto-path mesh first")
             return {'CANCELLED'}
+        if _refuse_if_vanilla(self, self.filepath, what="auto .bin"):
+            return {'CANCELLED'}
         try:
             auto_exp.export_auto(self.filepath, obj=obj)
         except Exception as ex:
@@ -626,8 +639,9 @@ class MKGP2_OT_ExportAuto(Operator):
             obj = context.active_object
             if obj is not None and obj.name.startswith("Auto_"):
                 disk_stem = obj.name[len("Auto_"):]
-                _seed_filepath(self, default_filename=f"{disk_stem}.bin")
-        _seed_filepath(self)
+                _seed_filepath(self, default_filename=f"{disk_stem}.bin",
+                               prefer_output=True)
+        _seed_filepath(self, prefer_output=True)
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
@@ -698,6 +712,8 @@ class MKGP2_OT_ExportCollision(Operator):
                     f"{col_obj.name} missing custom property '{key}' "
                     "(re-import with the addon to regenerate)")
                 return {'CANCELLED'}
+        if _refuse_if_vanilla(self, self.filepath, what="collision .bin"):
+            return {'CANCELLED'}
         try:
             triangles = col_exp.collect_triangles(col_obj)
             walls = []
@@ -724,8 +740,9 @@ class MKGP2_OT_ExportCollision(Operator):
         if not self.filepath and context.active_object is not None:
             stem = context.active_object.get("mkgp2_collision_stem")
             if stem:
-                _seed_filepath(self, default_filename=f"{stem}.bin")
-        _seed_filepath(self)
+                _seed_filepath(self, default_filename=f"{stem}.bin",
+                               prefer_output=True)
+        _seed_filepath(self, prefer_output=True)
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
@@ -762,6 +779,8 @@ class MKGP2_OT_ExportFullCourse(Operator):
         bin_dir = Path(self.bin_dir)
         if not bin_dir.is_dir():
             self.report({'ERROR'}, f"bin directory does not exist: {bin_dir}")
+            return {'CANCELLED'}
+        if _refuse_if_vanilla(self, str(bin_dir), what="full-course bin dir"):
             return {'CANCELLED'}
 
         written = []
@@ -851,7 +870,8 @@ class MKGP2_OT_ExportFullCourse(Operator):
 
     def invoke(self, context, event):
         if not self.bin_dir:
-            self.bin_dir = _default_bin_dir()
+            # Export side defaults to the writable output directory.
+            self.bin_dir = _output_bin_dir()
         return context.window_manager.invoke_props_dialog(self, width=520)
 
 
@@ -925,7 +945,9 @@ class MKGP2_OT_NewCourse(Operator):
 
     def invoke(self, context, event):
         if not self.bin_dir:
-            self.bin_dir = _default_bin_dir()
+            # New course is authoring-side: target is the writable
+            # output directory.
+            self.bin_dir = _output_bin_dir()
         return context.window_manager.invoke_props_dialog(self, width=440)
 
 
@@ -1023,7 +1045,16 @@ class MKGP2_OT_ImportCourse(Operator):
                 f"Collection '{course_name}' already exists; pick a different name")
             return {'CANCELLED'}
 
-        bin_dir = str(Path(self.collision_path).parent)
+        # Where to write the eventual export. If the collision was
+        # picked from inside the vanilla bin dir, refuse to remember
+        # that as `mkgp2_bin_dir` -- empty falls back to the writable
+        # `Output bin directory` preference at export time, which keeps
+        # the vanilla dump intact.
+        source_dir = str(Path(self.collision_path).parent)
+        if _is_inside_vanilla(source_dir):
+            bin_dir = ""
+        else:
+            bin_dir = source_dir
 
         parent = _ensure_courses_root()
         coll = bpy.data.collections.new(course_name)
@@ -1113,15 +1144,19 @@ class MKGP2_OT_ExportCourse(Operator):
                 "in the Outliner or pick an object that lives inside one.")
             return {'CANCELLED'}
 
-        bin_dir_str = coll.get("mkgp2_bin_dir") or _default_bin_dir()
+        bin_dir_str = coll.get("mkgp2_bin_dir") or _output_bin_dir()
         if not bin_dir_str:
             self.report({'ERROR'},
                 f"Course '{coll.name}' has no bin directory set. "
-                "Edit the collection's custom properties or set the addon default.")
+                "Edit the collection's mkgp2_bin_dir custom property or "
+                "set 'Output bin directory' in addon preferences.")
             return {'CANCELLED'}
         bin_dir = Path(bin_dir_str)
         if not bin_dir.is_dir():
             self.report({'ERROR'}, f"bin directory does not exist: {bin_dir}")
+            return {'CANCELLED'}
+        if _refuse_if_vanilla(self, str(bin_dir),
+                              what=f"course '{coll.name}' export"):
             return {'CANCELLED'}
 
         # Freeze the course root (if any) for the duration of the
@@ -1368,7 +1403,10 @@ class MKGP2_OT_PromoteVanilla(Operator):
                 "already promoted.")
             return {'CANCELLED'}
 
-        bin_dir = _default_bin_dir()
+        # Promote-time bin_dir = writable output. If the user hasn't
+        # configured one yet we leave it blank; export then complains
+        # explicitly instead of silently overwriting the vanilla dump.
+        bin_dir = _output_bin_dir()
         parent = _ensure_courses_root()
         promoted = []
 
@@ -2121,11 +2159,27 @@ class MKGP2AddonPreferences(AddonPreferences):
     )
 
     default_bin_dir: StringProperty(
-        name="Default bin directory",
+        name="Vanilla bin directory (read-only)",
         description=(
-            "Folder containing course .bin files (typically <Dolphin dump>/files/). "
-            "Used as the initial path for Full Course Import / Export and as the "
-            "browser starting directory for per-asset operators."
+            "Folder containing the vanilla course .bin / .dat files "
+            "(typically <Dolphin dump>/files/). Used as the source for "
+            "Vanilla Full Course Import and as the file-browser starting "
+            "directory for per-asset Import operators. Export operators "
+            "REFUSE to write here -- this folder is treated as read-only "
+            "to prevent accidental ROM dump corruption."
+        ),
+        subtype='DIR_PATH',
+        default="",
+    )
+
+    output_bin_dir: StringProperty(
+        name="Output bin directory (writable)",
+        description=(
+            "Folder where Course / Per-asset Export operators write "
+            "their .bin output by default. Typically a Riivolution "
+            "patch source directory (e.g. mkgp2-patch/features/<my>/files). "
+            "MUST be different from Vanilla bin directory; the export "
+            "guard refuses overlap."
         ),
         subtype='DIR_PATH',
         default="",
@@ -2151,6 +2205,20 @@ class MKGP2AddonPreferences(AddonPreferences):
         col.separator()
         col.label(text="Course assets:")
         col.prop(self, "default_bin_dir")
+        col.prop(self, "output_bin_dir")
+        # Warn loudly if the two paths collide -- this is exactly the
+        # configuration that caused vanilla bin overwrites previously.
+        van = (self.default_bin_dir or "").strip()
+        out = (self.output_bin_dir or "").strip()
+        if van and out:
+            try:
+                if Path(van).resolve() == Path(out).resolve():
+                    col.label(
+                        text="WARNING: Vanilla and Output point to the "
+                             "same folder; export will refuse.",
+                        icon='ERROR')
+            except Exception:
+                pass
         col.separator()
         col.label(text="HSD pipeline (Vanilla auto-import):")
         col.prop(self, "dotnet_script_path")
@@ -2162,8 +2230,13 @@ class MKGP2AddonPreferences(AddonPreferences):
         layout.operator("mkgp2.reload_modules", icon='FILE_REFRESH')
 
 
-def _default_bin_dir():
-    """Return the user-configured default bin directory, or ''."""
+def _vanilla_bin_dir():
+    """Return the user-configured vanilla bin directory, or ''.
+
+    This is the import source -- typically the Dolphin filesystem dump
+    of the vanilla ROM. It is treated as read-only by the addon: any
+    Export operator that would land inside this directory aborts.
+    """
     try:
         prefs = bpy.context.preferences.addons[__name__].preferences
         p = prefs.default_bin_dir
@@ -2172,6 +2245,57 @@ def _default_bin_dir():
     except Exception:
         pass
     return ""
+
+
+def _output_bin_dir():
+    """Return the user-configured output bin directory, or ''.
+
+    This is the export destination (e.g. a Riivolution patch source
+    folder). Writable. Used as the default `mkgp2_bin_dir` for new
+    courses and as the fallback when a course's `mkgp2_bin_dir` is
+    empty.
+    """
+    try:
+        prefs = bpy.context.preferences.addons[__name__].preferences
+        p = prefs.output_bin_dir
+        if p:
+            return p
+    except Exception:
+        pass
+    return ""
+
+
+# Back-compat shim -- existing tests / scripts can keep calling this.
+# Prefer _vanilla_bin_dir or _output_bin_dir at the source.
+_default_bin_dir = _vanilla_bin_dir
+
+
+def _is_inside_vanilla(path):
+    """True iff `path` is the vanilla bin dir or a descendant. Empty
+    paths or unset preference -> False (= no protection)."""
+    van = _vanilla_bin_dir()
+    if not van or not path:
+        return False
+    try:
+        van_r = Path(van).resolve()
+        p_r = Path(path).resolve()
+        return p_r == van_r or van_r in p_r.parents
+    except Exception:
+        return False
+
+
+def _refuse_if_vanilla(op, path, *, what="output"):
+    """Operator-side guard. Reports ERROR and returns True if `path`
+    falls inside the vanilla bin dir, else False (= proceed).
+    """
+    if _is_inside_vanilla(path):
+        op.report({'ERROR'},
+            f"Refusing to write {what} '{path}': it lives inside the "
+            "vanilla bin directory (read-only). Set Output bin "
+            "directory in addon preferences, or override mkgp2_bin_dir "
+            "on the course collection.")
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
