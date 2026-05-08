@@ -11,7 +11,9 @@
 //        non-`scene_data` roots not present in the JSON map)
 //     2. per-joint flag / TRS sync (translation, rotation, scale,
 //        JOBJ_FLAG bits) from JSON onto the matched HSD_JOBJ
-//     3. (deferred) joint hierarchy parent/children rewiring
+//     3. joint hierarchy parent/children rewiring -- each joint's
+//        Child / Next chain is reset to match the order in JSON
+//        joint.children
 //   - Saves the result to <out.dat>.
 //
 // Geometry / material / texture edits are NOT yet supported. A future
@@ -213,6 +215,57 @@ if (sceneJson.TryGetProperty("joints", out jointsElem))
     }
 }
 Console.WriteLine($"joints  : flags-changed={flagsChanged} trs-changed={trsChanged}");
+
+// ---- Sync hierarchy (Child / Next pointer chain) ---------------------
+// For each joint in JSON, reset the underlying HSD_JOBJ's Child and Next
+// pointers so the order matches JSON's `children` array. JSON children
+// is the canonical sibling order; we walk it and re-link the chain.
+
+int hierChanged = 0;
+if (sceneJson.TryGetProperty("joints", out jointsElem))
+{
+    foreach (var jdto in jointsElem.EnumerateArray())
+    {
+        var jid = jdto.GetProperty("id").GetString();
+        if (!jobjById.TryGetValue(jid, out var parent)) continue;
+        var chArr = jdto.GetProperty("children");
+        int n = chArr.GetArrayLength();
+        // resolve children
+        var resolved = new HSD_JOBJ[n];
+        bool ok = true;
+        for (int i = 0; i < n; i++)
+        {
+            var cid = chArr[i].GetString();
+            if (!jobjById.TryGetValue(cid, out var c))
+            {
+                Console.WriteLine($"  WARN: {jid} child[{i}]={cid} not in base, hierarchy sync skipped for this parent");
+                ok = false; break;
+            }
+            resolved[i] = c;
+        }
+        if (!ok) continue;
+
+        // determine intended chain
+        HSD_JOBJ desiredChild = n > 0 ? resolved[0] : null;
+        bool changed = false;
+        if (parent.Child?._s != desiredChild?._s)
+        {
+            parent.Child = desiredChild;
+            changed = true;
+        }
+        for (int i = 0; i < n; i++)
+        {
+            HSD_JOBJ desiredNext = i + 1 < n ? resolved[i + 1] : null;
+            if (resolved[i].Next?._s != desiredNext?._s)
+            {
+                resolved[i].Next = desiredNext;
+                changed = true;
+            }
+        }
+        if (changed) hierChanged++;
+    }
+}
+Console.WriteLine($"hierarchy: parents-rewired={hierChanged}");
 
 
 // ---- Save -------------------------------------------------------------
