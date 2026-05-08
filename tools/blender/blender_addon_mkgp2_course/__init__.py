@@ -23,7 +23,7 @@ button after editing the source.
 bl_info = {
     "name": "MKGP2 Course Tools",
     "author": "naari3",
-    "version": (0, 1, 8),
+    "version": (0, 1, 9),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > MKGP2  /  File > Import & Export",
     "description": "Import / export MKGP2 course resources (HSD mesh, collision, line waypoints, AI auto path)",
@@ -31,6 +31,7 @@ bl_info = {
 }
 
 import bpy
+import json
 import os
 import shutil
 import subprocess
@@ -240,6 +241,52 @@ def _run_csx_for_dat(dat_path, out_dir, *, timeout=240):
     return scene_json
 
 
+def _resolve_writer_csx_path():
+    """Path to tools/hsd/hsd_import_from_blender.csx."""
+    src = _resolve_source_path()  # .../tools/blender
+    return os.path.normpath(os.path.join(src, "..", "hsd",
+                                         "hsd_import_from_blender.csx"))
+
+
+def _run_writer_csx(base_dat, bundle_dir, out_dat, *, timeout=240):
+    """Run hsd_import_from_blender.csx <base.dat> <bundle.dir> <out.dat>.
+
+    Raises RuntimeError on any failure with captured stderr/stdout for
+    triage. Returns the (str) path to the produced .dat.
+    """
+    csx = _resolve_writer_csx_path()
+    if not os.path.isfile(csx):
+        raise RuntimeError(
+            f"writer csx not found at {csx}. Is the addon installed via "
+            "a junction back into tools/blender?"
+        )
+    dotnet = _resolve_dotnet_script()
+    if not dotnet:
+        raise RuntimeError(
+            "dotnet-script not found. Install it with "
+            "`dotnet tool install --global dotnet-script` or set the "
+            "addon preference `dotnet_script_path`."
+        )
+
+    os.makedirs(os.path.dirname(out_dat), exist_ok=True)
+    cmd = [dotnet, csx, "--", str(base_dat), str(bundle_dir), str(out_dat)]
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"writer csx returned {proc.returncode} for "
+            f"{os.path.basename(base_dat)} -> {os.path.basename(out_dat)}\n"
+            f"stdout: {proc.stdout.strip()[:800]}\n"
+            f"stderr: {proc.stderr.strip()[:800]}"
+        )
+    if not os.path.isfile(out_dat):
+        raise RuntimeError(
+            f"writer csx finished but did not produce {out_dat}\n"
+            f"stdout: {proc.stdout.strip()[:500]}"
+        )
+    return out_dat
+
+
 def _find_vanilla_dat(bin_dir, prefix, round_label):
     """Locate the vanilla .dat for `<prefix>_<round>_A` in `bin_dir`,
     matching case-insensitively. Returns Path or None."""
@@ -321,6 +368,37 @@ def _resolve_course_collection(context):
     return None
 
 
+def _resolve_hsd_bundle_collection(context):
+    """Resolve an HSD bundle collection from the current context.
+
+    Bundle collections are created by `MKGP2_OT_ImportHSD` /
+    `_run_csx_for_dat` and have `mkgp2_source_dat` + `mkgp2_joints` +
+    `mkgp2_joint_aliases` custom props. Their conventional name is
+    `mkgp2:<dat_filename>` but identification is by prop, not name.
+
+    Resolution order:
+      1. Active layer collection if it is a bundle.
+      2. Walk up the active object's collection chain.
+    Returns None if no bundle is in scope.
+    """
+    layer_coll = getattr(context.view_layer, "active_layer_collection", None)
+    if layer_coll is not None:
+        c = layer_coll.collection
+        if c.get("mkgp2_source_dat"):
+            return c
+    obj = context.active_object
+    if obj is not None:
+        for c in obj.users_collection:
+            cur = c
+            visited = set()
+            while cur is not None and cur.name not in visited:
+                if cur.get("mkgp2_source_dat"):
+                    return cur
+                visited.add(cur.name)
+                cur = _find_parent_collection(cur)
+    return None
+
+
 def _link_objs_to_collection(target_coll, objs):
     """Move objects so that `target_coll` is their *only* collection.
 
@@ -373,6 +451,130 @@ class MKGP2_OT_ImportHSD(Operator):
         return {'FINISHED'}
 
     def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+
+class MKGP2_OT_ExportHSD(Operator):
+    """Write the active HSD bundle collection back to a .dat file via
+    hsd_import_from_blender.csx.
+
+    Phase 2 v0 wiring — re-emits the collection's stashed scene.json
+    (mkgp2_joints + mkgp2_joint_aliases) verbatim and runs the writer
+    csx with the bundle's source vanilla .dat as the structural base.
+    Mesh / material / texture content stays at byte-equivalent of the
+    base; structural changes (joint TRS / flags / hierarchy / aliases)
+    that are made on the bundle's stashed JSON props will land in the
+    output .dat.
+
+    Geometry edit (vertex moves on existing meshes) and brand-new
+    meshes are NOT supported in this phase — the writer csx itself
+    does not yet rebuild POBJ display lists. Edits done in Blender's
+    mesh editor will silently revert in the output.
+    """
+    bl_idname = "export_scene.mkgp2_hsd_json"
+    bl_label = "Export MKGP2 HSD (.dat)"
+    bl_options = {'PRESET'}
+
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default="*.dat", options={'HIDDEN'})
+
+    def execute(self, context):
+        bundle = _resolve_hsd_bundle_collection(context)
+        if bundle is None:
+            self.report({'ERROR'},
+                "No HSD bundle in context. Activate an `mkgp2:<dat>` "
+                "collection in the Outliner or pick an object that lives "
+                "inside one.")
+            return {'CANCELLED'}
+
+        source_dat = bundle.get("mkgp2_source_dat", "")
+        if not source_dat:
+            self.report({'ERROR'},
+                f"Bundle '{bundle.name}' has no `mkgp2_source_dat` "
+                "property set; cannot identify base .dat.")
+            return {'CANCELLED'}
+
+        # Resolve the base .dat (the unmodified vanilla source the bundle
+        # was originally extracted from). Look it up from the vanilla bin
+        # directory preference; the writer csx will read from this file
+        # but never write to it.
+        van_dir = _vanilla_bin_dir()
+        if not van_dir:
+            self.report({'ERROR'},
+                "Vanilla bin directory not configured in addon "
+                "preferences; cannot resolve base .dat.")
+            return {'CANCELLED'}
+        base_dat = Path(van_dir) / source_dat
+        if not base_dat.is_file():
+            self.report({'ERROR'},
+                f"Base .dat '{source_dat}' not found under the vanilla "
+                f"bin directory ({van_dir}). Re-extract the ROM or "
+                "correct the preference.")
+            return {'CANCELLED'}
+
+        if not self.filepath:
+            self.report({'ERROR'}, "No output filepath set.")
+            return {'CANCELLED'}
+        if _refuse_if_vanilla(self, self.filepath, what="HSD .dat"):
+            return {'CANCELLED'}
+
+        # Materialize a temp bundle dir holding scene.json built from
+        # the collection's stashed props. We don't need the tex/*.png
+        # subdir because the writer csx (Phase 1 scope) doesn't read
+        # textures.
+        try:
+            joints = json.loads(bundle.get("mkgp2_joints", "[]"))
+            aliases = json.loads(bundle.get("mkgp2_joint_aliases", "{}"))
+        except json.JSONDecodeError as ex:
+            self.report({'ERROR'},
+                f"Bundle '{bundle.name}' has malformed stashed JSON: {ex}")
+            return {'CANCELLED'}
+
+        scene = {
+            "source_dat": source_dat,
+            "tex_dir": "tex",
+            "textures": [],
+            "materials": [],
+            "joints": joints,
+            "joint_aliases": aliases,
+            "meshes": [],
+        }
+        bundle_dir = tempfile.mkdtemp(prefix="mkgp2_hsd_export_")
+        try:
+            with open(os.path.join(bundle_dir, "scene.json"), "w",
+                      encoding="utf-8") as f:
+                json.dump(scene, f)
+
+            try:
+                _run_writer_csx(str(base_dat), bundle_dir, self.filepath)
+            except RuntimeError as ex:
+                self.report({'ERROR'}, f"writer csx failed: {ex}")
+                return {'CANCELLED'}
+        finally:
+            shutil.rmtree(bundle_dir, ignore_errors=True)
+
+        size = Path(self.filepath).stat().st_size
+        self.report({'INFO'},
+            f"Wrote {Path(self.filepath).name} ({size} bytes) using base "
+            f"{source_dat}")
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        bundle = _resolve_hsd_bundle_collection(context)
+        if bundle is None:
+            self.report({'ERROR'},
+                "No HSD bundle in context. Activate an `mkgp2:<dat>` "
+                "collection or pick an object inside one.")
+            return {'CANCELLED'}
+        if not self.filepath:
+            source_dat = bundle.get("mkgp2_source_dat", "")
+            base_name = source_dat or "out.dat"
+            out_dir = _output_bin_dir() or _vanilla_bin_dir() or ""
+            if out_dir:
+                self.filepath = os.path.join(out_dir, base_name)
+            else:
+                self.filepath = base_name
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
@@ -2183,6 +2385,8 @@ class MKGP2_PT_CoursePanel(Panel):
         col.operator("export_mesh.mkgp2_collision_bin", text="Collision (.bin)")
         col.operator("export_scene.mkgp2_line_bin", text="Line (.bin)")
         col.operator("export_scene.mkgp2_auto_bin", text="Auto path (.bin)")
+        col.operator("export_scene.mkgp2_hsd_json",
+                     text="HSD bundle (.dat) [structural only]")
 
         layout.separator()
         layout.operator("mkgp2.reload_modules", text="Reload course modules", icon='FILE_REFRESH')
@@ -2364,6 +2568,7 @@ def _menu_export(self, context):
     self.layout.separator()
     self.layout.operator("scene.mkgp2_export_course", text="MKGP2 Course (active collection)")
     self.layout.operator("export_scene.mkgp2_full_course", text="MKGP2 Vanilla Full Course")
+    self.layout.operator("export_scene.mkgp2_hsd_json", text="MKGP2 HSD (.dat) [structural only]")
     self.layout.operator("export_mesh.mkgp2_collision_bin", text="MKGP2 Collision (.bin)")
     self.layout.operator("export_scene.mkgp2_line_bin", text="MKGP2 Line (.bin)")
     self.layout.operator("export_scene.mkgp2_auto_bin", text="MKGP2 Auto Path (.bin)")
@@ -2376,6 +2581,7 @@ def _menu_export(self, context):
 CLASSES = (
     MKGP2AddonPreferences,
     MKGP2_OT_ImportHSD,
+    MKGP2_OT_ExportHSD,
     MKGP2_OT_ImportCollision,
     MKGP2_OT_ImportLine,
     MKGP2_OT_ImportAuto,
