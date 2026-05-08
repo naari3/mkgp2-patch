@@ -23,7 +23,7 @@ button after editing the source.
 bl_info = {
     "name": "MKGP2 Course Tools",
     "author": "naari3",
-    "version": (0, 1, 7),
+    "version": (0, 1, 8),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > MKGP2  /  File > Import & Export",
     "description": "Import / export MKGP2 course resources (HSD mesh, collision, line waypoints, AI auto path)",
@@ -1129,10 +1129,50 @@ class MKGP2_OT_ExportCourse(Operator):
 
     The course collection is resolved from the active layer collection
     or, failing that, by walking up from the active object's collections.
+
+    Invoked from a button (the normal UI path), this pops a small dialog
+    so the user can confirm or change the destination directory before
+    anything is written. Scripted callers may pass `bin_dir` explicitly
+    (or via `EXEC_DEFAULT`) to suppress the dialog and use the
+    collection's saved `mkgp2_bin_dir` / output preference fallback.
     """
     bl_idname = "scene.mkgp2_export_course"
     bl_label = "Export MKGP2 Course"
     bl_options = {'PRESET'}
+
+    bin_dir: StringProperty(
+        name="Destination",
+        description="Folder to write the course .bin files into. Pre-filled "
+                    "from the collection's saved mkgp2_bin_dir or the addon's "
+                    "output preference. Vanilla paths are rejected.",
+        subtype='DIR_PATH',
+    )
+
+    def invoke(self, context, event):
+        coll = _resolve_course_collection(context)
+        if coll is None:
+            self.report({'ERROR'},
+                "No course collection in context. Activate a course collection "
+                "in the Outliner or pick an object that lives inside one.")
+            return {'CANCELLED'}
+        # Pre-fill: collection's saved choice (if not vanilla), else output pref.
+        if not self.bin_dir:
+            saved = coll.get("mkgp2_bin_dir") or ""
+            if saved and not _is_inside_vanilla(saved):
+                self.bin_dir = saved
+            else:
+                self.bin_dir = _output_bin_dir()
+        return context.window_manager.invoke_props_dialog(self, width=520)
+
+    def draw(self, context):
+        layout = self.layout
+        coll = _resolve_course_collection(context)
+        if coll is not None:
+            layout.label(text=f"Course: {coll.name}", icon='OUTLINER_COLLECTION')
+        layout.prop(self, "bin_dir")
+        if self.bin_dir and _is_inside_vanilla(self.bin_dir):
+            layout.label(text="⚠ vanilla path - will be refused on Export",
+                         icon='ERROR')
 
     def execute(self, context):
         if not _need_modules(self):
@@ -1144,12 +1184,16 @@ class MKGP2_OT_ExportCourse(Operator):
                 "in the Outliner or pick an object that lives inside one.")
             return {'CANCELLED'}
 
-        bin_dir_str = coll.get("mkgp2_bin_dir") or _output_bin_dir()
+        # Priority: dialog/operator override > saved on collection > preference.
+        bin_dir_str = (self.bin_dir
+                       or coll.get("mkgp2_bin_dir")
+                       or _output_bin_dir())
         if not bin_dir_str:
             self.report({'ERROR'},
                 f"Course '{coll.name}' has no bin directory set. "
-                "Edit the collection's mkgp2_bin_dir custom property or "
-                "set 'Output bin directory' in addon preferences.")
+                "Pick a folder in the dialog, edit the collection's "
+                "mkgp2_bin_dir custom property, or set 'Output bin "
+                "directory' in addon preferences.")
             return {'CANCELLED'}
         bin_dir = Path(bin_dir_str)
         if not bin_dir.is_dir():
@@ -1158,6 +1202,10 @@ class MKGP2_OT_ExportCourse(Operator):
         if _refuse_if_vanilla(self, str(bin_dir),
                               what=f"course '{coll.name}' export"):
             return {'CANCELLED'}
+        # Persist the user's pick on the collection so the next Export
+        # defaults to the same place without re-prompting (matches the
+        # mental model of "this course lives over there").
+        coll["mkgp2_bin_dir"] = str(bin_dir)
 
         # Freeze the course root (if any) for the duration of the
         # export so user-applied root transforms don't bake into .bin.

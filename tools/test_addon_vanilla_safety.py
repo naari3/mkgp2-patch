@@ -194,6 +194,44 @@ def main():
         assert "grd_short_vanillacopy.bin" in out_files
         print("[test] H followup: export falls through to output dir")
 
+        # ---- I) Dialog/operator bin_dir override wins over saved prop,
+        # and a successful export persists the user's pick on the
+        # collection (so the next Export defaults to the same place).
+        another_out = tempfile.mkdtemp(prefix="mkgp2_test_output2_")
+        # Reset coll["mkgp2_bin_dir"] to the original output to confirm
+        # that an explicit operator parameter takes precedence.
+        coll["mkgp2_bin_dir"] = out_tmp
+        _activate_layer_for(coll)
+        result = bpy.ops.scene.mkgp2_export_course(
+            'EXEC_DEFAULT', bin_dir=another_out,
+        )
+        assert result == {'FINISHED'}, \
+            f"override bin_dir should win, got {result}"
+        files2 = sorted(p.name for p in Path(another_out).glob("*.bin"))
+        assert "grd_short.bin" in files2 and "test_course_short_line.bin" in files2
+        # The user's pick should now be the persisted default for next time.
+        assert coll["mkgp2_bin_dir"] == another_out, \
+            f"export should persist bin_dir choice, got {coll['mkgp2_bin_dir']}"
+        print("[test] I bin_dir override wins + is persisted on the collection")
+
+        # ---- J) Override that points at vanilla is still refused even
+        # when the collection's saved prop is a clean output dir. This
+        # protects against a user typing a bad path in the dialog.
+        result = {'FINISHED'}
+        try:
+            result = bpy.ops.scene.mkgp2_export_course(
+                'EXEC_DEFAULT', bin_dir=van_tmp,
+            )
+        except RuntimeError:
+            result = {'CANCELLED'}
+        assert result == {'CANCELLED'}, \
+            "override bin_dir at vanilla must be refused"
+        # And the persisted bin_dir must not have been overwritten with
+        # the rejected vanilla path.
+        assert coll["mkgp2_bin_dir"] == another_out, \
+            f"refused export must not persist; got {coll['mkgp2_bin_dir']}"
+        print("[test] J vanilla override refused; persisted bin_dir untouched")
+
         addon.unregister()
         print("[test] PASS")
     except Exception:
