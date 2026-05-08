@@ -7,11 +7,16 @@
 //     that the bundle was originally exported from. Mesh DL bytes are
 //     **not** re-encoded from JSON in this phase.
 //   - Applies these structural edits expressed in scene.json:
-//     1. `joint_aliases` -> file.Roots additions (and removal of stale
+//     1. allocate new HSD_JOBJ for any JSON joint id that doesn't
+//        exist in the base tree (no DObj content -- new joints are
+//        invisible markers, useful as alias targets or hierarchy
+//        anchors). Orphan new joints (never referenced by aliases
+//        or hierarchy) are GC'd by HSDLib during Save.
+//     2. `joint_aliases` -> file.Roots additions (and removal of stale
 //        non-`scene_data` roots not present in the JSON map)
-//     2. per-joint flag / TRS sync (translation, rotation, scale,
+//     3. per-joint flag / TRS sync (translation, rotation, scale,
 //        JOBJ_FLAG bits) from JSON onto the matched HSD_JOBJ
-//     3. joint hierarchy parent/children rewiring -- each joint's
+//     4. joint hierarchy parent/children rewiring -- each joint's
 //        Child / Next chain is reset to match the order in JSON
 //        joint.children
 //   - Saves the result to <out.dat>.
@@ -109,6 +114,39 @@ foreach (var r in file.Roots)
     }
 }
 Console.WriteLine($"base    : walked joints={counter}");
+
+// ---- Allocate new HSD_JOBJ for unknown JSON joint ids ----------------
+// JSON may declare more joints than exist in the base.dat tree (e.g.
+// the user added a new joint in Blender to host a future alias root).
+// Walk JSON.joints[], allocate `new HSD_JOBJ()` for any id not yet in
+// jobjById, and register it in the map so subsequent passes (alias,
+// TRS, hierarchy) can refer to it.
+//
+// Allocated joints have default scale (1,1,1) and JOBJ_FLAG.NULL until
+// the TRS / flags pass below applies the JSON-declared values. They
+// have no DObj content -- useful only as alias targets or as parents in
+// the hierarchy. New joints never reached from scene_data.RootJoint or
+// file.Roots get garbage-collected by HSDLib during Save.
+
+int newJointsAllocated = 0;
+JsonElement allJointsElem;
+if (sceneJson.TryGetProperty("joints", out allJointsElem))
+{
+    foreach (var jdto in allJointsElem.EnumerateArray())
+    {
+        var jid = jdto.GetProperty("id").GetString();
+        if (string.IsNullOrEmpty(jid)) continue;
+        if (jobjById.ContainsKey(jid)) continue;
+        var nj = new HSD_JOBJ();
+        nj.SX = 1.0f; nj.SY = 1.0f; nj.SZ = 1.0f;  // identity scale
+        // ClassName left blank; TRS/flags pass below fills the rest
+        jobjById[jid] = nj;
+        if (nj._s != null) idByStruct[nj._s] = jid;
+        newJointsAllocated++;
+    }
+}
+if (newJointsAllocated > 0)
+    Console.WriteLine($"new     : allocated {newJointsAllocated} new HSD_JOBJ(s)");
 
 // ---- Apply alias additions / removals --------------------------------
 // `file.Roots` is the canonical alias list. We want it to contain:
