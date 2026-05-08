@@ -23,7 +23,7 @@ button after editing the source.
 bl_info = {
     "name": "MKGP2 Course Tools",
     "author": "naari3",
-    "version": (0, 1, 9),
+    "version": (0, 2, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > MKGP2  /  File > Import & Export",
     "description": "Import / export MKGP2 course resources (HSD mesh, collision, line waypoints, AI auto path)",
@@ -33,6 +33,7 @@ bl_info = {
 import bpy
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -43,6 +44,48 @@ from pathlib import Path
 import mathutils
 from bpy.types import Operator, Panel, AddonPreferences
 from bpy.props import StringProperty, IntProperty, BoolProperty, FloatProperty
+
+
+# ---------------------------------------------------------------------------
+# Vendored Rust extension: hsdraw (HSD .dat reader/writer)
+# ---------------------------------------------------------------------------
+#
+# The wheel under vendor/<platform>/ ships an abi3 .pyd built by maturin
+# from the standalone hsdraw repo. abi3 means Blender 4.x's bundled
+# CPython 3.11 picks up the cp37-abi3 wheel without rebuild. We add the
+# matching platform dir to sys.path before any other addon code so all
+# downstream module imports can rely on `import hsdraw`.
+#
+# If the platform isn't covered (e.g. Linux distro shipped with a
+# vendor/ stripped of the matching wheel) the import simply fails -- the
+# addon then falls back to the dotnet-script + csx writer path (see
+# MKGP2_OT_ExportHSD).
+
+def _resolve_hsdraw_platform_dir():
+    arch = platform.machine().lower()
+    if sys.platform.startswith("linux"):
+        return "linux_aarch64" if arch in ("aarch64", "arm64") else "linux_x86_64"
+    if sys.platform == "darwin":
+        return "macos_arm64" if arch in ("arm64", "aarch64") else "macos_x86_64"
+    if sys.platform == "win32":
+        return "windows_x86_64"
+    return None
+
+_hsdraw_dir = Path(__file__).parent / "vendor" / (
+    _resolve_hsdraw_platform_dir() or "_unsupported")
+if _hsdraw_dir.is_dir() and str(_hsdraw_dir) not in sys.path:
+    sys.path.insert(0, str(_hsdraw_dir))
+
+try:
+    import hsdraw as _hsdraw_module
+    HSDRAW_AVAILABLE = True
+    HSDRAW_VERSION = getattr(_hsdraw_module, "__version__", "unknown")
+except ImportError as _ex:
+    HSDRAW_AVAILABLE = False
+    HSDRAW_VERSION = None
+    _hsdraw_module = None
+    print(f"[mkgp2 addon] hsdraw not available ({_ex}); writer falls back "
+          f"to csx (set platform vendor dir at {_hsdraw_dir} if needed)")
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +328,42 @@ def _run_writer_csx(base_dat, bundle_dir, out_dat, *, timeout=240):
             f"stdout: {proc.stdout.strip()[:500]}"
         )
     return out_dat
+
+
+def _run_writer_py(base_dat, bundle_dir, out_dat):
+    """In-process Rust (`hsdraw`) writer path, equivalent to
+    `_run_writer_csx`. Imports the addon's `_hsd_writer` Python port at
+    call time so it's not a hard dependency at addon load (the csx path
+    works without `hsdraw` available)."""
+    if not HSDRAW_AVAILABLE:
+        raise RuntimeError(
+            "hsdraw is not vendored for this platform; the Rust writer "
+            "path is unavailable. Either run `python -m maturin build "
+            "--release` in the hsdraw repo and copy the wheel under "
+            f"vendor/, or switch the writer backend preference to 'csx'.")
+    from . import _hsd_writer
+    os.makedirs(os.path.dirname(out_dat), exist_ok=True)
+    _hsd_writer.import_from_scene_json(
+        str(base_dat), str(bundle_dir), str(out_dat),
+        verbose=True,
+    )
+    return str(out_dat)
+
+
+def _run_writer(base_dat, bundle_dir, out_dat):
+    """Dispatch to the writer backend selected via addon preferences.
+    Falls back to csx automatically if hsdraw is requested but not
+    available -- prevents a hard break for users with a stripped-down
+    vendor/ tree."""
+    backend = "rust"
+    try:
+        prefs = bpy.context.preferences.addons[__name__].preferences
+        backend = (getattr(prefs, "hsd_writer_backend", "rust") or "rust").lower()
+    except Exception:
+        pass
+    if backend == "rust" and HSDRAW_AVAILABLE:
+        return _run_writer_py(base_dat, bundle_dir, out_dat)
+    return _run_writer_csx(base_dat, bundle_dir, out_dat)
 
 
 def _find_vanilla_dat(bin_dir, prefix, round_label):
@@ -580,9 +659,9 @@ class MKGP2_OT_ExportHSD(Operator):
                 json.dump(scene, f)
 
             try:
-                _run_writer_csx(str(base_dat), bundle_dir, self.filepath)
+                _run_writer(str(base_dat), bundle_dir, self.filepath)
             except RuntimeError as ex:
-                self.report({'ERROR'}, f"writer csx failed: {ex}")
+                self.report({'ERROR'}, f"HSD writer failed: {ex}")
                 return {'CANCELLED'}
         finally:
             shutil.rmtree(bundle_dir, ignore_errors=True)
@@ -2662,6 +2741,27 @@ class MKGP2AddonPreferences(AddonPreferences):
         default="",
     )
 
+    hsd_writer_backend: bpy.props.EnumProperty(
+        name="HSD writer backend",
+        description=(
+            "Which writer the Export HSD operator uses. The Rust path "
+            "(`hsdraw` vendored under addon/vendor/<platform>/) is "
+            "byte-identical to the dotnet-script + HSDLib path on the "
+            "vanilla parity corpus and is preferred. Falls back to csx "
+            "automatically if the vendored wheel is missing for the "
+            "current platform."
+        ),
+        items=[
+            ('rust', "Rust (hsdraw)",
+             "In-process via the vendored cp37-abi3 wheel. No external "
+             "dependency. Recommended."),
+            ('csx', "csx (HSDLib via dotnet-script)",
+             "Fallback / for cross-checking. Requires dotnet-script to "
+             "be installed."),
+        ],
+        default='rust',
+    )
+
     def draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
@@ -2693,6 +2793,15 @@ class MKGP2AddonPreferences(AddonPreferences):
         cs = _resolve_csx_path()
         col.label(text=f"  Resolved csx: {cs}"
                        f"{'' if os.path.isfile(cs) else ' (missing!)'}")
+        col.separator()
+        col.label(text="HSD writer (Export HSD):")
+        col.prop(self, "hsd_writer_backend")
+        if HSDRAW_AVAILABLE:
+            col.label(text=f"  hsdraw vendored: yes (v{HSDRAW_VERSION})",
+                      icon='CHECKMARK')
+        else:
+            col.label(text="  hsdraw vendored: no -- falls back to csx",
+                      icon='ERROR')
         layout.operator("mkgp2.reload_modules", icon='FILE_REFRESH')
 
 
