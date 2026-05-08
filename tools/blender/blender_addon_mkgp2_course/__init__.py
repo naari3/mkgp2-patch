@@ -531,6 +531,39 @@ class MKGP2_OT_ExportHSD(Operator):
                 f"Bundle '{bundle.name}' has malformed stashed JSON: {ex}")
             return {'CANCELLED'}
 
+        # Sync joint parent / children from any Empty hierarchy that was
+        # built at import time (Phase 2 v2). Each Empty has a
+        # `mkgp2_jobj_id` custom prop; its `.parent.mkgp2_jobj_id`
+        # supplies the joint's parent. Empties absent from the bundle
+        # collection (older imports without joint Empties) are skipped
+        # gracefully -- the stashed JSON's parent/children chain is
+        # used as-is.
+        empty_by_id = {}
+        for o in bundle.objects:
+            if o.type == 'EMPTY' and o.get("mkgp2_jobj_id"):
+                empty_by_id[o["mkgp2_jobj_id"]] = o
+        if empty_by_id:
+            joint_by_id = {j["id"]: j for j in joints if isinstance(j, dict)}
+            # Reset all parent / children to rebuild from the Empty tree
+            for j in joints:
+                j["parent"] = None
+                j["children"] = []
+            for jid, e in empty_by_id.items():
+                if jid not in joint_by_id:
+                    continue
+                if e.parent is not None and e.parent.get("mkgp2_jobj_id"):
+                    pid = e.parent["mkgp2_jobj_id"]
+                    if pid in joint_by_id:
+                        joint_by_id[jid]["parent"] = pid
+                        # children order: by Empty's index in parent's
+                        # children Object list (matches Outliner)
+                        if jid not in joint_by_id[pid]["children"]:
+                            joint_by_id[pid]["children"].append(jid)
+            # Persist the rebuilt parent/children back to the bundle's
+            # stashed JSON so subsequent re-exports stay consistent and
+            # the Empty tree is the source of truth.
+            bundle["mkgp2_joints"] = json.dumps(joints)
+
         scene = {
             "source_dat": source_dat,
             "tex_dir": "tex",

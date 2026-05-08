@@ -420,6 +420,44 @@ def import_scene(scene_json_path):
     coll['mkgp2_joint_aliases'] = json.dumps(scene['joint_aliases'])
     coll['mkgp2_joints'] = json.dumps(scene['joints'])
 
+    # 6. Joint hierarchy as Outliner-visible Empty metadata.
+    #
+    # The HSD csx exports vertices already-baked to world space, so we
+    # cannot make these Empties drive visual placement (would
+    # double-transform). They live at identity in their parent's frame
+    # and serve only as a Blender-native expression of the joint
+    # parent/children chain. The Export HSD operator reads each
+    # Empty's `.parent` to update the stashed `mkgp2_joints` parent /
+    # children fields before invoking the writer csx.
+    #
+    # TRS / flag editing still flows through the stashed JSON (or the
+    # alias panel for joint_aliases). A future iteration can rebake
+    # vertices to local-space and let Empty TRS drive position.
+    id_to_empty = {}
+    for jdto in scene['joints']:
+        jid = jdto['id']
+        empty = bpy.data.objects.new(f"{coll_name}:{jid}", None)
+        empty.empty_display_type = 'PLAIN_AXES'
+        empty.empty_display_size = 0.5
+        empty['mkgp2_jobj_id'] = jid
+        if jdto.get('flags'):
+            empty['mkgp2_jobj_flags'] = ",".join(jdto['flags'])
+        # Stash original local TRS so a future panel can expose it
+        # without re-parsing the bundle's mkgp2_joints stash on every
+        # redraw.
+        empty['mkgp2_jobj_local_t'] = list(jdto.get('translation', [0, 0, 0]))
+        empty['mkgp2_jobj_local_r'] = list(jdto.get('rotation', [0, 0, 0]))
+        empty['mkgp2_jobj_local_s'] = list(jdto.get('scale', [1, 1, 1]))
+        coll.objects.link(empty)
+        id_to_empty[jid] = empty
+    # Second pass: wire parents
+    for jdto in scene['joints']:
+        parent_id = jdto.get('parent')
+        if parent_id and parent_id in id_to_empty:
+            id_to_empty[jdto['id']].parent = id_to_empty[parent_id]
+    print(f"  joint Empties: {len(id_to_empty)} "
+          f"(metadata only -- Empty TRS does not drive mesh placement)")
+
     print(f"  built meshes: {n_meshes} (skipped {n_skipped})")
     print(f"  collection: {coll_name}")
     print(f"[done]")
