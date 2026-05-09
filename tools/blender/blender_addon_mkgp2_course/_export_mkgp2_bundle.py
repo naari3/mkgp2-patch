@@ -763,12 +763,15 @@ def export_bundle_to_dat(
                          if mo.data.materials else None)
             color = bm.bsdf_base_color(fresh_mat)
             img_tuple = bm.bsdf_image_texture(fresh_mat)
-            mobj = bm.make_textured_mobj(hsdraw, color, img_tuple)
+            fmt_name, fmt_int = bm.material_target_format(fresh_mat)
+            mobj = bm.make_textured_mobj(
+                hsdraw, color, img_tuple, target_format=fmt_int)
             fresh_materials += 1
             log(f"  INFO: mesh '{mo.name}' uses fresh material "
                 f"'{mat_name}'; built ad-hoc MObj from BSDF "
                 f"(color={color}, img="
-                f"{f'{img_tuple[0]}x{img_tuple[1]}' if img_tuple else 'solid 4x4'})")
+                f"{f'{img_tuple[0]}x{img_tuple[1]}' if img_tuple else 'solid 4x4'}, "
+                f"format={fmt_name})")
 
         d = hsdraw.DObj.alloc()
         d.set_mobj(mobj)

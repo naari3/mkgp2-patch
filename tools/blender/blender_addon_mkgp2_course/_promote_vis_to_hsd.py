@@ -159,8 +159,11 @@ def promote_vis_to_dat(
             mat_name = slot.material.name if slot.material else "?"
             tex_info = (f"img={img_tuple[0]}x{img_tuple[1]}"
                         if img_tuple else "synth-4x4")
-            log(f"  built {obj.name}.{mat_name}: {nv}v / {nt}t color={color} {tex_info}")
-            mobj = _make_textured_mobj(hsdraw, color, img_tuple)
+            fmt_name, fmt_int = bm.material_target_format(slot.material)
+            log(f"  built {obj.name}.{mat_name}: {nv}v / {nt}t "
+                f"color={color} {tex_info} format={fmt_name}")
+            mobj = _make_textured_mobj(
+                hsdraw, color, img_tuple, target_format=fmt_int)
             d = hsdraw.DObj.alloc()
             d.set_mobj(mobj)
             d.set_pobj(pobj)
@@ -172,7 +175,9 @@ def promote_vis_to_dat(
             if r is not None:
                 pobj, color, img_tuple, nv, nt = r
                 log(f"  built {obj.name}.<no-slot>: {nv}v / {nt}t (default grey)")
-                mobj = _make_textured_mobj(hsdraw, (200, 200, 200, 255), img_tuple)
+                # No material -> no per-material format prop; default RGBA8.
+                mobj = _make_textured_mobj(
+                    hsdraw, (200, 200, 200, 255), img_tuple)
                 d = hsdraw.DObj.alloc()
                 d.set_mobj(mobj)
                 d.set_pobj(pobj)
