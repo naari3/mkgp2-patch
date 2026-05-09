@@ -200,9 +200,30 @@ Scene/
 
 ### マテリアル
 
-- `vis:` 経路は **Principled BSDF 1 ノードのみ**。テクスチャ無し、unlit 単色 (BSDF base color が POBJ vertex color として書き出される)
+- `vis:` 経路は **Principled BSDF 1 ノードのみ**。BSDF Base Color が単色のとき、`_promote_vis_to_hsd._make_textured_mobj` が **4x4 RGBA8 solid texture を自動 fallback 合成** (`_promote_vis_to_hsd.py:165-171`) して TObj 化するので、ユーザー側はテクスチャ設定不要
+- mesh ごとに per-pixel pattern を持たせたい場合だけ `_bake_vis_textures.py` を使って Blender 側でテクスチャを bake (= BSDF の Base Color に Image Texture node を繋ぐ); BSDF Image Texture が居れば `_bsdf_image_texture_node` がそれを優先採用、無ければ単色 fallback (`_promote_vis_to_hsd.py:45-79`)
 - `mb.set_cull_back(True)` が `_promote_vis_to_hsd.py` で立つので Blender CCW winding でそのまま正しく描画される
 - mesh の `material_slots` を増やすと slot ごとに POBJ が分割される (1 slot = 1 DObj/MObj/POBJ)
+
+### 座標系 (Blender Z-up → MKGP2 Y-up)
+
+`tools/blender/blender_addon_mkgp2_course/_promote_vis_to_hsd.py:38` の変換規則:
+
+```python
+def _blender_to_hsd(co):
+    """(Bx, By, Bz)_blender -> (Bx, Bz, -By)_game"""
+    return (co.x, co.z, -co.y)
+```
+
+- mesh / collision / auto / line の全 exporter が **同一の規則**で世界座標を吐く (= 軸が揃う)
+- `start_positions` (cups.yaml) も MKGP2 Y-up 座標で書く必要がある
+- Blender で start マーカー Empty を置いた場合の値:
+  ```
+  yaml_x = blender.world_x
+  yaml_y = blender.world_z         # Blender Z (上) -> MKGP2 Y (上)
+  yaml_z = -blender.world_y        # Blender Y (奥行) -> MKGP2 -Z (前後反転)
+  ```
+- 座標を直書きでなく Blender Empty から計算したいなら、`Object > Add > Empty` を世界座標で配置 → `obj.matrix_world.translation` の `(x, z, -y)` を yaml にコピー
 
 ### Export operator
 
@@ -310,6 +331,8 @@ MOBJ#0 RenderFlags=CONSTANT, TEX0, ALPHA_MAT (0x2011) TexRef=True
 > **どの要素が決定打かは未切り分け**: 動作する状態を得るまでに `ALPHA_MAT 追加` / `LIGHTING bit 抜き` / `4x4 texture 付与` / `OPA|ROOT_OPA` / `CULLBACK` を同時に導入した。どれか 1 つだけでも崩すと点滅再発する可能性は十分あるので、**上記の組み合わせを 1 セットで保つ**ことを推奨。再発したら逆順に 1 つずつ外して切り分け。
 >
 > なお過去のデバッグでは「LIGHTING bit を抜けば消える」「ALPHA_MAT を立てれば消える」など何度か単独原因仮説を立てたが、いずれも build.sh を走らせ忘れていて user 検証では古い描画が見えていただけだった (= 仮説検証になっていなかった)。詳細は pitfall #7。
+>
+> なお **4x4 texture は Blender 側で何もしなくても `_promote_vis_to_hsd._make_textured_mobj` の fallback で自動合成される** (BSDF Base Color から RGBA を取って 4x4 RGBA8 を `hsdraw.gx_encode` する; `_promote_vis_to_hsd.py:165-171`)。`_bake_vis_textures.py` を使うのは mesh ごとに per-pixel pattern が必要な場合だけ。
 
 恒久対応は hsdraw 本体に textured mesh preset を追加 (現状 `MObj.alloc_unlit_color` は textureless 向けで不十分):
 - `MObj.alloc_textured(color, image_w, image_h, image_data)` 的な one-shot allocator
