@@ -173,33 +173,64 @@ def bsdf_image_texture(mat):
 # -- HSD MObj/TObj/Image construction --------------------------------------
 
 def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
-    """Build an MObj with TObj+Image attached, RenderFlags configured
-    vanilla-compatible (`CONSTANT|TEX0|ALPHA_MAT` = 0x2011).
+    """Build an MObj with TObj+Image attached, configured to match the
+    vanilla MR_highway road's *lit + textured* pattern.
 
-    `color` is the (R,G,B,A) byte tuple used as Material.DIF (gets
-    multiplied with the texture sample under CONSTANT mode).
-    `img_tuple` = (w, h, raw_rgba_bytes); if None, synthesize a 4x4
-    solid texture filled with `color`.
+    The pattern, byte-for-byte from a vanilla road DObj's MObj/TObj:
 
-    `target_format` selects the GX texture format the encoder writes:
-      * None / "RGBA8" -> 6  (lossless, default; ~ 4 bytes/pixel)
-      * "CMP"          -> 14 (DXT1-style, ~ 0.5 bytes/pixel; lossy)
-      * "RGB5A3"       -> 5  (16-bit; ~ 2 bytes/pixel; quantized)
-    Pass either the str name (looked up in `_TEXFMT_FULL`) or an int
-    enum value directly.  Callers building from `material_target_format`
-    pass the int; tests / standalone callers can pass the name.
+      * MObj.render_flags = 0x2011 (CONSTANT | TEX0 | ALPHA_MAT)
+      * MObj.material:
+          amb_rgba = (128, 128, 128, 255) — standard ambient
+          dif_rgba = ``color``             — user's BSDF base color
+          spc_rgba = (255, 255, 255, 255) — standard specular
+          shininess = 50, alpha = 1
+      * TObj.flags = 0x40010
+          = LIGHTMAP_DIFFUSE (bit 4 = 0x10)
+          + COLORMAP_MODULATE (bits 16-19 = 4, value 0x40000)
+        plus wrap_s=GX_REPEAT, wrap_t=GX_MIRROR, mag=GX_LINEAR.
 
-    If the requested format demands tile alignment that this `(w, h)`
-    pair fails (e.g. CMP needs both dims divisible by 4), the function
-    silently falls back to RGBA8 rather than raising — so a 5x7 image
-    on a CMP-tagged material still exports, just in RGBA8.
+    Why this ditched the previous `alloc_unlit_color` + REPLACE path:
+    MKGP2's course renderer only samples TEX0 along its **lit-mesh
+    TEV pipeline**.  TObjs that lack the LIGHTMAP_DIFFUSE bit fall
+    through to a "no texture, output Material.dif" fallback — which is
+    why every billboard collapsed to its BSDF Base Color default
+    (#cccccc) regardless of the image we attached, and why solid-color
+    course meshes also displayed only their Material.dif (which by
+    coincidence carried the right color, masking the bug for solid
+    meshes).  Switching to `MObj.alloc()` + manual lit Material +
+    LIGHTMAP_DIFFUSE TObj routes the mesh through the path that
+    actually samples the texel.
+
+    The tradeoff: COLORMAP_MODULATE means ``final_color = texel * dif``,
+    so the synth 4x4 path now fills the texel with **white** so
+    Material.dif (= ``color``) survives the multiplication unchanged.
+    Real Image Texture meshes get their pattern multiplied by Material.dif
+    -- if the user wants the texture pattern to display at full
+    saturation, set the BSDF Base Color to white (= no tint).
+
+    Parameters
+    ----------
+    color : (R, G, B, A) byte tuple
+        Material.dif_rgba.  For solid-color meshes the texel is white
+        and this color shows through; for real-texture meshes this
+        acts as a multiplicative tint.
+    img_tuple : (w, h, raw_rgba_bytes) or None
+        When None, a 4x4 white synth tile is generated.
+    target_format : str | int | None
+        GX target format ("RGBA8", "CMP", "RGB5A3", or the matching int).
+        Falls back to RGBA8 if the requested format demands tile
+        alignment this (w, h) pair can't satisfy (CMP needs 4×4).
     """
     if img_tuple is None:
-        # Synth 4x4 solid color (this is the fallback when the BSDF has
-        # no Image Texture node bound; bake helpers should normally
-        # populate the BSDF before we get here).
+        # Synth 4x4 WHITE tile.  Under COLORMAP_MODULATE the renderer
+        # computes `texel * dif`; a white texel passes Material.dif
+        # through verbatim, preserving the user's BSDF base color.
+        # Earlier versions filled the synth tile with `color` and used
+        # the REPLACE path -- that worked visually for solid meshes but
+        # never displayed real Image Textures (see make_textured_mobj
+        # docstring for the why).
         w, h = 4, 4
-        pixel = bytes(color)
+        pixel = b"\xff\xff\xff\xff"
         raw = pixel * (w * h)
     else:
         w, h, raw = img_tuple
@@ -218,9 +249,7 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
         )
 
     # Alignment guard -- silently downgrade to RGBA8 if the requested
-    # format can't fit this (w, h) pair.  hsdraw's encoder might pad
-    # internally but the guarantees there aren't strong; safer to fall
-    # back than to ship a misaligned CMP payload.
+    # format can't fit this (w, h) pair.
     if not _format_alignment_ok(fmt_name, w, h):
         fmt_name = DEFAULT_TARGET_FORMAT
         fmt_int = _TEXFMT_FULL[DEFAULT_TARGET_FORMAT]
@@ -236,24 +265,38 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
     img.format = fmt_int
     img.set_image_data_bytes(gx_bytes)
 
-    # TObj alloc + populate. Vanilla road MObj's TObj uses these defaults
-    # (per dump tools/hsd/dump_tobj_raw.csx on test_course_road.dat).
+    # TObj configured to match vanilla road's 0x40010 pattern.  The
+    # public hsdraw setters cover ColorMap (bits 16-19), AlphaMap
+    # (bits 20-23), and CoordType (bits 0-3) — but NOT the
+    # LIGHTMAP_DIFFUSE bit at 0x10, which we OR in by hand.
     tobj = hsdraw.TObj.alloc()
     tobj.tex_map_id = 0          # GX_TEXMAP0
     tobj.wrap_s = 0              # GX_REPEAT
-    tobj.wrap_t = 0
+    tobj.wrap_t = 1              # GX_MIRROR (vanilla road convention)
     tobj.set_image_data(img)
-    # color/alpha operations: REPLACE (texel becomes the final color).
-    tobj.set_color_operation(5)  # ColorMap::REPLACE
-    tobj.set_alpha_operation(4)  # AlphaMap::REPLACE
-    tobj.set_coord_type(0)       # CoordType::UV
+    tobj.set_color_operation(4)  # COLORMAP_MODULATE = texel * material color
+    tobj.set_alpha_operation(0)  # ALPHAMAP_NONE
+    tobj.set_coord_type(0)       # CoordType=UV (= bits 0-3 = 0)
+    tobj.flags |= 0x10           # LIGHTMAP_DIFFUSE — no public setter
     tobj.blending = 1.0
     tobj.mag_filter = 1          # GX_LINEAR
 
-    # MObj: alloc with vanilla course-style render flags.
-    mobj = hsdraw.MObj.alloc_unlit_color(*color)
-    # CONSTANT|TEX0|ALPHA_MAT = 0x2011, vanilla road MObj 互換。
-    mobj.render_flags = 0x2011
+    # Material with vanilla course conventions: ambient + spc non-zero
+    # so the lit-mesh TEV pipeline (the one actually sampling our TObj)
+    # has color sources to work with.
+    mat = hsdraw.Material.alloc()
+    mat.amb_rgba = (128, 128, 128, 255)
+    mat.dif_rgba = tuple(color)
+    mat.spc_rgba = (255, 255, 255, 255)
+    mat.shininess = 50.0
+    mat.alpha = 1.0
+
+    # MObj.alloc() instead of alloc_unlit_color() -- the unlit preset
+    # leaves amb/spc at zero which steers the renderer down the no-
+    # texture fallback (the very bug this rewrite addresses).
+    mobj = hsdraw.MObj.alloc()
+    mobj.set_material(mat)
+    mobj.render_flags = 0x2011   # CONSTANT|TEX0|ALPHA_MAT, vanilla road
     mobj.set_textures(tobj)
     return mobj
 
