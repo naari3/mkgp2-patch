@@ -139,7 +139,7 @@ round 単位で必須 / 任意のフィールド:
 
 | field | 必須 | 内容 |
 |-------|------|------|
-| `id` | ◯ | C ident。`round1` `round2` 等。シンボル名 suffix |
+| `id` | ◯ | C ident のみ。**配列順序が g_roundIndex** (= rounds list の N 番目 = `g_roundIndex == N`)。`id` 文字列の中身は使われない (= "round3" と書いても 3 番目になるとは限らない、配列の 3 番目に置かないと round[3] にならない) |
 | `course_model` | ◯ | `course_models.yaml` の id |
 | `collision` | ◯ | `<stem>.bin` (Riivolution 配置名) |
 | `line_bin` | ◯ | `<stem>_line.bin`。**未生成の場合は別 round の流用も可** (`test_course_short_line.bin` 等) |
@@ -185,18 +185,47 @@ Scene/
     ... 30+ mesh ...
   MKGP2_Course/                          <- addon が生成、collision/line を管理
     my_course/
-      my_course_collision_a   (mesh, GroundType vertex group で hi/lo 分割)
-      my_course_collision_b   (mesh)
-      my_course_line          (Empty)
-        my_course_line.0_lap  (Empty)
-        my_course_line.1_normal_a
-        my_course_line.2_normal_b
-        ... 7 variant ...
-        my_course_line.0_lap_v0  (子 NURBS path)
-        ...
-      my_course_auto          (mesh, auto-F field)
-      my_course_origin        (Empty, course origin marker)
+      CollisionMesh           (mesh、固定名、必須。faces = collision triangles)
+      WallSegments            (mesh、任意。edges = wall segments、無くても走れる)
+      my_course_line          (Empty、root)
+        LineVariant_0_<stem>  (mesh、custom prop "variant_index"=0、AI path)
+        LineVariant_1_<stem>  (mesh、variant_index=1、AI path)
+        ... 計 6 個 (variant 0..5、AI 用) ...
+        LineVariant_6_<stem>  (mesh、variant_index=6、**lap path 固定**)
+      my_course_auto          (mesh、auto-F path、vanilla 用途未確定)
+      my_course_origin        (Empty、course origin marker)
 ```
+
+### collision/line/auto の最低構成
+
+実機で走らせるための **必要最小ライン**:
+
+| 種別 | 必須 mesh / Empty | 何を保証する? |
+|------|------|------|
+| collision | `CollisionMesh` (= 三角形化された地面メッシュ) のみで走れる | 地面判定; `WallSegments` は走らせるだけなら省略可、壁衝突を出したいときだけ追加 |
+| line | `LineVariant_6_<stem>` 1 つ (= lap path 固定 slot 6) | lap 判定。AI を走らせたいなら variant 0..5 も必要、無ければ AI は停止状態 |
+| auto | `<stem>_Auto.bin` のみ生成すれば足りる (R は無くても走れる) | 用途未確定 (vanilla の auto-F field、PathManager 系ではない) |
+
+**line の slot 6 = lap 固定** は `CourseData_GetDefaultPathKey` が直読みする ABI 制約 (memory `project_line_bin_lap_path_fixed_slot6.md`)。dm_stadium 等で 11 variant ある vanilla も v7..v10 は dead。
+
+### 動作確認手順 (build.sh 後)
+
+1. **Dolphin 起動**: Riivolution patch (`mkgp2_patch.xml`) を有効化したプロファイルで MKGP2 を起動
+2. **メニュー遷移**: Mode Select (Race) → Cup Select → 一番右下が **test_cup** (cupId=17、Yoshi atlas を借用しているので見た目は Yoshi cup)
+3. **Round Select**: rounds list の **配列順 (0-indexed)** で並ぶ。round 3 を選びたいなら yaml の `rounds:` 配列の 4 番目 entry に置く (= `g_roundIndex == 3` で resolve される)
+4. **race 開始**: `g_cupId == 17` / `g_roundIndex == N` を `mkgp2-view` の live memory で確認可
+5. **絵が出ない / 黒画面**: `dolphin.log` の `HLE` / `OSREPORT_HLE` チャンネルを on にして DebugPrintfSafe 出力を確認 (`MKGP2: joints loaded cup=17 long=0 reverse=0 ...` が出ていれば joint_extend は通過済)
+6. **path/collision の起点が違う**: `start_positions` を再確認 (Blender Z-up → MKGP2 Y-up の `(x, z, -y)` 変換が要)、または `_swap_in_vanilla_mesh.py` で一時的に vanilla mesh を持ってきて切り分け
+
+確認 cheatsheet:
+
+| 症状 | 真っ先に確認 |
+|------|------|
+| File Loader hang / 永久 retry | Riivolution `<file create>` で `.dat` が登録されているか (= patch_map.md / `bash build.sh` の出力で配置確認)、`GetRoadDatFilenameAltHook` が collision を返してないか (pitfall 1) |
+| 黒画面 | JObj.flags = NULL (pitfall 2)、HSD render pass scan に乗ってない |
+| 地面下 / 場外スポーン | `start_positions` 未指定 or 軸変換ミス (pitfall 4) |
+| カメラ移動でフェード / 点滅 | POBJ.flags=0 (pitfall 3) または LIGHTING bit + textured 同居 (pitfall 6) |
+| asset 編集が反映されない | `bash build.sh` 漏れ (pitfall 7、まずこれを疑う) |
 
 ### マテリアル
 
