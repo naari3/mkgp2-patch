@@ -94,15 +94,17 @@ bundle 経路の export は **deterministic**:
 
 ### bundle に新規 mesh / material を追加した場合の境界
 
-`bundle.objects` を top-level walk するので、bundle collection 直下に Blender Mesh を追加すれば export 時に拾われる。ただし境界条件あり (`tools/test_addon_bundle_add_mesh.py` で検証済):
+`bundle.objects` を top-level walk するので、bundle collection 直下に Blender Mesh を追加すれば export 時に拾われる (`tools/test_addon_bundle_add_mesh.py` で検証済):
 
 | 追加した mesh の種類 | Export 結果 |
 |------|------|
 | 既存 material slot を再利用 + 既存 joint_id を `mkgp2_joint_id` にセット | ✓ そのまま追加される (`stats.meshes` += 1) |
 | 既存 material 再利用 + `mkgp2_joint_id` が `jobj_by_id` map に無い | ✗ skip + WARN (= mesh は出力されない) |
-| 新規 Principled BSDF material を使う | △ mesh は拾われる、ただし MObj は `alloc_unlit_color(200,200,200,255)` のグレー fallback で書き出される。BSDF Base Color や Image Texture node は **無視される** |
+| 新規 Principled BSDF material を使う | ✓ mesh + material 両方拾われる。BSDF Base Color から `(r,g,b,a)` byte を抽出して `_blender_material.make_textured_mobj` 経由で 4x4 RGBA8 fallback texture or BSDF の Image Texture node 内容を `CONSTANT|TEX0|ALPHA_MAT` (= 0x2011) MObj に build (`stats.fresh_materials` += 1)。INFO log に `built ad-hoc MObj from BSDF (color=..., img=...)` |
 
-つまり「既存 vanilla を活かして mesh を 1-2 個ちょい足し」は OK、「新材で塗った mesh を増やす」は色が反映されないので vis: 経路 (= 新規コース合成) を使うべき。
+つまり「既存 vanilla を活かして mesh + 単色 material をちょい足し」は完全動作する。Image Texture node を新 mesh に貼って per-pixel pattern を入れたい場合も OK (vis: 経路と同じ helper を使うので挙動も同じ)。
+
+vis: 経路 (新規コース合成、`mkgp2-new-course` skill) との material 構築ロジックは **共有 helper `_blender_material.py` 経由で同一**。新材の振る舞いを変えたいときはこのモジュール 1 箇所で済む。
 
 ### Empty による joint hierarchy rewire
 

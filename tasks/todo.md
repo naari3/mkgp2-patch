@@ -181,11 +181,12 @@
 - [ ] **B-2: `MKGP2_OT_NewCourse` の docstring 整備**
   - 現状: docstring に「vis: と mkgp2: のどちらの collection を生成するか」が明文化されていない
   - 目標: `docstring` に「vis:<name> を生成 (新規コース合成用)、mkgp2:<dat> bundle は別 operator (`MKGP2_OT_ImportHSD`)」を追記。N panel の tooltip も同様
-- [ ] **B-3: 新 material 受け入れ時のグレー fallback の挙動を再考**
-  - 検証 (`tools/test_addon_bundle_add_mesh.py` v3 ケース) で判明: bundle に新材で塗った mesh を追加すると、exporter は **mesh を採用するが MObj は `alloc_unlit_color(200,200,200,255)` のグレー fallback で書き出す**
-  - 現状: WARN ログは出るが UI に通知無し → ユーザーが気付かないうちに「色を設定したのに灰色」現象
-  - 設計判断要: (a) WARN を Operator.report() で UI に出す / (b) refuse して reject / (c) 新材の Base Color を fallback に流す (= 簡易対応) のいずれを採るか
-  - skill (`mkgp2-edit-vanilla-course`) には現状の挙動を明記済 → どこかで挙動変えるなら skill も更新
+- [x] **B-3: 新 material 受け入れ時の挙動修正 — 完了 (2026-05-09)**
+  - 採用案 (c) BSDF から現地構築 (commit `e813fec` + `7156122` + `13f8a8d`)
+  - helper 抽出 → `_blender_material.py` (`bsdf_base_color` / `bsdf_image_texture` / `make_textured_mobj` / `blender_to_hsd`)
+  - `_export_mkgp2_bundle.py` の grey fallback (`alloc_unlit_color(200,200,200,255)`) を `bm.make_textured_mobj(hsdraw, color, img_tuple)` に置き換え。stats dict に `fresh_materials` カウンタ追加
+  - `tools/test_addon_bundle_add_mesh.py` v3 ケースを「色反映 + ad-hoc MObj count」を assert する形に強化 (PASS 確認済)
+  - skill `mkgp2-edit-vanilla-course` の境界表を「新材 OK (BSDF 反映)」に更新
 - [ ] **B-4: `tools/_blender_headless_promote.py` の引数仕様を README/skill から実機追試**
   - skill では `-- "<output_dat>"` 1 引数と書いた
   - 実コードを再読して invocation 行が現実と一致しているか確認 (もし複数 .blend を支える etc あれば skill 更新)
