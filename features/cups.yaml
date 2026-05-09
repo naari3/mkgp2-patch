@@ -141,6 +141,41 @@ cups:
         ai_lap_bonus_rules: *shared_ai_lap_bonus_rules
         base_speed:         *shared_base_speed
 
-      # round3, round4 未定義 → round-select で locked、thumb は round 0/1 の duplicate
-      # (Yoshi vanilla layout に合わせる)。round 3/4 を完全独立にしたい場合は
-      # clFlowRound_Init の preload list 拡張が要る (sub_index*16 + 8/12 offset)。
+      - id: round3
+        # Blender vis:my_course を M3 統一 ExportHSD pipeline で .dat 化した
+        # 完全独立の course (vanilla 借用なし)。collision/line も Blender
+        # 同 collection の export_course operator で吐いたもの。
+        course_model: my_course
+        collision:    my_course.bin
+        line_bin:     my_course_line.bin
+        laps:  3
+        time:  120.0
+        bonus: 15.0
+        bgm_l: bgm01_demoL.dsp
+        bgm_r: bgm01_demoR.dsp
+        thumb:       images/test_cup_course3_thumb.png
+        thumb_road:  images/test_cup_course3_thumb_road.png
+        ai_lap_bonus_rules: *shared_ai_lap_bonus_rules
+        base_speed:         *shared_base_speed
+        # 8 kart slots, HSD world coords (X, Y, Z). 路面は Y≈0.5、my_course の
+        # start_gate は HSD 座標で center=(1500, 25.5, 0)、road は
+        # X∈[-1700,1700] / Z∈[-2500,2500] / Y=0.5。スタート grid を gate 手前
+        # (X=1300〜1400) に 4×2 並べる暫定値。実走行で位置 / heading が合わない
+        # 場合はこの値を直接編集 (gen で kCustomStartPos_17_round3[8][3] が
+        # 出力される)。Blender 上で空 Empty を 8 個置いて _blender_to_hsd_vec
+        # 経由で書き出す op を作るのが正攻法だが、まず最小手で動く座標を入れる。
+        start_positions:
+          - [1400.0, 0.5, -150.0]
+          - [1400.0, 0.5,  -50.0]
+          - [1400.0, 0.5,   50.0]
+          - [1400.0, 0.5,  150.0]
+          - [1300.0, 0.5, -150.0]
+          - [1300.0, 0.5,  -50.0]
+          - [1300.0, 0.5,   50.0]
+          - [1300.0, 0.5,  150.0]
+
+      # round4 未定義 → round-select で locked、thumb は round 0/2 の duplicate
+      # (Yoshi vanilla layout に合わせる)。round 4 を完全独立にしたい場合は
+      # clFlowRound_Init の preload list 拡張が要るかもしれない
+      # (sub_index*16 + 12 offset)。round_select.cpp の PreloadInjectIds は
+      # 既に 8 slot 全部 preload しているので、3 round までは直接動く想定。

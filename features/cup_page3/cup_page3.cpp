@@ -1377,6 +1377,11 @@ kmBranch(0x8009c3c4, FUN_8009c3c4_Hook);
 
 // GetCourseModelFilename: stride 0x8a, 2 alternate bases selected by
 // DAT_806d127c (0 = road @ 0x8040b940, nonzero = mesh @ 0x8040b950).
+//
+// Custom cup: per-round CustomRound.courseModelFile を返す。vanilla の
+// road/mesh 二系統 (DAT_806d127c で切替) は custom cup では現状 1 ファイル
+// (.dat) に統一しているため meshFlag は無視。将来 mesh-only fallback が
+// 必要になったら CustomRound に courseModelFileMesh を追加すること。
 extern "C" const char* GetCourseModelFilenameHook() {
     EnsureDBATWidened();
     int cupId        = (int)*(unsigned int*)0x806cf108u;
@@ -1384,7 +1389,17 @@ extern "C" const char* GetCourseModelFilenameHook() {
     int reverseRound = *(int*)0x806d1270u;
     int variantIdx   = *(int*)0x806d126cu;
     unsigned int meshFlag = *(unsigned int*)0x806d127cu;
-    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
+
+    int roundIdx = (int)g_roundIndex;
+    const struct CustomRound* round =
+        FindCustomRound((unsigned int)cupId, roundIdx);
+    if (round != 0) {
+        DebugPrintfSafe(
+            "MKGP2: GetCourseModelFilename custom cup=%d round=%d -> '%s' (meshFlag=%u)\n",
+            cupId, roundIdx, round->courseModelFile, meshFlag);
+        return round->courseModelFile;
+    }
+
     if (cupId < 0) return 0;
     if (longRound < 0) return 0;
     int idx = variantIdx + reverseRound * 0x1c + longRound * 0x45 + cupId * 0x8a;
@@ -1405,27 +1420,70 @@ extern "C" void* GetJointNameTableHook() {
 }
 kmBranch(0x8009c57c, GetJointNameTableHook);
 
-// GetCollisionBinFilename: stride 0x8a, base 0x8040b920, no reverseRoundFlag.
-extern "C" const char* GetCollisionBinFilenameHook() {
+// FUN_8009c5d0 は ghidra 上は GetCollisionBinFilename と命名されているが、
+// 実体は base 0x8040b920 = `PTR_s_test_course_road_dat_8040b920` の table を
+// 引く road .dat getter (mkgp2_course_layout_system.md L217 と整合、L264 は誤記)。
+// stride 0x8a、reverseRound なし、variantIdx あり。
+//
+// Custom cup ではこの 2 つ目の road getter (FUN_8009c418 とは別経路で
+// HSDArchive loader が呼ぶ) も同じ courseModelFile を返さないと、HSD archive
+// header check で sizeMismatch → FileLoader_LoadBin の永久 retry でハングする。
+extern "C" const char* GetRoadDatFilenameAltHook() {
     EnsureDBATWidened();
     int cupId      = (int)*(unsigned int*)0x806cf108u;
     int longRound  = *(int*)0x806d1268u;
     int variantIdx = *(int*)0x806d126cu;
-    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
+
+    int roundIdx = (int)g_roundIndex;
+    const struct CustomRound* round =
+        FindCustomRound((unsigned int)cupId, roundIdx);
+    if (round != 0) {
+        DebugPrintfSafe(
+            "MKGP2: GetRoadDatFilenameAlt custom cup=%d round=%d -> '%s'\n",
+            cupId, roundIdx, round->courseModelFile);
+        return round->courseModelFile;
+    }
+
     if (cupId < 0) return 0;
     if (longRound < 0) return 0;
     if (variantIdx < 0) return 0;
     return ((const char**)0x8040b920u)[variantIdx + longRound * 0x45 + cupId * 0x8a];
 }
-kmBranch(0x8009c5d0, GetCollisionBinFilenameHook);
+kmBranch(0x8009c5d0, GetRoadDatFilenameAltHook);
 
-// GetStartPosition: (slot, *x, *y, *z) -> int. Base 0x8040b934, stride 0x8a,
-// no variantIdx. Each slot is a 12-byte vec3.
+// GetStartPosition: (slot, *outX, *outY, *outZ) -> int. Vanilla layout:
+// base 0x8040b934, stride 0x8a, no variantIdx. Each slot is a 12-byte vec3.
+//
+// 注意: signature の outX/outY/outZ は callee 側では `int*` だが、vanilla の
+// vec3 entry は **float の 4-byte 表現** (cup_page3.cpp 既存コードもこれを
+// `int*` 経由で bit-blit している)。CustomRound.startPositions は float[3]
+// なので、bit pattern を `int*` に書き写すために `(int*)&f` reinterpret を
+// 経由する。
+//
+// Custom cup 経路: round->startPositions が NULL でなければ slot 0..7 を
+// そこから返す (kCustomStartPos_<cup>_<round>[8][3], cups.yaml で注入)。
+// NULL の場合は vanilla alias path に fallback (= test_course の garbage を
+// 返す → 原点 / 宙浮き)。yaml 設定漏れを避けるため、最低 1 entry の指定で
+// 全 slot 引き伸ばし pad する仕組みを gen 側に持たせている。
 extern "C" int GetStartPositionHook(int slot, int* outX, int* outY, int* outZ) {
     EnsureDBATWidened();
     int cupId        = (int)*(unsigned int*)0x806cf108u;
     int longRound    = *(int*)0x806d1268u;
     int reverseRound = *(int*)0x806d1270u;
+
+    int roundIdx = (int)g_roundIndex;
+    const struct CustomRound* round =
+        FindCustomRound((unsigned int)cupId, roundIdx);
+    if (round != 0 && round->startPositions != 0) {
+        if (slot < 0 || slot >= 8) return 0;
+        const float* p = round->startPositions[slot];
+        // bit-blit float -> int (vanilla も同 layout で 4-byte ずつコピー)
+        if (outX) *outX = *(const int*)&p[0];
+        if (outY) *outY = *(const int*)&p[1];
+        if (outZ) *outZ = *(const int*)&p[2];
+        return 1;
+    }
+
     if (IsCustomCup((unsigned int)cupId)) cupId = 0;
     int* base = 0;
     if (slot >= 0 && cupId >= 0 && longRound >= 0) {

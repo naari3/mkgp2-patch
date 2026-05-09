@@ -134,6 +134,35 @@ def normalize_lap_bonus_rules(field: str, value):
     return norm_rules
 
 
+def normalize_start_positions(field: str, value):
+    """Per-round start_positions: list of [x, y, z] in HSD world coords.
+    Returns list of (x, y, z) tuples (length 1..8), or None if absent.
+
+    GetStartPositionHook (cup_page3.cpp 0x8009c688) は slot 0..7 を引く
+    (8 kart). 8 個未満を渡した場合は最終要素が繰り返される (kart 5..7 が
+    重なって stack されるが、宙浮きよりはマシなので警告のみ)。"""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not value:
+        raise SystemExit(
+            f"error: {field} must be a non-empty list of [x, y, z] "
+            f"(HSD world coords)"
+        )
+    if len(value) > 8:
+        raise SystemExit(
+            f"error: {field}: max 8 entries (kart slots), got {len(value)}"
+        )
+    out = []
+    for k, p in enumerate(value):
+        if not isinstance(p, list) or len(p) != 3 or \
+           not all(isinstance(c, (int, float)) for c in p):
+            raise SystemExit(
+                f"error: {field}[{k}] must be [x, y, z] of numbers, got {p!r}"
+            )
+        out.append((float(p[0]), float(p[1]), float(p[2])))
+    return out
+
+
 def normalize_base_speed_per_round(field: str, value):
     """Per-round base_speed: cc -> {lo, hi}. Returns 3-entry list of
     (lo, hi) tuples in cc order (50cc, 100cc, 150cc), or None if absent."""
@@ -292,8 +321,12 @@ def main() -> int:
             base_speed = normalize_base_speed_per_round(
                 f"{r_loc}.base_speed", base_speed_raw
             )
+            start_positions = normalize_start_positions(
+                f"{r_loc}.start_positions", rentry.get("start_positions")
+            )
 
             norm_rounds.append({
+                "start_positions": start_positions,
                 "ident":   r_ident,
                 "course_model_id":   cm_id,
                 "course_model_file": cm["file"],
@@ -475,6 +508,29 @@ def main() -> int:
             L.append(f'static const char kCustomCourseModel_{base}[] = "{nr["course_model_file"]}";')
     L.append("")
 
+    # --- Per-round start position arrays (8 kart slots) ---
+    L.append("// Per-round start positions (HSD world coords, X Y Z float).")
+    L.append("// Schema: cups.yaml -> rounds[].start_positions: [[x,y,z], ... up to 8].")
+    L.append("// 8 未満は最終要素を繰り返して slot 7 まで埋める (kart 重なるが宙浮きは避ける).")
+    L.append("// 完全省略時は kCustomStartPos_<...> を emit せず、ポインタは NULL =")
+    L.append("// GetStartPositionHook が vanilla alias path に fallback (= 原点 / 宙浮き).")
+    for nc in norm_cups:
+        for nr in nc["rounds"]:
+            sp = nr["start_positions"]
+            if not sp:
+                continue
+            base = f"{nc['cup_id']}_{nr['ident']}"
+            # Pad to 8 by repeating last entry
+            pad = list(sp) + [sp[-1]] * (8 - len(sp))
+            L.append(f"static const float kCustomStartPos_{base}[8][3] = {{")
+            for k, (x, y, z) in enumerate(pad):
+                tag = f"slot {k}"
+                if k >= len(sp):
+                    tag += " (padded from last)"
+                L.append(f"    {{ {x!r}f, {y!r}f, {z!r}f }},  // {tag}")
+            L.append("};")
+    L.append("")
+
     # --- CustomRound struct ---
     L.append("// CustomRound = full per-round resource + setting bundle.")
     L.append("// All getter hooks read these via (cupId, round_index) lookup.")
@@ -489,6 +545,7 @@ def main() -> int:
     L.append("    unsigned int bgmIdR;")
     L.append("    const struct AILapBonusRule* lapBonusRules;  // NULL = vanilla")
     L.append("    const struct CupSpeedEntry*  baseSpeed;      // NULL = vanilla; [3]")
+    L.append("    const float (*startPositions)[3];            // NULL = vanilla; [8] HSD world (x,y,z)")
     L.append("};")
     L.append("")
 
@@ -498,12 +555,13 @@ def main() -> int:
         L.append(f"static const struct CustomRound {sym}[{len(nc['rounds'])}] = {{")
         for nr in nc["rounds"]:
             base = f"{nc['cup_id']}_{nr['ident']}"
+            sp_sym = f"kCustomStartPos_{base}" if nr["start_positions"] else "0"
             L.append(
                 f"    {{ kCustomCollision_{base}, kCustomLineBin_{base}, "
                 f"kCustomCourseModel_{base}, "
                 f"{nr['laps']}, {nr['time']!r}f, {nr['bonus']!r}f, "
                 f"{nr['bgm_id']}u, {nr['bgm_id']}u, "
-                f"{nr['ai_rules_sym']}, {nr['base_speed_sym']} }},  "
+                f"{nr['ai_rules_sym']}, {nr['base_speed_sym']}, {sp_sym} }},  "
                 f"// {nr['ident']}"
             )
         L.append("};")
@@ -532,6 +590,7 @@ def main() -> int:
     # ----- Riivolution <file> fragments (deduped) -----
     seen = set()
     xml_lines = []
+    files_dir = feature_dir / "files"
     for nc in norm_cups:
         for nr in nc["rounds"]:
             for fn in (nr["line_bin"], nr["collision"]):
@@ -542,7 +601,6 @@ def main() -> int:
                     f'<file disc="/{fn}" '
                     f'external="/mkgp2_patch/{fn}" create="true"/>'
                 )
-            files_dir = feature_dir / "files"
             for fn in (nr["bgm_l"], nr["bgm_r"]):
                 if fn in seen:
                     continue
@@ -552,6 +610,16 @@ def main() -> int:
                 xml_lines.append(
                     f'<file disc="/{fn}" '
                     f'external="/mkgp2_patch/{fn}" create="true"/>'
+                )
+            # HSD .dat: emit only when shipped under files/. Vanilla course
+            # models (test_course_road.dat etc.) live in the ISO root and
+            # don't need a Riivolution entry; custom .dats do.
+            cm_file = nr["course_model_file"]
+            if cm_file not in seen and (files_dir / cm_file).exists():
+                seen.add(cm_file)
+                xml_lines.append(
+                    f'<file disc="/{cm_file}" '
+                    f'external="/mkgp2_patch/{cm_file}" create="true"/>'
                 )
     xml_path.write_text("\n".join(xml_lines) + ("\n" if xml_lines else ""))
 

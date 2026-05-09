@@ -24,3 +24,13 @@ course_models:
     # NULL を返す = 既存挙動と同じ (無 manipulation)。将来 vanilla joint 一覧を
     # Ghidra rodata から抜いてここに埋める。
     joints: []
+
+  my_course:
+    # Blender vis:my_course から M3 統一 ExportHSD で吐いた HSD .dat
+    # (39 DObj / 4074 verts / 3162 tris / 96.6 KB)。vanilla MR_highway を
+    # SObj template として借りるだけで、geometry / material / texture は
+    # 全部 hsdraw API で fresh に書いた self-contained .dat。
+    # cup_page3 の CourseDataLoadCustom が DVDOpen でこの名前を引く。
+    file: my_course.dat
+    # joints 省略は test_course と同じ理由 (cupId=17 の joint_extend は no-op)。
+    joints: []
