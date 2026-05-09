@@ -41,7 +41,7 @@ from pathlib import Path
 
 import mathutils
 from bpy.types import Operator, Panel, AddonPreferences
-from bpy.props import StringProperty, IntProperty, BoolProperty, FloatProperty
+from bpy.props import StringProperty, IntProperty, BoolProperty, FloatProperty, EnumProperty
 
 
 # ---------------------------------------------------------------------------
@@ -2558,6 +2558,55 @@ class MKGP2_PT_HsdAliasPanel(Panel):
                          icon='INFO')
 
 
+class MKGP2_PT_TextureFormatPanel(Panel):
+    """Sub-panel for picking the GX texture format the addon will use
+    when re-encoding a fresh material's BSDF Image / Base Color on
+    export. Only visible when an active object has an active material
+    slot in scope; the picker writes ``mat["mkgp2_target_format"]``
+    (str) which both the bundle and vis: exporters consult.
+
+    Existing materials imported from a vanilla .dat take the bypass
+    path and are NOT affected by this dropdown -- the original GX
+    bytes (and their original format) are reused byte-for-byte unless
+    the user dirties the underlying Image. The picker matters for:
+
+      * vis:<name> course synthesis (every BSDF goes through encode)
+      * mkgp2:<dat> bundle edits where the user added a brand-new
+        Blender material to a hand-added mesh
+    """
+    bl_label = "Texture format"
+    bl_idname = "MKGP2_PT_texture_format_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'MKGP2'
+    bl_parent_id = "MKGP2_PT_course_panel"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (obj is not None and
+                getattr(obj, "active_material", None) is not None)
+
+    def draw(self, context):
+        layout = self.layout
+        mat = context.active_object.active_material
+        layout.label(text=f"material: {mat.name}",
+                     icon='MATERIAL')
+        layout.prop(mat, "mkgp2_target_format", text="Target format")
+        # Surface the concrete behavior so users don't have to guess
+        # what the encoder will do for non-aligned CMP images.
+        if mat.mkgp2_target_format == "CMP":
+            box = layout.box()
+            box.label(
+                text="CMP demands 4x4 tile alignment.",
+                icon='INFO')
+            box.label(
+                text="Non-aligned images silently fall back to RGBA8.")
+        layout.label(text="Default: RGBA8 (lossless, ~8x larger than CMP)",
+                     icon='QUESTION')
+
+
 # ---------------------------------------------------------------------------
 # Preferences
 # ---------------------------------------------------------------------------
@@ -2767,6 +2816,7 @@ CLASSES = (
     MKGP2_OT_ReloadModules,
     MKGP2_PT_CoursePanel,
     MKGP2_PT_HsdAliasPanel,
+    MKGP2_PT_TextureFormatPanel,
 )
 
 
@@ -2801,6 +2851,34 @@ def register():
         name="New alias target",
         description="Target joint id (jobj_<n> from the bundle's joints list)",
     )
+    # Per-Material GX texture format picker. Persists in the .blend
+    # file as a Material attribute so the choice survives session
+    # restart. The shipped exporters (bundle / vis) consult this via
+    # `_blender_material.material_target_format(mat)`; default RGBA8
+    # keeps untouched .blend files byte-equiv with the pre-UI era.
+    from . import _blender_material as _bm
+    bpy.types.Material.mkgp2_target_format = EnumProperty(
+        name="MKGP2 target texture format",
+        description=(
+            "GX texture format the exporter will use when re-encoding "
+            "this material's BSDF on a fresh-material code path "
+            "(vis: course synthesis or bundle hand-added mesh). "
+            "Existing vanilla materials take the bypass path and ignore "
+            "this property."),
+        items=[
+            ("RGBA8",  "RGBA8",
+             "Lossless, 4 bytes/pixel. Default; matches the vanilla "
+             "round-trip byte-equiv guarantee."),
+            ("CMP",    "CMP (DXT1)",
+             "Lossy compressed, ~ 0.5 bytes/pixel (8x smaller than "
+             "RGBA8). Demands 4x4 tile alignment; non-aligned images "
+             "silently fall back to RGBA8."),
+            ("RGB5A3", "RGB5A3",
+             "Compact with 1-bit alpha + 4-bit alpha encoding, "
+             "~ 2 bytes/pixel (4x smaller than RGBA8). Quantized."),
+        ],
+        default=_bm.DEFAULT_TARGET_FORMAT,
+    )
     # Best-effort eager load so first import is fast and configuration errors
     # surface in the console instead of mid-operator.
     ok, err = reload_modules()
@@ -2821,6 +2899,8 @@ def unregister():
         del bpy.types.WindowManager.mkgp2_alias_new_name
     if hasattr(bpy.types.WindowManager, "mkgp2_alias_new_target"):
         del bpy.types.WindowManager.mkgp2_alias_new_target
+    if hasattr(bpy.types.Material, "mkgp2_target_format"):
+        del bpy.types.Material.mkgp2_target_format
     bpy.types.TOPBAR_MT_file_import.remove(_menu_import)
     bpy.types.TOPBAR_MT_file_export.remove(_menu_export)
     for cls in reversed(CLASSES):

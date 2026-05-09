@@ -59,16 +59,40 @@ def material_target_format(mat) -> tuple[str, int]:
     """Resolve a Blender Material's GX target format for fresh-material
     export.  Returns ``(name, gx_int)``.
 
-    Reads ``mat["mkgp2_target_format"]`` (str).  Falls back to
-    ``DEFAULT_TARGET_FORMAT`` when missing or unrecognized.  Unknown
-    values are silently coerced rather than raising so a bad property
-    doesn't kill the whole export.
+    Looks for the format in three places, in order:
+      1. ``mat.mkgp2_target_format`` -- the EnumProperty attribute the
+         addon registers on `bpy.types.Material`.  Returns the str
+         identifier (= "RGBA8" / "CMP" / "RGB5A3"); only present when
+         the addon is loaded.
+      2. ``mat["mkgp2_target_format"]`` -- the raw ID-property form,
+         in case the user (or a script that runs without the addon
+         registered) set the property by hand as a string.  Tolerates
+         int values as well by reverse-looking-up `_TEXFMT_FULL`.
+      3. Fallback to ``DEFAULT_TARGET_FORMAT``.
+
+    Unknown / out-of-range values are silently coerced to the default
+    rather than raising, so a bad property doesn't kill the whole
+    export.
     """
     name = DEFAULT_TARGET_FORMAT
     if mat is not None:
-        raw = mat.get("mkgp2_target_format")
-        if isinstance(raw, str) and raw in TARGET_FORMAT_CHOICES:
-            name = raw
+        # 1) Registered EnumProperty attribute -- always returns a str
+        #    identifier when present.
+        attr_val = getattr(mat, "mkgp2_target_format", None)
+        if isinstance(attr_val, str) and attr_val in TARGET_FORMAT_CHOICES:
+            name = attr_val
+        else:
+            # 2) Raw custom-property form (string or int).
+            raw = mat.get("mkgp2_target_format")
+            if isinstance(raw, str) and raw in TARGET_FORMAT_CHOICES:
+                name = raw
+            elif isinstance(raw, int):
+                # Reverse lookup: if `raw` matches a known fmt int and
+                # also belongs to the UI's allowed subset, accept it.
+                for k, v in _TEXFMT_FULL.items():
+                    if v == raw and k in TARGET_FORMAT_CHOICES:
+                        name = k
+                        break
     return name, _TEXFMT_FULL[name]
 
 
