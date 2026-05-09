@@ -45,6 +45,8 @@ import struct
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from . import _blender_material as bm
+
 
 # ---------------------------------------------------------------------------
 # HSDLib enum mirrors (string -> u32)
@@ -747,11 +749,24 @@ def export_bundle_to_dat(
             mat_name = mo.data.materials[0].name.split(".", 1)[0]
         mobj = mobj_by_mid.get(mat_name)
         if mobj is None:
-            # Fallback: if the bundle has a fresh material we don't know
-            # about (user added one), emit a default unlit grey.
-            print(f"  WARN: mesh '{mo.name}' material '{mat_name}' not in "
-                  "scene.json; emitting default unlit material")
-            mobj = hsdraw.MObj.alloc_unlit_color(200, 200, 200, 255)
+            # Fresh material the bundle didn't import (= user added a
+            # new Blender material to color a hand-added mesh). Build
+            # a vis:-style course-compatible MObj on the fly from the
+            # BSDF: Base Color drives a 4x4 RGBA8 fallback texture,
+            # or an Image Texture node feeding Base Color is used as
+            # the per-pixel pattern. Either way the result has the
+            # vanilla `CONSTANT|TEX0|ALPHA_MAT` (= 0x2011) render
+            # flags set, so the new mesh actually shows the user's
+            # color instead of silently going grey.
+            fresh_mat = (mo.data.materials[0]
+                         if mo.data.materials else None)
+            color = bm.bsdf_base_color(fresh_mat)
+            img_tuple = bm.bsdf_image_texture(fresh_mat)
+            mobj = bm.make_textured_mobj(hsdraw, color, img_tuple)
+            log(f"  INFO: mesh '{mo.name}' uses fresh material "
+                f"'{mat_name}'; built ad-hoc MObj from BSDF "
+                f"(color={color}, img="
+                f"{f'{img_tuple[0]}x{img_tuple[1]}' if img_tuple else 'solid 4x4'})")
 
         d = hsdraw.DObj.alloc()
         d.set_mobj(mobj)
