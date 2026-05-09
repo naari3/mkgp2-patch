@@ -523,9 +523,11 @@ class MKGP2_OT_ExportHSD(Operator):
             bundle["mkgp2_joints"] = json.dumps(joints)
 
         from . import _export_mkgp2_bundle
+        template_dat = _resolve_scene_template_dat()
         try:
             stats = _export_mkgp2_bundle.export_bundle_to_dat(
                 bundle, scene_json, self.filepath,
+                template_dat=template_dat,
             )
         except _export_mkgp2_bundle.TextureBuildError as ex:
             self.report({'ERROR'}, f"Texture failure: {ex}")
@@ -544,13 +546,21 @@ class MKGP2_OT_ExportHSD(Operator):
         return {'FINISHED'}
 
     def _execute_vis(self, context, vis):
-        # vis: branch is fully independent. The promote pipeline allocates
-        # scene_data from scratch via `hsdraw.Dat.alloc_scene_data()`, so
-        # no vanilla .dat is needed (or read).
+        # vis: branch threads a vanilla scene template through to the
+        # promote pipeline so the resulting Dat keeps LObj (lights) +
+        # COBJ (camera) descriptors.  Without those the in-game renderer
+        # leaves character meshes dark and texture sampling collapses on
+        # our own course geometry.  When the template is missing (the
+        # vanilla bin dir preference is unset or the file is absent),
+        # the helper falls back to `Dat.alloc_scene_data()` and emits a
+        # loud WARN to its log -- the operator still completes, but the
+        # output is unsafe to ship.
         from . import _promote_vis_to_hsd
+        template_dat = _resolve_scene_template_dat()
         try:
             stats = _promote_vis_to_hsd.promote_vis_to_dat(
                 vis, self.filepath,
+                template_dat=template_dat,
             )
         except Exception as ex:
             self.report({'ERROR'}, f"vis: promote failed: {ex}")
@@ -2729,6 +2739,64 @@ def _output_bin_dir():
 # Back-compat shim -- existing tests / scripts can keep calling this.
 # Prefer _vanilla_bin_dir or _output_bin_dir at the source.
 _default_bin_dir = _vanilla_bin_dir
+
+
+# Candidate template files, in fallback order.  Any vanilla course .dat
+# whose SObj carries LObj + COBJ works; we prefer `MR_highway_long_A`
+# because it's a long-form variant (= ships in every install) and its
+# scene_data is well-formed.  If one is missing, we step down the list.
+_SCENE_TEMPLATE_CANDIDATES = (
+    "MR_highway_long_A.dat",
+    "MR_highway_long_B.dat",
+    "MR_highway_long_C.dat",
+    "DN_stadium_long_a.dat",
+)
+
+
+def _scene_template_default_dirs():
+    """Built-in Dolphin dump locations to probe when the addon
+    preference `default_bin_dir` is empty.  Conservative list -- only
+    the paths the Dolphin emulator hands a fresh user by default.
+    """
+    home = Path.home()
+    return (
+        home / "Documents" / "Dolphin ROMs" / "Triforce" / "mkgp2" / "files",
+        home / "Documents" / "Dolphin Emulator" / "Triforce" / "mkgp2" / "files",
+    )
+
+
+def _resolve_scene_template_dat():
+    """Return an absolute path string to a vanilla course .dat to use as
+    a scene template, or `None` when nothing usable is configured.
+
+    The HSD export pipeline (both `vis: -> .dat` and `mkgp2: -> .dat`)
+    seeds the new Dat from this template so it keeps the SObj's LObj
+    (lights) + COBJ (camera) descriptors -- `Dat.alloc_scene_data()`
+    only allocates JObjDescs, and a Dat without LObj/COBJ leaves
+    character meshes dark and breaks texture sampling on our own course
+    geometry in-game.
+
+    Lookup order (first hit wins):
+      1. addon preference `default_bin_dir` (= the vanilla ROM dump
+         directory the user already configures for vanilla import).
+      2. Built-in Dolphin dump conventions probed by
+         ``_scene_template_default_dirs()`` -- this gives a working
+         default on a stock setup so the user does not have to wire
+         up the preference just to get characters lit.
+      3. Returns `None` -- the export helper falls back to
+         ``alloc_scene_data()`` and warns loudly.
+    """
+    candidate_dirs = []
+    bin_dir = _vanilla_bin_dir()
+    if bin_dir:
+        candidate_dirs.append(Path(bin_dir))
+    candidate_dirs.extend(_scene_template_default_dirs())
+    for d in candidate_dirs:
+        for name in _SCENE_TEMPLATE_CANDIDATES:
+            cand = d / name
+            if cand.is_file():
+                return str(cand)
+    return None
 
 
 def _is_inside_vanilla(path):

@@ -575,6 +575,7 @@ def export_bundle_to_dat(
     output_dat,
     *,
     log_fn=None,
+    template_dat=None,
 ) -> dict:
     """Write `bundle` (a Blender `mkgp2:<dat>` collection) out as a
     fresh HSD .dat at `output_dat`.
@@ -589,6 +590,11 @@ def export_bundle_to_dat(
                   starting with `{` is treated as inline JSON, anything
                   else is parsed as a path.
       output_dat  Destination .dat path.
+      template_dat  Optional path to a vanilla course .dat used as the
+                  scene template — see ``_promote_vis_to_hsd`` for the
+                  rationale.  ``None`` falls back to
+                  ``hsdraw.Dat.alloc_scene_data()`` (no LObj/COBJ;
+                  unsafe to ship, kept only for byte-equiv tests).
 
     Returns a stats dict. Raises TextureBuildError / RuntimeError on
     fatal inconsistencies (missing stash, malformed material reference,
@@ -835,16 +841,27 @@ def export_bundle_to_dat(
             "pick a scene_data RootJoint")
     root_jobj = jobj_by_id[root_id]
 
-    dat = hsdraw.Dat.alloc_scene_data()
+    # Seed the Dat from a vanilla scene template when available -- see
+    # `_promote_vis_to_hsd.promote_vis_to_dat` for the LObj/COBJ rationale.
+    if template_dat is not None:
+        dat = bm.load_scene_template_dat(hsdraw, template_dat)
+        log(f"scene template: {Path(template_dat).name}")
+    else:
+        log("WARN: no scene template; falling back to "
+            "Dat.alloc_scene_data() — output will be missing LObj/COBJ "
+            "and will render incorrectly in-game (characters dark, "
+            "course textures collapsed). Use only for byte-equivalence "
+            "tests, NEVER for shipping.")
+        dat = hsdraw.Dat.alloc_scene_data()
     sd = dat.scene_data()
     if sd is None:
-        raise RuntimeError("Dat.alloc_scene_data() did not produce a "
-                           "scene_data root; hsdraw bug?")
+        raise RuntimeError("scene template / alloc_scene_data() did not "
+                           "produce a scene_data root; hsdraw bug?")
     sobj = hsdraw.SObj.from_struct(sd.data)
     descs = sobj.jobj_descs()
     if not descs:
-        raise RuntimeError("freshly allocated scene_data has no JObjDesc; "
-                           "hsdraw alloc_scene_data() shape changed?")
+        raise RuntimeError("scene_data has no JObjDesc; hsdraw alloc "
+                           "shape changed?")
     descs[0].set_root_joint(root_jobj)
 
     # Add every alias from the bundle's stash. Aliases pointing at a

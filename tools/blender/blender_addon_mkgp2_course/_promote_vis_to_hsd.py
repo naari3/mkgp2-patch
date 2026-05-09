@@ -116,12 +116,20 @@ def promote_vis_to_dat(
     *,
     course_name: str | None = None,
     log_fn=None,
+    template_dat=None,
 ) -> dict:
     """Build a fresh `<course>.dat` from `vis_collection`'s meshes.
 
-    No vanilla `.dat` is read. The scene_data SObj (with a single
-    JOBJDesc whose RootJoint we set to our synthesized JObj) is
-    fully allocated from scratch via `hsdraw.Dat.alloc_scene_data()`.
+    Scene template
+    --------------
+    When ``template_dat`` is provided, the resulting Dat is seeded from
+    that vanilla course .dat (everything except `scene_data` is stripped)
+    so the SObj retains LObj (lights) and COBJ (camera) descriptors.
+    The in-game renderer reads both: a Dat without them (the case when
+    we fall back to ``hsdraw.Dat.alloc_scene_data()``) leaves character
+    meshes dark and breaks texture sampling on our own geometry.  Pass
+    ``template_dat=None`` only for byte-equivalence tests / structural
+    asserts where the absence of light/camera data is acceptable.
 
     Parameters:
       vis_collection -- the `vis:<name>` Collection to promote.
@@ -129,6 +137,10 @@ def promote_vis_to_dat(
       course_name    -- stem used for the new `<stem>_joint` alias.
                         Defaults to the collection's name minus the
                         leading `vis:`.
+      template_dat   -- optional path to a vanilla course .dat used as
+                        the scene template.  ``None`` falls back to
+                        ``hsdraw.Dat.alloc_scene_data()`` and emits a
+                        loud warning -- the output is unsafe to ship.
 
     Returns a stats dict (dobj_count, total_verts, total_tris,
     output_size).  Raises RuntimeError on any consistency failure
@@ -214,23 +226,34 @@ def promote_vis_to_dat(
     root_jobj.flags = _JOBJ_OPA | _JOBJ_ROOT_OPA
     root_jobj.set_dobj(dobjs[0])
 
-    # ---- Build the .dat from scratch -----------------------------------
-    # Fully independent: no vanilla .dat is read. `Dat.alloc_scene_data()`
-    # produces a Dat whose only root is `scene_data`, an SObj carrying
-    # one JOBJDesc with its RootJoint reference NULL. We set it to the
-    # synthesized root JObj and add an alias root for the joint loader.
-    dat = hsdraw.Dat.alloc_scene_data()
+    # ---- Build the .dat from a scene template --------------------------
+    # The renderer needs the SObj to carry LObj (lights) + COBJ (camera)
+    # descriptors.  `Dat.alloc_scene_data()` only allocates the JObjDesc
+    # array, so its output leaves characters dark and breaks texture
+    # sampling.  `bm.load_scene_template_dat()` reads any vanilla course
+    # .dat, drops every root except `scene_data`, and hands us a Dat
+    # whose SObj keeps the template's LObj/COBJ verbatim — only the
+    # JObjDesc[0].RootJoint and the alias roots need swapping in.
+    if template_dat is not None:
+        dat = bm.load_scene_template_dat(hsdraw, template_dat)
+        log(f"  scene template: {Path(template_dat).name}")
+    else:
+        log("  WARN: no scene template; falling back to "
+            "Dat.alloc_scene_data() — output will be missing LObj/COBJ "
+            "and will render incorrectly in-game (characters dark, "
+            "course textures collapsed). Use only for byte-equivalence "
+            "tests, NEVER for shipping.")
+        dat = hsdraw.Dat.alloc_scene_data()
     sd = dat.scene_data()
     if sd is None:
         raise RuntimeError(
-            "Dat.alloc_scene_data() did not produce a scene_data root; "
-            "hsdraw bug?")
+            "scene template / alloc_scene_data() did not produce a "
+            "scene_data root; hsdraw bug?")
     sobj = hsdraw.SObj.from_struct(sd.data)
     descs = sobj.jobj_descs()
     if not descs:
         raise RuntimeError(
-            "freshly allocated scene_data has no JOBJDesc; "
-            "hsdraw alloc_scene_data() shape changed?")
+            "scene_data has no JOBJDesc; hsdraw alloc shape changed?")
     descs[0].set_root_joint(root_jobj)
 
     alias_name = f"{name}_joint"

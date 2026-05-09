@@ -22,6 +22,10 @@ in the same `blender_addon_mkgp2_course` package):
   * ``bsdf_image_texture(mat)`` -> ``(w, h, rgba_bytes)`` or ``None``
   * ``make_textured_mobj(hsdraw, color, img_tuple)`` -> hsdraw.MObj
   * ``blender_to_hsd(co)`` -> ``(x, y, z)`` in MKGP2 world frame
+  * ``load_scene_template_dat(hsdraw, template_path)`` -> hsdraw.Dat
+    seeded from a vanilla course .dat with non-`scene_data` roots
+    stripped; preserves LObj (lights) and COBJ (camera) descriptors
+    that `Dat.alloc_scene_data()` omits.
 
 Coordinate transform belongs here too because every Blender-side mesh
 exporter uses the same convention; centralizing it makes it harder to
@@ -29,6 +33,8 @@ drift the rule.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 
 # -- GX texture format table -----------------------------------------------
@@ -250,6 +256,70 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
     mobj.render_flags = 0x2011
     mobj.set_textures(tobj)
     return mobj
+
+
+# -- Scene template loader -------------------------------------------------
+
+def load_scene_template_dat(hsdraw, template_path):
+    """Load a vanilla course `.dat` to use as a structural template,
+    strip every root except `scene_data`, and return the resulting
+    `hsdraw.Dat` ready for the caller to repoint
+    ``scene_data.JOBJDescs[0].RootJoint`` and add their own alias roots.
+
+    Why this exists: ``hsdraw.Dat.alloc_scene_data()`` produces an SObj
+    that holds **only** the JObjDesc array.  A vanilla course SObj
+    additionally carries pointers to LObj (lights) and COBJ (camera)
+    descriptors — the in-game renderer reads both, and an SObj that
+    lacks them leaves character meshes dark and texture sampling broken.
+    The cheapest way to recover those without re-implementing the LObj
+    / COBJ allocators in hsdraw is to load any vanilla course .dat
+    (whose layout is uniform across the shipping set), strip everything
+    that isn't `scene_data`, and reuse what's left.
+
+    Parameters
+    ----------
+    hsdraw
+        The vendored hsdraw module (passed in so this helper does not
+        carry its own import; mirrors the convention used elsewhere
+        in this package for callable helpers).
+    template_path : str | os.PathLike
+        Path to a vanilla course .dat.  Any non-shade course .dat from
+        the dump works (e.g. ``MR_highway_long_A.dat``).  The function
+        does not validate the source -- it just trusts that
+        `scene_data` exists with at least one JObjDesc.
+
+    Returns
+    -------
+    hsdraw.Dat
+        A Dat whose only root is `scene_data`.  Caller must:
+          * call ``scene_data().jobj_descs()[0].set_root_joint(rj)``
+            with their synthesized root JObj, and
+          * ``add_root(alias, rj)`` for the joint loader's alias.
+        The Dat retains the template's LObj/COBJ descriptors verbatim;
+        write() will serialize them alongside the new geometry.
+    """
+    template_path = Path(template_path)
+    template_bytes = template_path.read_bytes()
+    dat = hsdraw.parse_dat(template_bytes)
+    sd = dat.scene_data()
+    if sd is None:
+        raise RuntimeError(
+            f"scene template {template_path.name} has no scene_data root; "
+            "cannot use as a structural template")
+    sobj = hsdraw.SObj.from_struct(sd.data)
+    descs = sobj.jobj_descs()
+    if not descs:
+        raise RuntimeError(
+            f"scene template {template_path.name} scene_data has no "
+            "JObjDescs; this template is too minimal")
+    # Drop every root except scene_data.  HSDLib serializes only roots
+    # in the table, so the orphaned joint trees no longer get written
+    # out — the resulting Dat is genuinely small (hundreds of bytes
+    # over the size needed for our own geometry).
+    for rn in list(dat.root_names()):
+        if rn != "scene_data":
+            dat.remove_root(rn)
+    return dat
 
 
 # -- Coordinate transform --------------------------------------------------
