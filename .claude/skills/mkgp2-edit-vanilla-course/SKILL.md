@@ -105,9 +105,25 @@ bundle 経路の export は **deterministic**:
 
 つまり「既存 vanilla を活かして mesh + 単色 material をちょい足し」も「Blender でロードした任意の画像をテクスチャとして貼った mesh をちょい足し」も両方完全動作する (`test_addon_bundle_add_mesh.py` で v3/v4 case 検証済)。
 
-**現状の制約**:
-- encoder は **`GxTexFmt::RGBA8` (= 6) 固定**。CMP / RGB5A3 / I8 等の compact format は addon 側から選択する経路無し → 同一画像で CMP 比 ~8x のファイルサイズ。format 選択 UI が要る場合は別 task
-- Image Texture の解像度は `bpy.data.images.size` から取る (任意)。ただし `gx_encode` 内部で alignment 制約があるかも (要検証、4 の倍数なら無難)
+**format 選択 (Material EnumProperty)**:
+
+Sidebar > MKGP2 > **Texture format** sub-panel (active object に active material があれば表示される) で、Material per に GX texture format を 3 択から選べる:
+
+| 選択肢 | byte/pixel | 特徴 |
+|---|---|---|
+| **RGBA8** (default) | 4.0 | lossless、byte-equiv 保証 |
+| **CMP** (DXT1) | 0.5 | ~8x compact、lossy quantize、4x4 tile alignment 必須 (= 4 の倍数でない `(w, h)` は silent fallback で RGBA8 化) |
+| **RGB5A3** | 2.0 | ~4x compact、16-bit quantize、alpha 1bit + 4bit |
+
+実体は `bpy.types.Material.mkgp2_target_format` (EnumProperty)、`.blend` ファイルに保存される。Material level で持っているので、同じ Material を共有する複数 mesh は同じ format になる。
+
+**bypass dispatch との関係**:
+- vanilla `.dat` から import した既存 Material は **bypass 経路** (= `mkgp2_gx_path` の生 GX バイトをそのまま採用) を取るので、`mkgp2_target_format` を変えても無視される。元の format (CMP / RGB5A3 / etc. のまま) が保たれる
+- format prop が効くのは **fresh material 経路** (vis: 経路 + bundle 内 hand-added mesh + 新規追加 Material) のみ
+
+**残る制約**:
+- vanilla CMP image を**別 format に再エンコードしたい場合**は、Image Editor で 1 pixel touch して dirty 化 → reencode 経路に回す (現状は同 format で再エンコード、format 変更は未対応)
+- Image Texture の解像度は `bpy.data.images.size` から取る (任意)。CMP の 4 の倍数制約以外、上限はない (ただし `gx_encode` 内 alignment は要検証、特殊な解像度はリスク)
 - BSDF Base Color と Image Texture の両方を同時 active にした場合、Image Texture 優先 (= `bsdf_image_texture` の戻り値が non-None なら `make_textured_mobj` の `img_tuple` がそれになる)、単色 fallback は使われない
 
 vis: 経路 (新規コース合成、`mkgp2-new-course` skill) との material 構築ロジックは **共有 helper `_blender_material.py` 経由で同一**。新材の振る舞いを変えたいときはこのモジュール 1 箇所で済む。

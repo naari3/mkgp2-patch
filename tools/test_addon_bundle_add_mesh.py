@@ -19,6 +19,12 @@ Pipeline:
      trip through `make_textured_mobj` -> `gx_encode` and end up in
      the output .dat as a TObj-attached Image of matching dimensions
      and pixel values.
+  8) Verify the per-Material `mkgp2_target_format` UI prop actually
+     drives encoder format selection: a cube whose material has the
+     EnumProperty set to "CMP" must end up with a CMP-format Image
+     in the output .dat (not RGBA8), and decoding it should give
+     pixels approximately equal to the source orange (CMP is DXT1-
+     style lossy so we tolerate per-channel deltas <= 32).
 
 Documents the boundaries of bundle round-trip mesh-add support so
 the mkgp2-edit-vanilla-course skill can quote them accurately.
@@ -63,10 +69,18 @@ def _export_stats(addon, bundle, out_dat):
         bundle, stash_sj, out_dat)
 
 
-def _find_image_in_dat(out_dat, expected_w, expected_h, expected_pixel_rgba):
+def _find_image_in_dat(out_dat, expected_w, expected_h, expected_pixel_rgba,
+                       *, require_format=None, tolerance=0):
     """Walk every reachable TObj in `out_dat` and return True if at least
     one Image matches (`expected_w`, `expected_h`) AND every pixel
-    decodes to `expected_pixel_rgba` (= 4-tuple of 0..255 ints).
+    decodes to `expected_pixel_rgba` (= 4-tuple of 0..255 ints) within
+    ``tolerance`` per channel.
+
+    `require_format` (int, e.g. `_TEXFMT["CMP"] = 14`) restricts the
+    search to images whose `img.format == require_format`; pass None
+    to accept any format.  Used by the CMP-target-format test to
+    confirm the encoder honored the picker rather than silently
+    falling back to RGBA8.
 
     Walking pattern mirrors `blender_import_hsd._collect_gx_bytes` so
     we hit every alias root + scene_data RootJoint without missing
@@ -112,12 +126,25 @@ def _find_image_in_dat(out_dat, expected_w, expected_h, expected_pixel_rgba):
                                    if isinstance(timg, hsdraw.HsdStruct)
                                    else timg)
                             if (img.width == expected_w and
-                                    img.height == expected_h):
+                                    img.height == expected_h and
+                                    (require_format is None or
+                                     img.format == require_format)):
                                 gx = img.image_data()
+                                # Decode using the image's actual format so
+                                # CMP / RGB5A3 / RGBA8 each round-trip via
+                                # the correct decoder.
                                 rgba = bytes(hsdraw.gx_decode(
-                                    6, expected_w, expected_h, gx))
-                                if all(rgba[i:i + 4] == expected_pixel
-                                       for i in range(0, len(rgba), 4)):
+                                    img.format, expected_w, expected_h, gx))
+                                ok = True
+                                for i in range(0, len(rgba), 4):
+                                    for ch in range(4):
+                                        if abs(rgba[i + ch]
+                                               - expected_pixel[ch]) > tolerance:
+                                            ok = False
+                                            break
+                                    if not ok:
+                                        break
+                                if ok:
                                     return True
                         t = t.next
                 d = d.next
@@ -318,6 +345,64 @@ def main():
                 f"with {orange}; the BSDF Image Texture path is broken")
             print(f"[test] OK: BSDF Image Texture round-tripped: "
                   f"{W}x{H} RGBA8 = {orange} appears in v4.dat")
+
+            # ---- v5) Cube whose material asks for CMP encoder format -----
+            # Reuse the same orange image / BSDF wiring as v4, but on a
+            # fresh material whose `mkgp2_target_format` EnumProperty is
+            # set to "CMP".  Verify the encoder honored it: the output
+            # .dat contains a CMP-format Image of the same dims, and
+            # decoding that Image via gx_decode gives pixels close to
+            # orange (CMP is DXT1-style lossy so we tolerate per-channel
+            # delta <= 32).
+            cmp_mat = bpy.data.materials.new(name="cmp_img_mat")
+            cmp_mat.use_nodes = True
+            nt2 = cmp_mat.node_tree
+            bsdf3 = nt2.nodes.get("Principled BSDF")
+            assert bsdf3 is not None
+            tex_node2 = nt2.nodes.new(type='ShaderNodeTexImage')
+            tex_node2.image = img_tex   # reuse the 8x8 orange Image
+            nt2.links.new(tex_node2.outputs["Color"],
+                          bsdf3.inputs["Base Color"])
+            # Set the EnumProperty the addon registered. Attribute access
+            # accepts the str identifier directly.
+            cmp_mat.mkgp2_target_format = "CMP"
+
+            # Helper sanity: material_target_format must report CMP now.
+            fmt_name, fmt_int = bm.material_target_format(cmp_mat)
+            assert fmt_name == "CMP" and fmt_int == bm._TEXFMT_FULL["CMP"], (
+                f"material_target_format misread the prop: "
+                f"got ({fmt_name!r}, {fmt_int})")
+
+            bpy.ops.mesh.primitive_cube_add(size=5.0,
+                                            location=(80.0, 0.0, 0.0))
+            cmp_cube = bpy.context.active_object
+            cmp_cube.name = "added_cube_cmp_format"
+            for c in list(cmp_cube.users_collection):
+                c.objects.unlink(cmp_cube)
+            bundle.objects.link(cmp_cube)
+            cmp_cube.data.materials.clear()
+            cmp_cube.data.materials.append(cmp_mat)
+            cmp_cube["mkgp2_joint_id"] = existing_jid
+            cmp_cube["mkgp2_cull"] = "NONE"
+
+            out_v5 = os.path.join(td, "v5.dat")
+            stats_v5 = _export_stats(addon, bundle, out_v5)
+            assert stats_v5["meshes"] == n_v4 + 1, (
+                f"CMP-format cube should land in the .dat; "
+                f"expected {n_v4 + 1} meshes, got {stats_v5['meshes']}")
+            assert stats_v5["fresh_materials"] == 3, (
+                f"v5 should report 3 ad-hoc MObjs (magenta + orange-RGBA8 + "
+                f"orange-CMP); stats: {stats_v5}")
+
+            cmp_int = bm._TEXFMT_FULL["CMP"]
+            assert _find_image_in_dat(
+                out_v5, W, H, orange,
+                require_format=cmp_int, tolerance=32), (
+                f"output .dat does not contain an {W}x{H} CMP-format "
+                f"Image with pixels ~ {orange}; the target_format "
+                f"plumbing is broken (or CMP encoder rejected the input)")
+            print(f"[test] OK: target_format=CMP honored: "
+                  f"{W}x{H} CMP image with pixels ~ {orange} appears in v5.dat")
 
         addon.unregister()
         print("[test] PASS")

@@ -209,4 +209,9 @@
   - 確認済: D-2 は **機能拡張ではない**。任意の Blender Image Texture node 経由のテクスチャ表示は B-3 完了時点で既に動作 (`test_addon_bundle_add_mesh.py:v4` で 8x8 全 orange round-trip 検証 PASS、commit `f1afeda`)
   - 残る価値: ローカル `_blender_material.make_textured_mobj` ~30 行 (= MObj/TObj/Image を手で配線、ALPHA_MAT 抜けバグの跡 `project_alloc_unlit_color_alpha_mat.md`) を hsdraw 上流の 1-call API (`MObj.alloc_textured(color_rgba, image_w, image_h, image_data)` で `render_flags=0x2011 / TObj+Image 自動配線` を内蔵) に置き換えれば ~5 行に縮む
   - A-1/A-2 と一緒に hsdraw upstream PR で扱うのが筋
-  - 関連 / 並走できる別 task: format 選択 UI (CMP / RGB5A3 / I8 等を Material Custom Property `mkgp2_target_format` で指定) — 現状 RGBA8 (format=6) 固定なので大きい texture でファイルサイズ膨張する
+- [x] **format 選択 UI (Material EnumProperty `mkgp2_target_format`) — 完了 (2026-05-09)**
+  - 当初は D-2 の関連 task として書いていたが、独立して完結したので別項目に切り出し
+  - 採用: 3 択 (RGBA8 default / CMP / RGB5A3)、Material 単位で per-Material 設定、N panel `MKGP2 > Texture format` から
+  - commits: `f10c512` helper 拡張 + `4a8fe62` exporter 結線 + `9b74b12` UI panel + EnumProperty + `<this>` test v5 (CMP 経路) + skill 更新
+  - 検証: `tools/test_addon_bundle_add_mesh.py:v5` で `mkgp2_target_format = "CMP"` を設定した cube → 出力 .dat 内に CMP-format Image (= 32 byte) が含まれ、decode 後 pixel が orange と tolerance 32 以内で一致 PASS。byte-equiv (test_addon_hsd_export v0==v1 sha=45b73565...) も維持
+  - 残る制約: vanilla CMP image を別 format に切り替える経路は無し (= 同 format で reencode のみ)、CMP の 4x4 alignment 違反は silent RGBA8 fallback

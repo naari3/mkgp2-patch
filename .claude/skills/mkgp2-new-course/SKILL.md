@@ -229,10 +229,11 @@ Scene/
 
 ### マテリアル
 
-- `vis:` 経路は **Principled BSDF 1 ノードのみ**。BSDF Base Color が単色のとき、`_promote_vis_to_hsd._make_textured_mobj` が **4x4 RGBA8 solid texture を自動 fallback 合成** (`_promote_vis_to_hsd.py:165-171`) して TObj 化するので、ユーザー側はテクスチャ設定不要
-- mesh ごとに per-pixel pattern を持たせたい場合だけ `_bake_vis_textures.py` を使って Blender 側でテクスチャを bake (= BSDF の Base Color に Image Texture node を繋ぐ); BSDF Image Texture が居れば `_bsdf_image_texture_node` がそれを優先採用、無ければ単色 fallback (`_promote_vis_to_hsd.py:45-79`)
+- `vis:` 経路は **Principled BSDF 1 ノードのみ**。BSDF Base Color が単色のとき、共有 helper `_blender_material.make_textured_mobj` が **4x4 RGBA8 solid texture を自動 fallback 合成** して TObj 化するので、ユーザー側はテクスチャ設定不要
+- mesh ごとに per-pixel pattern を持たせたい場合は BSDF の Base Color に Image Texture node を繋ぐ; helper がそれを優先採用、無ければ単色 fallback (`_blender_material.bsdf_image_texture` で抽出)
 - `mb.set_cull_back(True)` が `_promote_vis_to_hsd.py` で立つので Blender CCW winding でそのまま正しく描画される
 - mesh の `material_slots` を増やすと slot ごとに POBJ が分割される (1 slot = 1 DObj/MObj/POBJ)
+- **encoder format は per Material で選択可** (Sidebar > MKGP2 > Texture format): default RGBA8、CMP (~8x compact、lossy)、RGB5A3 (~4x compact、quantize) の 3 択。texture が大きい (256x256 以上) なら CMP に切り替えてファイルサイズ削減推奨。詳細は `mkgp2-edit-vanilla-course` skill の "format 選択 (Material EnumProperty)" 節
 
 ### 座標系 (Blender Z-up → MKGP2 Y-up)
 
