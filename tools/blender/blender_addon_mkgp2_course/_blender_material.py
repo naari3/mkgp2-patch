@@ -31,6 +31,62 @@ drift the rule.
 from __future__ import annotations
 
 
+# -- GX texture format table -----------------------------------------------
+#
+# GxTexFmt name -> integer enum (mirrors HSDLib HSDRaw/GX/GXEnums.cs).
+# Kept in sync with `blender_import_hsd._TEXFMT` (the importer carries
+# the full table for round-trip purposes; the exporter only needs the
+# subset users actually pick from when constructing a fresh material).
+_TEXFMT_FULL = {
+    "I4": 0, "I8": 1, "IA4": 2, "IA8": 3,
+    "RGB565": 4, "RGB5A3": 5, "RGBA8": 6,
+    "CI4": 8, "CI8": 9, "CI14X2": 10,
+    "CMP": 14,
+}
+
+# Subset exposed via the addon UI (Material -> Target texture format).
+# Keep this list short on purpose:
+#   * RGBA8  = lossless, the default; matches the byte-equiv path.
+#   * CMP    = compact lossy (DXT1-style, 8x smaller than RGBA8).
+#   * RGB5A3 = compact with alpha (4x smaller, 16-bit quantized).
+# The remaining vanilla formats are still picked up on import (= bypass
+# path) but cannot be selected for fresh materials from the addon.
+TARGET_FORMAT_CHOICES = ("RGBA8", "CMP", "RGB5A3")
+DEFAULT_TARGET_FORMAT = "RGBA8"
+
+
+def material_target_format(mat) -> tuple[str, int]:
+    """Resolve a Blender Material's GX target format for fresh-material
+    export.  Returns ``(name, gx_int)``.
+
+    Reads ``mat["mkgp2_target_format"]`` (str).  Falls back to
+    ``DEFAULT_TARGET_FORMAT`` when missing or unrecognized.  Unknown
+    values are silently coerced rather than raising so a bad property
+    doesn't kill the whole export.
+    """
+    name = DEFAULT_TARGET_FORMAT
+    if mat is not None:
+        raw = mat.get("mkgp2_target_format")
+        if isinstance(raw, str) and raw in TARGET_FORMAT_CHOICES:
+            name = raw
+    return name, _TEXFMT_FULL[name]
+
+
+def _format_alignment_ok(fmt_name: str, w: int, h: int) -> bool:
+    """Compressed formats need power-of-2 / 4-aligned dimensions; the
+    GX hardware tile size is format-specific.  CMP demands 4x4 tiles.
+    RGB5A3 / RGBA8 etc. are 4x4 tiles too but tolerate non-multiples
+    of 4 via padding inside hsdraw's encoder.
+
+    Returns True if the (w, h) pair is safe for the named format,
+    False if the encoder would either reject or silently pad.  Callers
+    use this to decide whether to fall back to RGBA8.
+    """
+    if fmt_name == "CMP":
+        return (w % 4 == 0) and (h % 4 == 0)
+    return True
+
+
 # -- BSDF readers ----------------------------------------------------------
 
 def bsdf_base_color(mat) -> tuple:
@@ -86,7 +142,7 @@ def bsdf_image_texture(mat):
 
 # -- HSD MObj/TObj/Image construction --------------------------------------
 
-def make_textured_mobj(hsdraw, color, img_tuple):
+def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
     """Build an MObj with TObj+Image attached, RenderFlags configured
     vanilla-compatible (`CONSTANT|TEX0|ALPHA_MAT` = 0x2011).
 
@@ -94,6 +150,19 @@ def make_textured_mobj(hsdraw, color, img_tuple):
     multiplied with the texture sample under CONSTANT mode).
     `img_tuple` = (w, h, raw_rgba_bytes); if None, synthesize a 4x4
     solid texture filled with `color`.
+
+    `target_format` selects the GX texture format the encoder writes:
+      * None / "RGBA8" -> 6  (lossless, default; ~ 4 bytes/pixel)
+      * "CMP"          -> 14 (DXT1-style, ~ 0.5 bytes/pixel; lossy)
+      * "RGB5A3"       -> 5  (16-bit; ~ 2 bytes/pixel; quantized)
+    Pass either the str name (looked up in `_TEXFMT_FULL`) or an int
+    enum value directly.  Callers building from `material_target_format`
+    pass the int; tests / standalone callers can pass the name.
+
+    If the requested format demands tile alignment that this `(w, h)`
+    pair fails (e.g. CMP needs both dims divisible by 4), the function
+    silently falls back to RGBA8 rather than raising — so a 5x7 image
+    on a CMP-tagged material still exports, just in RGBA8.
     """
     if img_tuple is None:
         # Synth 4x4 solid color (this is the fallback when the BSDF has
@@ -105,15 +174,36 @@ def make_textured_mobj(hsdraw, color, img_tuple):
     else:
         w, h, raw = img_tuple
 
-    # GX-encode RGBA8 (format=6). hsdraw handles tile alignment + 32-byte
-    # padding internally (`gx_encode` wraps `gx_image::encode_image`).
-    gx_bytes = hsdraw.gx_encode(6, w, h, raw)
+    # Resolve target_format -> (name, int).  None -> default RGBA8.
+    if target_format is None:
+        fmt_name, fmt_int = DEFAULT_TARGET_FORMAT, _TEXFMT_FULL[DEFAULT_TARGET_FORMAT]
+    elif isinstance(target_format, str):
+        fmt_name = target_format
+        fmt_int = _TEXFMT_FULL.get(fmt_name, _TEXFMT_FULL[DEFAULT_TARGET_FORMAT])
+    else:
+        fmt_int = int(target_format)
+        fmt_name = next(
+            (k for k, v in _TEXFMT_FULL.items() if v == fmt_int),
+            DEFAULT_TARGET_FORMAT,
+        )
+
+    # Alignment guard -- silently downgrade to RGBA8 if the requested
+    # format can't fit this (w, h) pair.  hsdraw's encoder might pad
+    # internally but the guarantees there aren't strong; safer to fall
+    # back than to ship a misaligned CMP payload.
+    if not _format_alignment_ok(fmt_name, w, h):
+        fmt_name = DEFAULT_TARGET_FORMAT
+        fmt_int = _TEXFMT_FULL[DEFAULT_TARGET_FORMAT]
+
+    # GX-encode.  hsdraw handles tile alignment + 32-byte padding
+    # internally (`gx_encode` wraps `gx_image::encode_image`).
+    gx_bytes = hsdraw.gx_encode(fmt_int, w, h, raw)
 
     # Image alloc + populate.
     img = hsdraw.Image.alloc()
     img.width = w
     img.height = h
-    img.format = 6  # GxTexFmt::RGBA8
+    img.format = fmt_int
     img.set_image_data_bytes(gx_bytes)
 
     # TObj alloc + populate. Vanilla road MObj's TObj uses these defaults
