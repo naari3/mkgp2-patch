@@ -41,8 +41,10 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
     solid texture from `color_tuple`).
 
     POBJ attributes: POS + NRM + TEX0 (UV) — vanilla course primary
-    geometry compatible. Per-triangle face normal は flat shading 用、
-    UV は (0,0) 固定 (テクスチャはどうせ単色 4x4 なので UV は意味を持たない)。
+    geometry compatible. Per-triangle face normal は flat shading 用。
+    UV は Blender の active UV layer から per-loop で読み出す。UV が無い
+    場合は polygon の corner index に基づく fallback (tri/quad は
+    natural unit square mapping、n-gon は (0,0) flat)。
     """
     me = obj.data
     poly_idxs = [i for i, p in enumerate(me.polygons)
@@ -53,12 +55,16 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
     color = _bsdf_base_color(mat)
     img_tuple = _bsdf_image_texture_node(mat)
 
+    uv_layer = me.uv_layers.active
+
     # 実装方針: per-triangle の face normal を 3 vert 全部に同じ値で書き、
     # vert dedup は捨て、triangle ごとに 3 vert を独立 emit (normal 競合回避)。
-    # UV は per-vertex で (0, 0) を渡す (どのみち単色 4x4 テクスチャなので
-    # UV 座標は描画結果に影響しない)。
+    # UV は active UV layer の per-loop データを採用; 無ければ corner index
+    # から (0,0)/(1,0)/(1,1)/(0,1) を生成。GameCube/HSD は V が下向きの
+    # convention なので Blender V を 1.0 - v で反転。
     positions: list = []
     normals:   list = []
+    uvs:       list = []
     mb = hsdraw.MeshBuilder()
     # Don't call `mb.set_cull_back(True)`.  hsdraw's set_cull_back
     # toggles POBJ.flags bit `0x4000`, but the game's POBJ_FLAG enum
@@ -87,24 +93,54 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
             return (0.0, 1.0, 0.0)
         return (nx / ln, ny / ln, nz / ln)
 
+    # Fallback per-corner UVs, used when the mesh has no active UV layer.
+    # tri: standard right-triangle covering half the texture; quad: full
+    # unit square; n-gon: degenerates to (0, 0) (flat color, same as the
+    # pre-2026-05-10 behaviour for textureless faces).
+    _fallback_uvs_tri  = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]
+    _fallback_uvs_quad = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+
     tri_count = 0
     for pi in poly_idxs:
         p = me.polygons[pi]
-        if len(p.vertices) == 3:
-            tris = [tuple(p.vertices)]
-        elif len(p.vertices) == 4:
-            v0, v1, v2, v3 = p.vertices
-            tris = [(v0, v1, v2), (v0, v2, v3)]
+        verts = list(p.vertices)
+        loops = list(p.loop_indices)  # parallel to `verts`, one per corner
+        nv = len(verts)
+        # Resolve per-corner UV in Blender (u, v) space.  Flip V so the
+        # GX texture sampler reads the same orientation Blender's UV
+        # editor displays (Blender V grows up; GameCube V grows down).
+        if uv_layer is not None:
+            corner_uvs = [
+                (
+                    float(uv_layer.data[li].uv[0]),
+                    1.0 - float(uv_layer.data[li].uv[1]),
+                )
+                for li in loops
+            ]
+        elif nv == 3:
+            corner_uvs = _fallback_uvs_tri
+        elif nv == 4:
+            corner_uvs = _fallback_uvs_quad
         else:
-            vs = list(p.vertices)
-            tris = [(vs[0], vs[k], vs[k + 1]) for k in range(1, len(vs) - 1)]
-        for tri in tris:
-            ws = [_blender_to_hsd(obj.matrix_world @ me.vertices[bv].co) for bv in tri]
+            corner_uvs = [(0.0, 0.0)] * nv
+        # Triangulate as corner-index lists into `verts`/`corner_uvs`.
+        if nv == 3:
+            tri_corners = [(0, 1, 2)]
+        elif nv == 4:
+            tri_corners = [(0, 1, 2), (0, 2, 3)]
+        else:
+            tri_corners = [(0, k, k + 1) for k in range(1, nv - 1)]
+        for tc in tri_corners:
+            ws = [
+                _blender_to_hsd(obj.matrix_world @ me.vertices[verts[c]].co)
+                for c in tc
+            ]
             n = _face_normal(*ws)
             base = len(positions)
-            for ws_i in ws:
+            for c, ws_i in zip(tc, ws):
                 positions.append(ws_i)
                 normals.append(n)
+                uvs.append(corner_uvs[c])
             mb.add_triangle(base, base + 1, base + 2)
             tri_count += 1
 
@@ -112,9 +148,8 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
         mb.add_position(*p)
     for n in normals:
         mb.add_normal(*n)
-    # UV all (0, 0) — 単色 4x4 texture 前提なので UV 値は不問。
-    for _ in positions:
-        mb.add_uv(0.0, 0.0)
+    for u, v in uvs:
+        mb.add_uv(u, v)
     return mb.build(), color, img_tuple, len(positions), tri_count
 
 
