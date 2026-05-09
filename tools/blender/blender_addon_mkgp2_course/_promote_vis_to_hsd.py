@@ -273,9 +273,15 @@ def promote_vis_to_dat(
     dat.add_root(alias_name, root_jobj)
 
     out_bytes = bytes(dat.write())
+    # Patch every TObj's GXTexGenSrc field to TG_TEX0 (hsdraw has no
+    # public setter; see bm.patch_tobj_tex_gen_src docstring).  Without
+    # this the renderer pulls texture coords from vertex position and
+    # the surface reads as the texture's average color.
+    out_bytes, n_patched = bm.patch_tobj_tex_gen_src(hsdraw, out_bytes, src_value=4)
     output_dat.write_bytes(out_bytes)
     log(f"  wrote {output_dat.name}: {len(out_bytes)} bytes "
-        f"({len(dobjs)} DObjs, {total_verts} verts, {total_tris} tris)")
+        f"({len(dobjs)} DObjs, {total_verts} verts, {total_tris} tris, "
+        f"{n_patched} TObj GXTexGenSrc patched -> TG_TEX0)")
 
     return {
         "dobj_count": len(dobjs),

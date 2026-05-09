@@ -291,15 +291,15 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
     tobj.set_coord_type(0)       # CoordType=UV (= bits 0-3 = 0)
     tobj.flags |= 0x10           # LIGHTMAP_DIFFUSE — no public setter
     tobj.blending = 1.0
-    # GX_NEAR (0).  GX_LINEAR (1) bilinearly interpolates a 64x64
-    # texture across a 600x600 plane and average-blends adjacent pixels
-    # — fine checker patterns collapse to their mean color rather than
-    # showing distinct cells.  Vanilla road uses LINEAR because its
-    # textures are large (256x256+) where interpolation reads as
-    # smooth detail; for small authoring textures NEAREST keeps every
-    # texel sharp.  TODO: expose this as a Material EnumProperty
-    # alongside target_format if users start authoring large textures.
-    tobj.mag_filter = 0          # GX_NEAR
+    tobj.mag_filter = 0          # GX_NEAR (= NEAREST)
+    # Identity UV transform.  hsdraw.TObj.alloc() leaves the rotation /
+    # scale / translation fields all zero; with scale = 0 the renderer
+    # multiplies every UV by 0 and samples a single texel for every
+    # fragment.  Calling the setters explicitly produces the vanilla
+    # 1.0 / 0.0 / 0.0 identity transform.
+    tobj.set_rotation(0.0, 0.0, 0.0)
+    tobj.set_scale(1.0, 1.0, 1.0)
+    tobj.set_translation(0.0, 0.0, 0.0)
 
     # Material with vanilla course conventions: ambient + spc non-zero
     # so the lit-mesh TEV pipeline (the one actually sampling our TObj)
@@ -383,6 +383,100 @@ def load_scene_template_dat(hsdraw, template_path):
         if rn != "scene_data":
             dat.remove_root(rn)
     return dat
+
+
+# -- Post-write byte patcher: TObj.GXTexGenSrc --------------------------------
+
+def patch_tobj_tex_gen_src(hsdraw, file_bytes, src_value: int = 4) -> bytes:
+    """Patch the ``GXTexGenSrc`` field (offset 0x0C inside each TObj) of
+    every TObj in `file_bytes` to ``src_value``.
+
+    Why this exists: the vendored hsdraw binding does not expose any
+    setter for ``GXTexGenSrc``.  hsdraw's ``TObj.alloc()`` leaves the
+    field at 0 (= ``GX_TG_POS``), which makes the renderer compute the
+    texture coordinate from the vertex position — for our 600×600
+    billboards at world coords in the thousands the resulting UV is
+    enormous and wraps the texture so densely that the screen reads as
+    the texture's average color.  Vanilla MKGP2 TObjs use 4
+    (= ``GX_TG_TEX0``) so the renderer takes the UV from the POBJ's
+    TEX0 attribute.
+
+    The function locates each TObj by walking the dat, takes a snapshot
+    of every TObj's `HsdStruct.raw()` (which is unique per TObj because
+    the embedded ImageDesc/LODDesc/TObjTev pointer values differ), and
+    finds that 92-byte sequence as a substring of `file_bytes`.  In
+    practice every TObj raw appears exactly once in the file so the
+    patch is unambiguous; the function refuses to patch when a
+    signature is found 0 or >1 times to fail loudly rather than
+    corrupt the .dat.
+
+    Returns the patched bytes.  TODO: replace with a proper hsdraw
+    upstream setter (`tobj.tex_gen_src = src_value`) when available.
+    """
+    out = bytearray(file_bytes)
+    dat = hsdraw.parse_dat(file_bytes)
+
+    # Walk every TObj: scene_data is excluded (no DObjs there).
+    seen_offsets = set()
+    patched = 0
+    for r in dat.roots():
+        if r.name == "scene_data":
+            continue
+        rj = hsdraw.JObj.from_struct(r.data)
+        stack = [rj]
+        while stack:
+            j = stack.pop()
+            if j is None:
+                continue
+            for off, ref in j.as_struct().references():
+                if off == 16:  # JObj's DObj-head pointer slot
+                    d = hsdraw.DObj.from_struct(ref)
+                    while d is not None:
+                        if d.mobj is not None:
+                            m = hsdraw.MObj.from_struct(d.mobj)
+                            tex_attr = m.textures
+                            while tex_attr is not None:
+                                if isinstance(tex_attr, hsdraw.HsdStruct):
+                                    tobj = hsdraw.TObj.from_struct(tex_attr)
+                                else:
+                                    tobj = tex_attr
+                                raw = tobj.as_struct().raw()
+                                # Find the unique offset.  Scan the
+                                # whole file to confirm uniqueness.
+                                first = file_bytes.find(raw)
+                                second = file_bytes.find(raw, first + 1) if first != -1 else -1
+                                if first == -1:
+                                    raise RuntimeError(
+                                        "patch_tobj_tex_gen_src: TObj raw "
+                                        "signature not found in file bytes; "
+                                        "hsdraw .raw() shape changed?")
+                                if second != -1:
+                                    raise RuntimeError(
+                                        "patch_tobj_tex_gen_src: TObj raw "
+                                        f"signature found at multiple offsets "
+                                        f"(first={first}, second={second}); "
+                                        "cannot disambiguate which TObj to "
+                                        "patch")
+                                if first not in seen_offsets:
+                                    out[first + 0x0C : first + 0x10] = (
+                                        src_value.to_bytes(4, "big"))
+                                    seen_offsets.add(first)
+                                    patched += 1
+                                tex_attr = tobj.next
+                        d = d.next
+            try:
+                nx = j.next
+            except Exception:
+                nx = None
+            try:
+                ch = j.child
+            except Exception:
+                ch = None
+            if nx is not None:
+                stack.append(nx)
+            if ch is not None:
+                stack.append(ch)
+    return bytes(out), patched
 
 
 # -- Coordinate transform --------------------------------------------------

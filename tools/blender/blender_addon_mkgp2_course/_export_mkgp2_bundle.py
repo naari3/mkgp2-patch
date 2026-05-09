@@ -881,8 +881,13 @@ def export_bundle_to_dat(
         dat.add_root(alias_name, target)
 
     out_bytes = bytes(dat.write())
+    # See bm.patch_tobj_tex_gen_src and _promote_vis_to_hsd's matching
+    # call site for the rationale.  Required for the in-game renderer
+    # to take texture coords from the POBJ TEX0 attribute.
+    out_bytes, n_patched = bm.patch_tobj_tex_gen_src(hsdraw, out_bytes, src_value=4)
     output_dat.write_bytes(out_bytes)
-    log(f"wrote   : {output_dat.name}  size={len(out_bytes)}")
+    log(f"wrote   : {output_dat.name}  size={len(out_bytes)}  "
+        f"(GXTexGenSrc patched: {n_patched} TObjs)")
 
     return {
         "joints": len(jobj_by_id),
