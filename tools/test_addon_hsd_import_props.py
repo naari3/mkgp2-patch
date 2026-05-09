@@ -2,19 +2,13 @@
 on every loaded Blender Image so the M3 unified exporter can dispatch
 between bypass and re-encode.
 
-Verifies (against an M1+ bundle):
+Verifies (against a vanilla .dat imported via the Python-only path):
   - Each Image carries `mkgp2_png_hash` (SHA-1 hex digest).
   - Each Image carries `mkgp2_gx_path` pointing at an existing file.
-  - `mkgp2_gx_format` matches the scene.json texture's `format`.
-  - `mkgp2_gx_width` / `_height` / `_size` match scene.json.
+  - `mkgp2_gx_format` matches the texture's `format`.
+  - `mkgp2_gx_width` / `_height` / `_size` match the bundle's stash.
 
-Optional legacy regression: if a `--legacy <scene.json>` arg is passed
-(an old bundle that lacks `gx_file`) the test asserts import still
-succeeds and Images get the PNG hash but no .gx props.
-
-Usage:
-  blender --background --python tools/test_addon_hsd_import_props.py \
-      -- <m1_bundle_scene.json> [legacy_bundle_scene.json]
+  blender --background --python tools/test_addon_hsd_import_props.py
 """
 
 import bpy
@@ -25,32 +19,36 @@ import traceback
 from pathlib import Path
 
 ADDON_DIR = r"C:\Users\naari\src\github.com\naari3\mkgp2-patch\tools\blender"
+VANILLA_BIN = r"C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files"
+BASE_DAT_NAME = "MR_highway_short_A.dat"
 
 
-def _load_scene_textures(scene_json):
-    with open(scene_json, "r", encoding="utf-8") as f:
-        s = json.load(f)
-    return {t["id"]: t for t in s["textures"]}
-
-
-def _check_bundle(addon, scene_json, *, expect_gx):
-    print(f"\n[test] importing {scene_json}")
+def _check_bundle(addon, base_dat):
+    print(f"\n[test] importing {base_dat}")
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    addon.hsd_imp.import_scene(scene_json)
+    result = bpy.ops.import_scene.mkgp2_hsd_json(
+        'EXEC_DEFAULT', filepath=str(base_dat))
+    assert result == {'FINISHED'}, f"import: {result}"
 
-    tex_dtos = _load_scene_textures(scene_json)
     bundle = next((c for c in bpy.data.collections
                    if c.name.startswith("mkgp2:")), None)
     assert bundle is not None, "import did not create mkgp2:<dat>"
+    stash_sj = bundle.get("mkgp2_scene_json")
+    assert stash_sj, "bundle missing mkgp2_scene_json stash"
+    scene = json.loads(stash_sj)
+    tex_dtos = {t["id"]: t for t in scene["textures"]}
 
     # Walk every image referenced by every material in the scene.
     img_count = 0
     for img in bpy.data.images:
         if img.name.startswith("Render Result") or img.name.startswith("Viewer"):
             continue
-        # Match by filename stem == texture id
-        stem = Path(img.filepath).stem if img.filepath else img.name
-        dto = tex_dtos.get(stem)
+        # Match by image name == texture id (importer names them after the id)
+        dto = tex_dtos.get(img.name)
+        if dto is None:
+            # Some images may also be named with an extension; try stem match
+            stem = Path(img.filepath).stem if img.filepath else img.name
+            dto = tex_dtos.get(stem)
         if dto is None:
             continue
         img_count += 1
@@ -60,38 +58,27 @@ def _check_bundle(addon, scene_json, *, expect_gx):
         assert isinstance(h, str) and len(h) == 40, \
             f"{img.name}: mkgp2_png_hash should be 40-hex SHA-1, got {h!r}"
 
-        if expect_gx:
-            for k in ("mkgp2_gx_path", "mkgp2_gx_format",
-                      "mkgp2_gx_width", "mkgp2_gx_height", "mkgp2_gx_size"):
-                assert k in img.keys(), f"{img.name}: {k} missing"
-            assert os.path.isfile(img["mkgp2_gx_path"]), \
-                f"{img.name}: gx_path does not exist: {img['mkgp2_gx_path']}"
-            assert img["mkgp2_gx_format"] == dto["format"], \
-                (f"{img.name}: gx_format mismatch "
-                 f"({img['mkgp2_gx_format']} vs {dto['format']})")
-            assert img["mkgp2_gx_width"] == dto["width"]
-            assert img["mkgp2_gx_height"] == dto["height"]
-            assert img["mkgp2_gx_size"] == dto["gx_size"]
-        else:
-            # Legacy mode: gx props absent (still acceptable)
-            assert "mkgp2_gx_path" not in img.keys(), \
-                f"{img.name}: legacy bundle should have no mkgp2_gx_path"
+        for k in ("mkgp2_gx_path", "mkgp2_gx_format",
+                  "mkgp2_gx_width", "mkgp2_gx_height", "mkgp2_gx_size"):
+            assert k in img.keys(), f"{img.name}: {k} missing"
+        assert os.path.isfile(img["mkgp2_gx_path"]), \
+            f"{img.name}: gx_path does not exist: {img['mkgp2_gx_path']}"
+        assert img["mkgp2_gx_format"] == dto["format"], \
+            (f"{img.name}: gx_format mismatch "
+             f"({img['mkgp2_gx_format']} vs {dto['format']})")
+        assert img["mkgp2_gx_width"] == dto["width"]
+        assert img["mkgp2_gx_height"] == dto["height"]
+        # `mkgp2_gx_size` = `len(gx_bytes)` recorded by the importer; the
+        # inline scene_json does not carry an equivalent field, so we
+        # only sanity-check that it is positive.
+        assert int(img["mkgp2_gx_size"]) > 0, \
+            f"{img.name}: mkgp2_gx_size should be > 0"
 
     assert img_count > 0, "no textures matched scene.json -- importer changed?"
-    print(f"  validated {img_count} image(s) "
-          f"({'GX-enriched' if expect_gx else 'legacy mode'})")
+    print(f"  validated {img_count} image(s) (GX-enriched)")
 
 
 def main():
-    argv = sys.argv
-    if "--" in argv:
-        argv = argv[argv.index("--") + 1:]
-    else:
-        argv = []
-    if not argv:
-        print("[test] usage: ... -- <m1_bundle_scene.json> [legacy.json]")
-        sys.exit(2)
-
     if ADDON_DIR not in sys.path:
         sys.path.insert(0, ADDON_DIR)
     import blender_addon_mkgp2_course as addon
@@ -99,9 +86,14 @@ def main():
     addon.reload_modules()
 
     try:
-        _check_bundle(addon, argv[0], expect_gx=True)
-        if len(argv) >= 2:
-            _check_bundle(addon, argv[1], expect_gx=False)
+        if not addon.HSDRAW_AVAILABLE:
+            print("[test] SKIP: hsdraw not vendored")
+            return
+        base_dat = Path(VANILLA_BIN) / BASE_DAT_NAME
+        if not base_dat.is_file():
+            print(f"[test] SKIP: base .dat missing at {base_dat}")
+            return
+        _check_bundle(addon, base_dat)
         addon.unregister()
         print("\n[test] PASS")
     except Exception:

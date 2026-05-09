@@ -1,13 +1,12 @@
 """Verify the joint Empty hierarchy (Phase 2 v2):
 import builds Empties matching the JSON joint tree, and Export reads the
 Empty parent chain to update the stashed mkgp2_joints parent / children
-fields before invoking the writer csx.
+fields before invoking the Rust writer.
 
 Coverage:
   - Importer creates one Empty per joint with mkgp2_jobj_id custom prop
   - Empty parent matches JSON joint.parent
-  - Reparenting an Empty in Blender propagates to the writer's
-    `hierarchy parents-rewired` count
+  - Reparenting an Empty in Blender propagates to the writer's stash
   - Export still works on bundles WITHOUT Empties (older imports), via
     fallthrough to the stashed JSON
 
@@ -17,7 +16,6 @@ Coverage:
 import bpy
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import traceback
@@ -26,21 +24,6 @@ from pathlib import Path
 ADDON_DIR = r"C:\Users\naari\src\github.com\naari3\mkgp2-patch\tools\blender"
 VANILLA_BIN = r"C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files"
 BASE_DAT_NAME = "MR_highway_short_A.dat"
-
-
-def _ensure_bundle(addon, base_dat, out_dir):
-    """Regenerate scene.json via M1+ csx so the bundle carries the M2
-    GX metadata the unified exporter requires."""
-    csx = addon._resolve_csx_path()
-    dotnet = addon._resolve_dotnet_script()
-    if not Path(csx).is_file() or dotnet is None:
-        raise RuntimeError("dotnet-script / csx unavailable")
-    proc = subprocess.run(
-        [dotnet, csx, "--", str(base_dat), str(out_dir)],
-        capture_output=True, text=True, timeout=240)
-    if proc.returncode != 0:
-        raise RuntimeError(f"csx failed: {proc.stderr[-500:]}")
-    return str(Path(out_dir) / "scene.json")
 
 
 def _activate_layer_for(coll):
@@ -69,9 +52,6 @@ def main():
         if not addon.HSDRAW_AVAILABLE:
             print("[test] SKIP: hsdraw not vendored")
             return
-        if addon._resolve_dotnet_script() is None:
-            print("[test] SKIP: dotnet-script not found")
-            return
         base_dat = Path(VANILLA_BIN) / BASE_DAT_NAME
         if not base_dat.is_file():
             print(f"[test] SKIP: base .dat missing at {base_dat}")
@@ -79,14 +59,10 @@ def main():
         addon._vanilla_bin_dir = lambda: VANILLA_BIN
         addon._output_bin_dir = lambda: tempfile.gettempdir()
 
-        bundle_dir = tempfile.mkdtemp(prefix="mkgp2_joint_empties_")
-        scene_json = _ensure_bundle(addon, base_dat, bundle_dir)
-        print(f"[test] regenerated bundle: {scene_json}")
-
         # ---- 1) Import builds Empty hierarchy -----------------------
-        result = bpy.ops.import_scene.mkgp2_hsd_json('EXEC_DEFAULT',
-                                                     filepath=scene_json)
-        assert result == {'FINISHED'}
+        result = bpy.ops.import_scene.mkgp2_hsd_json(
+            'EXEC_DEFAULT', filepath=str(base_dat))
+        assert result == {'FINISHED'}, f"import: {result}"
         bundle = next((c for c in bpy.data.collections
                        if c.name.startswith("mkgp2:")), None)
         assert bundle is not None
@@ -112,7 +88,7 @@ def main():
         # ---- 2) Reparent jobj_5 (= MR_highway_road_joint) under
         # jobj_1 (= alpha_joint) instead of its current parent jobj_3
         # (= opac_joint). Verify the stashed JSON is rewritten on
-        # export and the writer csx reports the rewire.
+        # export and the writer reports the rewire.
         target_id = "jobj_5"
         new_parent_id = "jobj_1"
         new_parent_e = empty_by_id[new_parent_id]
@@ -125,9 +101,8 @@ def main():
         _activate_layer_for(bundle)
         with tempfile.TemporaryDirectory() as td:
             out_dat = os.path.join(td, "out.dat")
-            # Capture writer csx stdout via subprocess directly (the
-            # operator wraps it in a try/except). We do this by calling
-            # the operator and trusting it succeeded; rewire detection
+            # Capture writer stdout via the operator (it wraps any error
+            # in a try/except). We trust FINISHED here; rewire detection
             # is verified by re-loading out_dat and walking it.
             result = bpy.ops.export_scene.mkgp2_hsd_json(
                 'EXEC_DEFAULT', filepath=out_dat,

@@ -2,7 +2,7 @@
 add / remove / re-export round-trip via stashed `mkgp2_joint_aliases`.
 
 Coverage:
-  - Import HSD bundle, confirm initial alias dict
+  - Import HSD bundle (Python-only direct .dat read), confirm initial alias dict
   - Add a new alias via scene.mkgp2_hsd_alias_add, confirm dict update
   - Adding a duplicate name overwrites with WARN
   - Bad target id is rejected
@@ -16,7 +16,6 @@ Coverage:
 import bpy
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import traceback
@@ -25,21 +24,6 @@ from pathlib import Path
 ADDON_DIR = r"C:\Users\naari\src\github.com\naari3\mkgp2-patch\tools\blender"
 VANILLA_BIN = r"C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files"
 BASE_DAT_NAME = "MR_highway_short_A.dat"
-
-
-def _ensure_bundle(addon, base_dat, out_dir):
-    """Regenerate scene.json via M1+ csx so the bundle has the M2 GX
-    metadata the unified exporter requires."""
-    csx = addon._resolve_csx_path()
-    dotnet = addon._resolve_dotnet_script()
-    if not Path(csx).is_file() or dotnet is None:
-        raise RuntimeError("dotnet-script / csx unavailable")
-    proc = subprocess.run(
-        [dotnet, csx, "--", str(base_dat), str(out_dir)],
-        capture_output=True, text=True, timeout=240)
-    if proc.returncode != 0:
-        raise RuntimeError(f"csx failed: {proc.stderr[-500:]}")
-    return str(Path(out_dir) / "scene.json")
 
 
 def _activate_layer_for(coll):
@@ -68,9 +52,6 @@ def main():
         if not addon.HSDRAW_AVAILABLE:
             print("[test] SKIP: hsdraw not vendored")
             return
-        if addon._resolve_dotnet_script() is None:
-            print("[test] SKIP: dotnet-script not found")
-            return
         base_dat = Path(VANILLA_BIN) / BASE_DAT_NAME
         if not base_dat.is_file():
             print(f"[test] SKIP: base .dat missing at {base_dat}")
@@ -78,14 +59,10 @@ def main():
         addon._vanilla_bin_dir = lambda: VANILLA_BIN
         addon._output_bin_dir = lambda: tempfile.gettempdir()
 
-        bundle_dir = tempfile.mkdtemp(prefix="mkgp2_alias_edit_")
-        scene_json = _ensure_bundle(addon, base_dat, bundle_dir)
-        print(f"[test] regenerated bundle: {scene_json}")
-
-        # ---- Import & resolve bundle ---------------------------------
-        result = bpy.ops.import_scene.mkgp2_hsd_json('EXEC_DEFAULT',
-                                                     filepath=scene_json)
-        assert result == {'FINISHED'}
+        # ---- Import via Python-only direct .dat path -----------------
+        result = bpy.ops.import_scene.mkgp2_hsd_json(
+            'EXEC_DEFAULT', filepath=str(base_dat))
+        assert result == {'FINISHED'}, f"import: {result}"
         bundle = next((c for c in bpy.data.collections
                        if c.name.startswith("mkgp2:")), None)
         assert bundle is not None
@@ -162,11 +139,6 @@ def main():
         print("[test] F remove non-existent canceled")
 
         # ---- G) Add then export, verify .dat actually contains it ---
-        if addon._resolve_dotnet_script() is None:
-            print("[test] SKIP G: dotnet-script not found")
-            addon.unregister()
-            print("[test] PASS")
-            return
         result = bpy.ops.scene.mkgp2_hsd_alias_add(
             'EXEC_DEFAULT',
             name="MR_highway_e2e_alias",
@@ -181,9 +153,9 @@ def main():
             assert result == {'FINISHED'}
             assert os.path.isfile(out_dat)
             # Spot-check: the new alias name must literally appear in the
-            # output bytes (HSDLib writes root names as plain ASCII at the
+            # output bytes (HSD writes root names as plain ASCII at the
             # tail of the file). This is a cheap sanity check that doesn't
-            # require re-loading via HSDLib.
+            # require re-loading via hsdraw.
             data = open(out_dat, "rb").read()
             assert b"MR_highway_e2e_alias" in data, \
                 "new alias name missing from output .dat bytes"

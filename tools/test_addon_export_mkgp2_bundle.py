@@ -1,19 +1,16 @@
 """Smoke test for `_export_mkgp2_bundle.export_bundle_to_dat`:
 
-  1. Import an M1+ scene.json bundle into Blender via the addon.
-  2. Run the new exporter directly (not through the operator yet).
+  1. Import a vanilla .dat bundle into Blender via the addon
+     (Python-only, no csx).
+  2. Run the bundle exporter directly (not through the operator).
   3. Verify:
      - Output .dat exists, parses cleanly via hsdraw.
      - Has scene_data root.
      - Every joint alias from the bundle's stash appears as a root.
      - The texture bypass count matches the unique texture count
        (no edits made -> all bypass).
-     - Re-importing the produced .dat gives the same joint and
-       texture counts.
 
-Usage:
-  blender --background --python tools/test_addon_export_mkgp2_bundle.py \
-      -- <m1_bundle_scene.json>
+  blender --background --python tools/test_addon_export_mkgp2_bundle.py
 """
 
 import bpy
@@ -25,6 +22,8 @@ import traceback
 from pathlib import Path
 
 ADDON_DIR = r"C:\Users\naari\src\github.com\naari3\mkgp2-patch\tools\blender"
+VANILLA_BIN = r"C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files"
+BASE_DAT_NAME = "MR_highway_short_A.dat"
 
 
 def _activate_layer_for(coll):
@@ -42,16 +41,6 @@ def _activate_layer_for(coll):
 
 
 def main():
-    argv = sys.argv
-    if "--" in argv:
-        argv = argv[argv.index("--") + 1:]
-    else:
-        argv = []
-    if not argv:
-        print("[test] usage: ... -- <scene.json>")
-        sys.exit(2)
-    scene_json = argv[0]
-
     if ADDON_DIR not in sys.path:
         sys.path.insert(0, ADDON_DIR)
     import blender_addon_mkgp2_course as addon
@@ -62,15 +51,28 @@ def main():
         if not addon.HSDRAW_AVAILABLE:
             print("[test] SKIP: hsdraw not vendored")
             return
+        base_dat = Path(VANILLA_BIN) / BASE_DAT_NAME
+        if not base_dat.is_file():
+            print(f"[test] SKIP: base .dat missing at {base_dat}")
+            return
+        addon._vanilla_bin_dir = lambda: VANILLA_BIN
+        addon._output_bin_dir = lambda: tempfile.gettempdir()
 
-        # ---- 1) import bundle ----------------------------------------
-        addon.hsd_imp.import_scene(scene_json)
+        # ---- 1) import vanilla .dat via operator ---------------------
+        result = bpy.ops.import_scene.mkgp2_hsd_json(
+            'EXEC_DEFAULT', filepath=str(base_dat))
+        assert result == {'FINISHED'}, f"import: {result}"
         bundle = next((c for c in bpy.data.collections
                        if c.name.startswith("mkgp2:")), None)
         assert bundle is not None, "no mkgp2:<dat> collection after import"
         stash_sj = bundle.get("mkgp2_scene_json")
         assert stash_sj, "bundle missing mkgp2_scene_json stash"
-        print(f"[test] imported bundle: {bundle.name}")
+        assert stash_sj.lstrip().startswith('{'), (
+            "mkgp2_scene_json should be inline JSON now, got "
+            f"{stash_sj[:80]!r}")
+        print(f"[test] imported bundle: {bundle.name} "
+              f"(scene_json {len(stash_sj)} chars inline)")
+        _activate_layer_for(bundle)
 
         # ---- 2) export -----------------------------------------------
         from blender_addon_mkgp2_course import _export_mkgp2_bundle

@@ -3,9 +3,9 @@ the Full Course Import set (collision short/long + line short/long +
 auto short F/R + long F/R).
 
 Pipeline:
-  Full Course import (mr_highway) -> Full Course export to tmpdir ->
-  filename / count assertions + cheap round-trip check (collision triangle
-  / wall counts equal source).
+  Full Course import (mr_highway, auto-discovered from BIN_DIR) ->
+  Full Course export to tmpdir -> filename / count assertions + cheap
+  round-trip check (collision triangle / wall counts equal source).
 
   blender --background --python tools/test_addon_full_course_export.py
 """
@@ -17,7 +17,6 @@ import traceback
 from pathlib import Path
 
 ADDON_DIR = r"C:\Users\naari\src\github.com\naari3\mkgp2-patch\tools\blender"
-SCENE_JSON = r"C:\Users\naari\Documents\blender\mr_highway_export\scene.json"
 BIN_DIR = Path(r"C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files")
 PREFIX = "mr_highway"
 
@@ -50,7 +49,6 @@ def main():
     try:
         result = bpy.ops.import_scene.mkgp2_full_course(
             'EXEC_DEFAULT',
-            scene_json=SCENE_JSON,
             bin_dir=str(BIN_DIR),
             prefix=PREFIX,
         )

@@ -20,7 +20,7 @@ from pathlib import Path
 
 ADDON_DIR = r"C:\Users\naari\src\github.com\naari3\mkgp2-patch\tools\blender"
 BIN_DIR = Path(r"C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files")
-SCENE_JSON = Path(r"C:\Users\naari\Documents\blender\mr_highway_export\scene.json")
+HSD_DAT = BIN_DIR / "MR_highway_short_A.dat"
 
 
 def _collision_counts(path):
@@ -152,10 +152,11 @@ def main():
         print(f"[test] _detect_export_target picks course exporter: {hint}")
 
         # ---- B4: Import Course with HSD slot --------------------------
-        # Confirms an HSD scene.json bundle nests inside the course
-        # collection and the .dat name lands on mkgp2_hsd_dat.
-        if not SCENE_JSON.exists():
-            print(f"[test] B4 SKIP: scene.json bundle not found at {SCENE_JSON}")
+        # Confirms a vanilla .dat (Python-only direct import) nests
+        # inside the course collection and the .dat name lands on
+        # mkgp2_hsd_dat.
+        if not HSD_DAT.exists():
+            print(f"[test] B4 SKIP: vanilla .dat not found at {HSD_DAT}")
         else:
             colls_before = set(bpy.data.collections)
             result = bpy.ops.scene.mkgp2_import_course(
@@ -165,20 +166,22 @@ def main():
                 line_path="",
                 auto_f_path="",
                 auto_r_path="",
-                hsd_path=str(SCENE_JSON),
+                hsd_path=str(HSD_DAT),
             )
             assert result == {'FINISHED'}, f"hsd import_course result: {result}"
             course_h = bpy.data.collections.get("vanilla_with_hsd")
             assert course_h is not None
             dat_name = course_h.get("mkgp2_hsd_dat") or ""
-            assert dat_name, "mkgp2_hsd_dat should be populated from scene.json source_dat"
+            assert dat_name, "mkgp2_hsd_dat should be populated from .dat source"
+            assert dat_name == HSD_DAT.name, (
+                f"mkgp2_hsd_dat should be {HSD_DAT.name!r}, got {dat_name!r}")
             print(f"[test] B4 mkgp2_hsd_dat = {dat_name!r}")
             new_colls = [c for c in bpy.data.collections
                          if c not in colls_before and c is not course_h]
             assert any(c.name in [cc.name for cc in course_h.children]
                        for c in new_colls), \
                 "imported HSD collection should be nested under course collection"
-            # New HSD collection should be the source of dat_name (mkgp2_source_dat)
+            # New HSD collection should carry mkgp2_source_dat == dat_name
             hsd_child = next((c for c in course_h.children
                               if c.get("mkgp2_source_dat")), None)
             assert hsd_child is not None, \
