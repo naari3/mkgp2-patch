@@ -12,8 +12,8 @@ Pipeline:
   5) Verify a sibling cube whose `mkgp2_joint_id` points at a
      NON-existent joint is rejected with a WARN and skipped.
   6) Verify a sibling cube using a freshly-created Blender material
-     (not in the bundle's import-time DTO map) is rejected with
-     a WARN and skipped (= new material support is NOT in scope).
+     gets the BSDF Base Color baked into a 4x4 ad-hoc MObj (= the
+     post-fix behavior; previously it silently dropped to grey).
 
 Documents the boundaries of bundle round-trip mesh-add support so
 the mkgp2-edit-vanilla-course skill can quote them accurately.
@@ -168,23 +168,32 @@ def main():
             fresh["mkgp2_joint_id"] = existing_jid
             fresh["mkgp2_cull"] = "NONE"
 
+            # Sanity-check the helper directly: the magenta material's
+            # BSDF Base Color (1.0, 0.0, 1.0, 1.0) must come back as the
+            # (255, 0, 255, 255) byte tuple the exporter will feed
+            # `make_textured_mobj`.
+            from blender_addon_mkgp2_course import _blender_material as bm
+            color = bm.bsdf_base_color(fresh_mat)
+            assert color == (255, 0, 255, 255), \
+                f"bsdf_base_color magenta read mismatch: got {color}"
+            assert bm.bsdf_image_texture(fresh_mat) is None, \
+                "fresh material has no Image Texture node, but helper " \
+                "returned non-None"
+            print(f"[test] OK: bsdf_base_color extracts magenta as {color}")
+
             out_v3 = os.path.join(td, "v3.dat")
-            try:
-                stats_v3 = _export_stats(addon, bundle, out_v3)
-                n_v3 = stats_v3["meshes"]
-                print(f"[test] v3 (fresh-material cube) mesh count: {n_v3} "
-                      f"(was {n_v1} before)")
-                if n_v3 == n_v1 + 1:
-                    print("[test] NOTE: pipeline ACCEPTED fresh material "
-                          "(unexpected -- update skill if confirmed)")
-                elif n_v3 == n_v1:
-                    print("[test] OK: pipeline silently skipped fresh-mat "
-                          "cube (expected; fresh materials are not in DTO map)")
-                else:
-                    print(f"[test] NOTE: unexpected n_v3={n_v3}")
-            except Exception as ex:
-                print(f"[test] OK: pipeline rejected fresh-material cube "
-                      f"(raised: {type(ex).__name__}: {ex})")
+            stats_v3 = _export_stats(addon, bundle, out_v3)
+            n_v3 = stats_v3["meshes"]
+            assert n_v3 == n_v1 + 1, (
+                f"fresh-material cube should land in the .dat now; "
+                f"expected {n_v1 + 1} meshes, got {n_v3}")
+            assert stats_v3["fresh_materials"] == 1, (
+                f"exporter should report exactly 1 ad-hoc MObj built "
+                f"from the BSDF; stats: {stats_v3}")
+            # v1's baseline was un-edited (existing mat reuse only) -> 0 ad-hoc
+            assert stats_v1["fresh_materials"] == 0
+            print(f"[test] OK: fresh-material cube accepted "
+                  f"(meshes={n_v3}, fresh_materials={stats_v3['fresh_materials']})")
 
         addon.unregister()
         print("[test] PASS")

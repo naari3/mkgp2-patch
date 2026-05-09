@@ -709,6 +709,7 @@ def export_bundle_to_dat(
     dobj_chain_by_jid: Dict[str, list] = {}
     total_verts = total_tris = 0
     skipped = 0
+    fresh_materials = 0   # ad-hoc MObjs built from non-DTO Blender materials
     for mo in mesh_objs:
         jid = mo.get("mkgp2_joint_id")
         if not jid or jid not in jobj_by_id:
@@ -763,6 +764,7 @@ def export_bundle_to_dat(
             color = bm.bsdf_base_color(fresh_mat)
             img_tuple = bm.bsdf_image_texture(fresh_mat)
             mobj = bm.make_textured_mobj(hsdraw, color, img_tuple)
+            fresh_materials += 1
             log(f"  INFO: mesh '{mo.name}' uses fresh material "
                 f"'{mat_name}'; built ad-hoc MObj from BSDF "
                 f"(color={color}, img="
@@ -864,6 +866,7 @@ def export_bundle_to_dat(
         "joints": len(jobj_by_id),
         "aliases": sum(1 for a in aliases.values() if a in jobj_by_id),
         "materials": len(mobj_by_mid),
+        "fresh_materials": fresh_materials,
         "textures": len(image_cache),
         "tex_bypass": bypass_count,
         "tex_reencode": reencode_count,
