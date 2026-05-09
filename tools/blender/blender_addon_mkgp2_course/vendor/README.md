@@ -1,9 +1,12 @@
 # Vendored binary extensions
 
-The addon's `MKGP2_OT_ExportHSD` operator can use a Rust path
-([`hsdraw`](https://github.com/naari3/hsdraw), HSDLib parity) instead
-of the dotnet-script + HSDLib path. The Rust path is shipped as
-platform-specific wheels extracted into `vendor/<platform>/`.
+The addon's HSD pipeline (`MKGP2_OT_ImportHSD` / `MKGP2_OT_ExportHSD`)
+runs entirely on the Rust [`hsdraw`](https://github.com/naari3/hsdraw)
+crate's PyO3 binding. There is no dotnet-script / HSDLib fallback;
+both directions read and write `.dat` directly via `hsdraw.parse_dat`,
+`hsdraw.export_scene_json`, `hsdraw.gx_decode`, and the writer
+helpers (`Dat.alloc_scene_data` etc.). The native extension is
+shipped as platform-specific wheels extracted into `vendor/<platform>/`.
 
 Layout:
 
@@ -49,10 +52,15 @@ with zipfile.ZipFile(src) as z:
 PY
 ```
 
-## Falling back to csx
+## What if hsdraw is missing for your platform?
 
-If `hsdraw` is not vendored for your platform (or import fails for
-any reason), the operator falls back to running
-`tools/hsd/hsd_import_from_blender.csx` via dotnet-script. Set the
-addon preference *HSD writer backend* to `csx` to opt in to that
-path explicitly.
+If `import hsdraw` fails (the platform-specific wheel hasn't been
+shipped yet, or the `.pyd` is locked because Blender is open while
+you swap it in), the HSD operators report `SKIP: hsdraw not vendored`
+and refuse to run. There is no dotnet-script / HSDLib fallback any
+more (M3-era retirement, see CLAUDE.md). Build a wheel for your host
+following the *Re-building / refreshing the wheel* section above.
+
+The `tools/hsd/*.csx` files still ship in the parent repo and are
+useful as a parity oracle (= ground truth for hsdraw round-trip
+tests), but the Blender addon never invokes them.
