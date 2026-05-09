@@ -14,6 +14,11 @@ Pipeline:
   6) Verify a sibling cube using a freshly-created Blender material
      gets the BSDF Base Color baked into a 4x4 ad-hoc MObj (= the
      post-fix behavior; previously it silently dropped to grey).
+  7) Verify a sibling cube whose fresh material has an Image Texture
+     node feeding the BSDF Base Color: the image bytes must round-
+     trip through `make_textured_mobj` -> `gx_encode` and end up in
+     the output .dat as a TObj-attached Image of matching dimensions
+     and pixel values.
 
 Documents the boundaries of bundle round-trip mesh-add support so
 the mkgp2-edit-vanilla-course skill can quote them accurately.
@@ -56,6 +61,67 @@ def _export_stats(addon, bundle, out_dat):
     stash_sj = bundle.get("mkgp2_scene_json")
     return _export_mkgp2_bundle.export_bundle_to_dat(
         bundle, stash_sj, out_dat)
+
+
+def _find_image_in_dat(out_dat, expected_w, expected_h, expected_pixel_rgba):
+    """Walk every reachable TObj in `out_dat` and return True if at least
+    one Image matches (`expected_w`, `expected_h`) AND every pixel
+    decodes to `expected_pixel_rgba` (= 4-tuple of 0..255 ints).
+
+    Walking pattern mirrors `blender_import_hsd._collect_gx_bytes` so
+    we hit every alias root + scene_data RootJoint without missing
+    sub-trees."""
+    import hsdraw
+    dat = hsdraw.parse_dat(Path(out_dat).read_bytes())
+    expected_pixel = bytes(expected_pixel_rgba)
+
+    def walk_jobjs(jobj):
+        while jobj is not None:
+            yield jobj
+            if jobj.child is not None:
+                yield from walk_jobjs(jobj.child)
+            jobj = jobj.next
+
+    def all_root_jobjs():
+        sd = dat.scene_data()
+        if sd is not None:
+            sobj = hsdraw.SObj.from_struct(sd.data)
+            for jd in sobj.jobj_descs():
+                rj = jd.root_joint
+                if rj is not None:
+                    yield rj
+
+    def dobj_from(jobj):
+        for off, s in jobj.as_struct().references():
+            if off == 0x10:
+                return hsdraw.DObj.from_struct(s)
+        return None
+
+    for root in all_root_jobjs():
+        for jobj in walk_jobjs(root):
+            d = dobj_from(jobj)
+            while d is not None:
+                m_raw = d.mobj
+                if m_raw is not None:
+                    m = hsdraw.MObj.from_struct(m_raw)
+                    t = m.textures
+                    while t is not None:
+                        timg = t.image_data
+                        if timg is not None:
+                            img = (hsdraw.Image.from_struct(timg)
+                                   if isinstance(timg, hsdraw.HsdStruct)
+                                   else timg)
+                            if (img.width == expected_w and
+                                    img.height == expected_h):
+                                gx = img.image_data()
+                                rgba = bytes(hsdraw.gx_decode(
+                                    6, expected_w, expected_h, gx))
+                                if all(rgba[i:i + 4] == expected_pixel
+                                       for i in range(0, len(rgba), 4)):
+                                    return True
+                        t = t.next
+                d = d.next
+    return False
 
 
 def main():
@@ -194,6 +260,64 @@ def main():
             assert stats_v1["fresh_materials"] == 0
             print(f"[test] OK: fresh-material cube accepted "
                   f"(meshes={n_v3}, fresh_materials={stats_v3['fresh_materials']})")
+
+            # ---- v4) Cube whose BSDF has an Image Texture node bound -----
+            # Build a fresh 8x8 RGBA8 image, fill with `orange` (one solid
+            # color so the row-flip in `bsdf_image_texture` is a no-op for
+            # equality purposes), wire it through a new Principled BSDF.
+            W, H = 8, 8
+            orange = (255, 128, 0, 255)
+            pix_floats = [c / 255.0 for c in orange] * (W * H)
+            img_tex = bpy.data.images.new(
+                name="orange_8x8", width=W, height=H, alpha=True)
+            img_tex.pixels = pix_floats
+
+            tex_mat = bpy.data.materials.new(name="img_tex_mat")
+            tex_mat.use_nodes = True
+            nt = tex_mat.node_tree
+            bsdf2 = nt.nodes.get("Principled BSDF")
+            assert bsdf2 is not None, "no Principled BSDF in fresh material"
+            tex_node = nt.nodes.new(type='ShaderNodeTexImage')
+            tex_node.image = img_tex
+            nt.links.new(tex_node.outputs["Color"],
+                         bsdf2.inputs["Base Color"])
+
+            # Helper sanity: bsdf_image_texture should now return our 8x8
+            assert bm.bsdf_image_texture(tex_mat) is not None, \
+                "bsdf_image_texture didn't pick up the Image Texture node"
+            w_h_raw = bm.bsdf_image_texture(tex_mat)
+            assert w_h_raw[0] == W and w_h_raw[1] == H, \
+                f"bsdf_image_texture wrong dims: {w_h_raw[:2]}"
+            assert len(w_h_raw[2]) == W * H * 4, \
+                f"bsdf_image_texture wrong byte length: {len(w_h_raw[2])}"
+
+            bpy.ops.mesh.primitive_cube_add(size=5.0,
+                                            location=(60.0, 0.0, 0.0))
+            tex_cube = bpy.context.active_object
+            tex_cube.name = "added_cube_image_texture"
+            for c in list(tex_cube.users_collection):
+                c.objects.unlink(tex_cube)
+            bundle.objects.link(tex_cube)
+            tex_cube.data.materials.clear()
+            tex_cube.data.materials.append(tex_mat)
+            tex_cube["mkgp2_joint_id"] = existing_jid
+            tex_cube["mkgp2_cull"] = "NONE"
+
+            out_v4 = os.path.join(td, "v4.dat")
+            stats_v4 = _export_stats(addon, bundle, out_v4)
+            n_v4 = stats_v4["meshes"]
+            assert n_v4 == n_v3 + 1, (
+                f"image-texture cube should land in the .dat; "
+                f"expected {n_v3 + 1} meshes, got {n_v4}")
+            assert stats_v4["fresh_materials"] == 2, (
+                f"v4 should report 2 ad-hoc MObjs (v3 magenta + v4 "
+                f"orange); stats: {stats_v4}")
+
+            assert _find_image_in_dat(out_v4, W, H, orange), (
+                f"output .dat does not contain an {W}x{H} Image filled "
+                f"with {orange}; the BSDF Image Texture path is broken")
+            print(f"[test] OK: BSDF Image Texture round-tripped: "
+                  f"{W}x{H} RGBA8 = {orange} appears in v4.dat")
 
         addon.unregister()
         print("[test] PASS")
