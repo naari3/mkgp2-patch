@@ -60,8 +60,21 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
     positions: list = []
     normals:   list = []
     mb = hsdraw.MeshBuilder()
-    # Blender CCW vs HSD CW で frontface が逆。CULLBACK で frontface 通過。
-    mb.set_cull_back(True)
+    # Don't call `mb.set_cull_back(True)`.  hsdraw's set_cull_back
+    # toggles POBJ.flags bit `0x4000`, but the game's POBJ_FLAG enum
+    # uses bits 0x1000 / 0x2000 / 0x8000 for SHAPESET_AVERAGE /
+    # SHAPESET_ADDITIVE / ENVELOPE; bit 0x4000 is **not** a POBJ type
+    # the game's renderer recognises.  Setting it makes the game treat
+    # the mesh as an unknown POBJ type and skip TEX0 sampling on it
+    # (we observed this as the BSDF Image Texture failing to display
+    # in-game while Material.DIF still leaked through, in the
+    # 2026-05-09 my_course billboard test).  Vanilla MR_highway POBJs
+    # are `pf=0x0000` (SHAPE) or `pf=0x8000` (ENVELOPE) -- never
+    # `0x4000` -- so we leave the flag at zero and configure cull mode
+    # via PE_DESC instead (TODO: when hsdraw exposes that surface).
+    # For now this means both faces of every triangle are visible;
+    # all our course meshes are closed solids so back-face leakage is
+    # invisible from the cart's POV.
 
     def _face_normal(p0, p1, p2):
         ax = p1[0] - p0[0]; ay = p1[1] - p0[1]; az = p1[2] - p0[2]

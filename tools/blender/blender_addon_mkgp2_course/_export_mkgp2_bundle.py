@@ -556,11 +556,13 @@ def _build_pobj_for_mesh(obj, joint_world, sb_world, cull, hsdraw, *, log,
     for tri in triangles:
         mb.add_triangle(*tri)
 
-    if cull in ("BACK", "BOTH"):
-        mb.set_cull_back(True)
-    if cull in ("FRONT", "BOTH"):
-        mb.set_cull_front(True)
-
+    # NOTE: hsdraw's set_cull_back / set_cull_front toggle POBJ.flags
+    # bits 0x4000 / (presumably) 0x2000 respectively, but the game's
+    # POBJ_FLAG enum uses 0x1000 / 0x2000 for SHAPESET, 0x8000 for
+    # ENVELOPE, and treats 0x4000 as an unknown POBJ type — TEX0
+    # sampling stops working when that bit is set.  Cull mode lives
+    # in PE_DESC, not in POBJ.flags, so we deliberately skip these
+    # calls.  TODO: route cull through PE_DESC when hsdraw exposes it.
     pobj = mb.build()
     return pobj, len(positions), len(triangles)
 
