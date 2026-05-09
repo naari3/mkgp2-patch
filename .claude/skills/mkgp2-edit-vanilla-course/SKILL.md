@@ -100,9 +100,15 @@ bundle 経路の export は **deterministic**:
 |------|------|
 | 既存 material slot を再利用 + 既存 joint_id を `mkgp2_joint_id` にセット | ✓ そのまま追加される (`stats.meshes` += 1) |
 | 既存 material 再利用 + `mkgp2_joint_id` が `jobj_by_id` map に無い | ✗ skip + WARN (= mesh は出力されない) |
-| 新規 Principled BSDF material を使う | ✓ mesh + material 両方拾われる。BSDF Base Color から `(r,g,b,a)` byte を抽出して `_blender_material.make_textured_mobj` 経由で 4x4 RGBA8 fallback texture or BSDF の Image Texture node 内容を `CONSTANT|TEX0|ALPHA_MAT` (= 0x2011) MObj に build (`stats.fresh_materials` += 1)。INFO log に `built ad-hoc MObj from BSDF (color=..., img=...)` |
+| 新規 Principled BSDF material を使う (BSDF Base Color が単色) | ✓ mesh + material 両方拾われる。BSDF Base Color から `(r,g,b,a)` byte を抽出して `_blender_material.make_textured_mobj` 経由で 4x4 RGBA8 fallback texture を合成して `CONSTANT|TEX0|ALPHA_MAT` (= 0x2011) MObj を build (`stats.fresh_materials` += 1)。INFO log に `built ad-hoc MObj from BSDF (color=..., img=solid 4x4)` |
+| 新規 Principled BSDF material を使う (BSDF Base Color に Image Texture node を繋ぐ) | ✓ そのテクスチャが `bm.bsdf_image_texture` 経由で `(w, h, RGBA bytes)` として抽出され、`gx_encode(format=6 RGBA8, w, h, raw)` → TObj-attached Image として .dat に round-trip。`test_addon_bundle_add_mesh.py:v4` で 8x8 全 pixel orange を encode→decode 一致確認済 (commit `f1afeda`) |
 
-つまり「既存 vanilla を活かして mesh + 単色 material をちょい足し」は完全動作する。Image Texture node を新 mesh に貼って per-pixel pattern を入れたい場合も OK (vis: 経路と同じ helper を使うので挙動も同じ)。
+つまり「既存 vanilla を活かして mesh + 単色 material をちょい足し」も「Blender でロードした任意の画像をテクスチャとして貼った mesh をちょい足し」も両方完全動作する (`test_addon_bundle_add_mesh.py` で v3/v4 case 検証済)。
+
+**現状の制約**:
+- encoder は **`GxTexFmt::RGBA8` (= 6) 固定**。CMP / RGB5A3 / I8 等の compact format は addon 側から選択する経路無し → 同一画像で CMP 比 ~8x のファイルサイズ。format 選択 UI が要る場合は別 task
+- Image Texture の解像度は `bpy.data.images.size` から取る (任意)。ただし `gx_encode` 内部で alignment 制約があるかも (要検証、4 の倍数なら無難)
+- BSDF Base Color と Image Texture の両方を同時 active にした場合、Image Texture 優先 (= `bsdf_image_texture` の戻り値が non-None なら `make_textured_mobj` の `img_tuple` がそれになる)、単色 fallback は使われない
 
 vis: 経路 (新規コース合成、`mkgp2-new-course` skill) との material 構築ロジックは **共有 helper `_blender_material.py` 経由で同一**。新材の振る舞いを変えたいときはこのモジュール 1 箇所で済む。
 

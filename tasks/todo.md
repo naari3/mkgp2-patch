@@ -205,7 +205,8 @@
   - 走らせるだけなら不要だが、何の path なのかは未解明 (= mini-map? AI 補助 line? camera path?)
   - PathManager 系ではないことだけ判明
   - 解明したら skill (`mkgp2-new-course` の「最低構成」表) と `mkgp2_course_layout_system.md` (Dolphin docs 側) を更新
-- [ ] **D-2: hsdraw `MObj.alloc_textured(color, w, h, raw)` 一発 helper**
-  - 現状: `_promote_vis_to_hsd._make_textured_mobj` が手で MObj/TObj/Image を組み立てて `render_flags = 0x2011` を後付けしている (= ALPHA_MAT 抜けバグの跡、memory `project_alloc_unlit_color_alpha_mat.md`)
-  - hsdraw 上流に `MObj.alloc_textured(color_rgba, image_w, image_h, image_data)` 的な one-shot allocator を入れて `render_flags=0x2011 / TObj+Image 自動配線` を内蔵すれば、`_make_textured_mobj` が ~30 行 → ~5 行に縮む
+- [ ] **D-2: hsdraw `MObj.alloc_textured(color, w, h, raw)` 一発 helper (機能拡張ではなく純粋 refactor)**
+  - 確認済: D-2 は **機能拡張ではない**。任意の Blender Image Texture node 経由のテクスチャ表示は B-3 完了時点で既に動作 (`test_addon_bundle_add_mesh.py:v4` で 8x8 全 orange round-trip 検証 PASS、commit `f1afeda`)
+  - 残る価値: ローカル `_blender_material.make_textured_mobj` ~30 行 (= MObj/TObj/Image を手で配線、ALPHA_MAT 抜けバグの跡 `project_alloc_unlit_color_alpha_mat.md`) を hsdraw 上流の 1-call API (`MObj.alloc_textured(color_rgba, image_w, image_h, image_data)` で `render_flags=0x2011 / TObj+Image 自動配線` を内蔵) に置き換えれば ~5 行に縮む
   - A-1/A-2 と一緒に hsdraw upstream PR で扱うのが筋
+  - 関連 / 並走できる別 task: format 選択 UI (CMP / RGB5A3 / I8 等を Material Custom Property `mkgp2_target_format` で指定) — 現状 RGBA8 (format=6) 固定なので大きい texture でファイルサイズ膨張する
