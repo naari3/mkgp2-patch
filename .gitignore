@@ -27,3 +27,24 @@ tools/*.decompressed.bin
 tools/resource_table.txt
 tools/__pycache__/
 tools/**/__pycache__/
+
+# User-local game extraction / dump artifacts (= Dolphin filesystem dump,
+# extracted texture caches). Sometimes file, sometimes dir depending on
+# how Dolphin Extract was invoked, so no trailing slash. Regenerate with
+# the Dolphin "Extract files" action; not shared between machines.
+/Extract
+/Filesystem
+/tex
+
+# Per-project Claude Code settings. Records user-specific tool permissions
+# and per-conversation tweaks; not shared.
+.claude/settings.local.json
+
+# One-shot debug scripts kept locally during investigations. Reusable
+# dump / compare helpers (hsd_compare_*, hsd_dump_*) live alongside
+# without the underscore prefix and ARE tracked.
+tools/_inspect_*.py
+tools/_swap_*.py
+tools/hsd/check_*.csx
+tools/hsd/compare_*.csx
+tools/hsd/dump_*.csx
