@@ -254,6 +254,18 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
         fmt_name = DEFAULT_TARGET_FORMAT
         fmt_int = _TEXFMT_FULL[DEFAULT_TARGET_FORMAT]
 
+    # Channel-order workaround for hsdraw's RGB5A3 encoder: the in-game
+    # sample displays the encoded image with R and B swapped vs the raw
+    # we feed in (verified empirically — RGBA8 and CMP both round-trip
+    # cleanly, only RGB5A3 inverts).  Pre-swap R<->B so the displayed
+    # color matches the source PNG.  TODO: fix in hsdraw upstream
+    # (`gx_image::encode_image` for the RGB5A3 path) and remove this.
+    if fmt_name == "RGB5A3":
+        swapped = bytearray(raw)
+        for i in range(0, len(swapped), 4):
+            swapped[i], swapped[i + 2] = swapped[i + 2], swapped[i]
+        raw = bytes(swapped)
+
     # GX-encode.  hsdraw handles tile alignment + 32-byte padding
     # internally (`gx_encode` wraps `gx_image::encode_image`).
     gx_bytes = hsdraw.gx_encode(fmt_int, w, h, raw)
@@ -279,7 +291,15 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
     tobj.set_coord_type(0)       # CoordType=UV (= bits 0-3 = 0)
     tobj.flags |= 0x10           # LIGHTMAP_DIFFUSE — no public setter
     tobj.blending = 1.0
-    tobj.mag_filter = 1          # GX_LINEAR
+    # GX_NEAR (0).  GX_LINEAR (1) bilinearly interpolates a 64x64
+    # texture across a 600x600 plane and average-blends adjacent pixels
+    # — fine checker patterns collapse to their mean color rather than
+    # showing distinct cells.  Vanilla road uses LINEAR because its
+    # textures are large (256x256+) where interpolation reads as
+    # smooth detail; for small authoring textures NEAREST keeps every
+    # texel sharp.  TODO: expose this as a Material EnumProperty
+    # alongside target_format if users start authoring large textures.
+    tobj.mag_filter = 0          # GX_NEAR
 
     # Material with vanilla course conventions: ambient + spc non-zero
     # so the lit-mesh TEV pipeline (the one actually sampling our TObj)
