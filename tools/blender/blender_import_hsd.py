@@ -1,18 +1,24 @@
 """
-MKGP2 HSD Scene Importer (PoC, single script, no addon UI)
+MKGP2 HSD Scene Importer (Python-only, no external CLI)
 
-Reads the scene.json + tex/ bundle produced by hsd_export_for_blender.csx and
-builds Blender meshes + materials + image textures, ready as L1 visual
-reference for collision / path editing.
+Reads a vanilla .dat directly via the vendored `hsdraw` Rust extension
+and builds Blender meshes + materials + image textures, ready as L1
+visual reference for collision / path editing.
+
+The previous csx-based path (dotnet-script + HSDLib + ImageSharp +
+scene.json/PNG bundle) has been retired -- `hsdraw.export_scene_json`
+emits the same JSON schema in-process, and `hsdraw.gx_decode` produces
+RGBA8 from raw GX bytes so each TObj's image is materialized as a
+`bpy.data.images.new` object without any intermediate PNG file.
 
 Usage:
   Method A — Blender Text Editor:
     1. Open Blender > Text Editor > Open `blender_import_hsd.py`
-    2. Edit SCENE_JSON below (or pass via Python console)
+    2. Edit DAT_PATH below
     3. Click "Run Script"
 
   Method B — CLI:
-    blender --python blender_import_hsd.py -- <path-to-scene.json>
+    blender --python blender_import_hsd.py -- <path-to-foo.dat>
 
 Coordinate system (matches blender_import_collision.py / _line.py / _auto.py):
     Game Y-up -> Blender Z-up:
@@ -21,24 +27,29 @@ Coordinate system (matches blender_import_collision.py / _line.py / _auto.py):
         Blender Z =  Game Y
 
 What gets created:
-  - One Blender Collection named after source_dat
-  - One Mesh Object per JSON mesh (parented to nothing; vertices already
-    in world space).  Joint hierarchy is preserved in custom properties
-    (joint_id, single_bind_joint) so a future re-export can reconstruct it.
-  - One Material per JSON material (named mat_<n>).  Diffuse base color
-    set from texture; XLU render_flags get blend_method=BLEND.
-  - One Image per unique texture (loaded with check_existing so the same
-    PNG is shared across materials; matches HSD's struct-sharing dedup).
+  - One Blender Collection named `mkgp2:<source_dat>`
+  - One Mesh Object per scene.json mesh (parented to nothing; vertices
+    already in world space).  Joint hierarchy is preserved in custom
+    properties (joint_id, single_bind_joint) so re-export can rebuild it.
+  - One Material per scene.json material (named `mat_<n>`).
+  - One Blender Image per unique texture, built directly from raw GX
+    bytes via `gx_decode` (no PNG file). Each Image carries
+    `mkgp2_gx_path` / `mkgp2_gx_format` / `mkgp2_gx_width` /
+    `mkgp2_gx_height` / `mkgp2_gx_size` / `mkgp2_png_hash` custom props
+    so the M3 unified exporter's bypass-vs-reencode dispatch works
+    identically to the legacy bundle path.
 
-Limitations (PoC):
-  - Empties for joint hierarchy are NOT created (vertices are world-baked,
-    so empties would double-transform).  Hierarchy is recorded as custom
-    props only.  A proper addon will reconstruct hierarchy AND keep verts
-    in JObj-local space for round-trip.
-  - Skinning / shape_set are unsupported (course mesh data does not use
-    them, but custom mods someday might).
-  - PEDesc / TEV / mipmap LOD info is not yet wired into Blender material
-    nodes.
+GX bytes for each texture are written to `gx_dump_dir` (defaults to a
+per-source-file temp dir) so the M3 exporter can read them back via the
+`mkgp2_gx_path` custom prop on each Image.
+
+Limitations (unchanged from the csx era):
+  - Empties for joint hierarchy are created but cannot drive visual
+    placement (vertices are world-baked).  They serve as a Blender-
+    native expression of the joint parent/children chain.
+  - Skinning / shape_set are unsupported.
+  - PEDesc / TEV / mipmap LOD info is not yet wired into Blender
+    material nodes.
 """
 
 import bpy
@@ -46,72 +57,174 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 # ============================================================
 # CONFIGURATION — edit when running from Text Editor
 # ============================================================
-SCENE_JSON = r"C:\Users\naari\Documents\blender\mr_highway_export\scene.json"
+DAT_PATH = r"C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files\test_course_road.dat"
 # ============================================================
+
+# GxTexFmt name -> integer enum (mirrors HSDLib HSDRaw/GX/GXEnums.cs).
+# Used by gx_decode + by the unified exporter's bypass dispatch.
+_TEXFMT = {
+    "I4": 0, "I8": 1, "IA4": 2, "IA8": 3,
+    "RGB565": 4, "RGB5A3": 5, "RGBA8": 6,
+    "CI4": 8, "CI8": 9, "CI14X2": 10,
+    "CMP": 14,
+}
 
 
 def game_to_blender(x, y, z):
     return (x, -z, y)
 
 
-def make_image(tex, base_dir, image_cache):
-    """Load the texture PNG and stash the metadata the M3 unified
-    exporter needs for bypass-vs-reencode dispatch:
+def _collect_gx_bytes(dat):
+    """Walk every reachable TObj in `dat` and return {sha1[:12]: gx_bytes}.
 
-      mkgp2_png_hash    SHA-1 of the PNG file content as imported. The
-                        exporter recomputes this against the (possibly
-                        edited) Blender Image and compares to detect
-                        whether the user touched the texture.
-      mkgp2_gx_path     absolute path to the raw GX-encoded payload
-                        (`tex/<sha>.gx`) the csx wrote alongside the PNG.
-      mkgp2_gx_format   original GX format name ("CMP" / "RGB5A3" /
-                        "RGBA8" / "RGB565" / ...). Used to pick the
-                        encoder and to refuse format-changing edits.
-      mkgp2_gx_width / mkgp2_gx_height
-                        original source dimensions. Resize is rejected
-                        in M3 (encoder requires matching dimensions).
+    `sha1[:12]` is the same intern key `hsdraw.export_scene_json` uses for
+    `textures[].id`, so the dict is keyed identically and lookups by id
+    succeed by construction.
 
-    Old bundles (csx pre-M1) lack `gx_file` in the texture DTO. We log
-    a warning, leave the .gx props unset, and let the exporter fall back
-    to forced re-encoding for those Images.
+    Walks scene_data's JOBJDescs[*].RootJoint plus every non-`scene_data`
+    root (typical course .dat layout: 1 RootJoint + many alias roots
+    pointing back at it -- the dedup happens naturally because identical
+    image_data SHAs collapse onto the same dict key).
     """
-    tex_id = tex['id']
+    import hsdraw
+
+    out = {}
+
+    def walk_jobjs(jobj):
+        while jobj is not None:
+            yield jobj
+            if jobj.child is not None:
+                yield from walk_jobjs(jobj.child)
+            jobj = jobj.next
+
+    def dobj_from_jobj(jobj):
+        # HSD_JOBJ.DObj reference lives at struct offset 0x10. The
+        # JObj wrapper has set_dobj() but no symmetric getter, so we
+        # peek the struct refs directly.
+        for off, s in jobj.as_struct().references():
+            if off == 0x10:
+                return hsdraw.DObj.from_struct(s)
+        return None
+
+    def all_root_jobjs():
+        sd = dat.scene_data()
+        if sd is not None:
+            sobj = hsdraw.SObj.from_struct(sd.data)
+            for jd in sobj.jobj_descs():
+                rj = jd.root_joint
+                if rj is not None:
+                    yield rj
+        for r in dat.roots():
+            if r.name == 'scene_data':
+                continue
+            try:
+                yield hsdraw.JObj.from_struct(r.data)
+            except Exception:
+                # Non-JObj root (rare in course .dat). Skip silently.
+                continue
+
+    for root in all_root_jobjs():
+        for jobj in walk_jobjs(root):
+            d = dobj_from_jobj(jobj)
+            while d is not None:
+                m_raw = d.mobj
+                if m_raw is not None:
+                    m = hsdraw.MObj.from_struct(m_raw)
+                    t = m.textures
+                    while t is not None:
+                        timg = t.image_data
+                        if timg is not None:
+                            img = (hsdraw.Image.from_struct(timg)
+                                   if isinstance(timg, hsdraw.HsdStruct)
+                                   else timg)
+                            gx = img.image_data()
+                            if gx:
+                                sha = hashlib.sha1(gx).hexdigest()[:12].upper()
+                                out[sha] = gx
+                        t = t.next
+                d = d.next
+    return out
+
+
+def make_image_from_gx(tex_id, gx_bytes, fmt_name, width, height,
+                      gx_dump_dir, image_cache):
+    """Build a Blender Image from raw GX bytes (no PNG file).
+
+    Stashes the same custom-prop set the legacy `make_image` (csx-era,
+    PNG-loading) used, so the M3 unified exporter sees identical
+    bypass-vs-reencode metadata:
+
+      mkgp2_gx_path     absolute path to a `<tex_id>.gx` written under
+                        `gx_dump_dir` (the exporter reads it back when
+                        the Blender Image is untouched, byte-for-byte).
+      mkgp2_gx_format   GX format name ("CMP" / "RGB5A3" / "RGBA8" /
+                        "RGB565" / ...). Format-changing edits rejected.
+      mkgp2_gx_width / mkgp2_gx_height / mkgp2_gx_size
+                        source dimensions + raw payload size.
+      mkgp2_png_hash    SHA-1 of the decoded RGBA8 bytes. The exporter
+                        re-derives a live hash from `Image.pixels` to
+                        decide whether the user has edited the Image.
+
+    `gx_decode(format_int, width, height, gx_bytes)` returns RGBA8 bytes
+    of length `4 * width * height` (Rust core handles the HSDLib BGRA→
+    RGBA quirk internally — no swap on the Python side).
+    """
+    import hsdraw
+
     if tex_id in image_cache:
         return image_cache[tex_id]
-    png_path = (base_dir / tex['file']).resolve()
-    if not png_path.exists():
-        print(f"  WARN: missing texture file {png_path}")
+
+    fmt_int = _TEXFMT.get(fmt_name)
+    if fmt_int is None:
+        print(f"  WARN: unknown GX format {fmt_name!r} for texture {tex_id}")
         return None
-    img = bpy.data.images.load(str(png_path), check_existing=True)
-    img.alpha_mode = 'STRAIGHT'
-    # PNG content hash is computed against the file currently on disk
-    # (which is what `bpy.data.images.load` just read, before the user
-    # has had any chance to edit). The exporter re-derives the live
-    # hash from `Image.pixels` for comparison.
+
     try:
-        img['mkgp2_png_hash'] = hashlib.sha1(png_path.read_bytes()).hexdigest()
+        rgba = hsdraw.gx_decode(fmt_int, width, height, gx_bytes)
     except Exception as ex:
-        print(f"  WARN: PNG hash failed for {png_path.name}: {ex}")
-    gx_file = tex.get('gx_file')
-    if gx_file:
-        gx_path = (base_dir / gx_file).resolve()
-        img['mkgp2_gx_path'] = str(gx_path)
-        img['mkgp2_gx_format'] = tex.get('format', '')
-        img['mkgp2_gx_width'] = int(tex.get('width', 0))
-        img['mkgp2_gx_height'] = int(tex.get('height', 0))
-        img['mkgp2_gx_size'] = int(tex.get('gx_size', 0))
-        if not gx_path.exists():
-            print(f"  WARN: gx_file referenced but missing: {gx_path}")
-    else:
-        # Legacy bundle (pre-M1) -- exporter will be forced to re-encode
-        # via gx_encode() since there is no source GX payload to bypass.
-        print(f"  WARN: texture {tex_id} has no gx_file (legacy bundle); "
-              "M3 export will re-encode this one even if untouched")
+        print(f"  ERR: gx_decode failed for {tex_id} (fmt={fmt_name} "
+              f"{width}x{height}): {ex}")
+        return None
+
+    # Build the Blender Image. `pixels.foreach_set` accepts a flat float
+    # iterable; we feed normalized 0..1 floats from the RGBA8 bytes.
+    img = bpy.data.images.new(
+        name=tex_id, width=width, height=height, alpha=True)
+    pixel_floats = [b / 255.0 for b in rgba]
+    img.pixels.foreach_set(pixel_floats)
+    img.alpha_mode = 'STRAIGHT'
+
+    # Materialize the Image to disk as PNG so the M3 exporter's bypass
+    # dispatch (which compares SHA-1 of the on-disk PNG bytes to detect
+    # whether the user has edited the Image) keeps functioning.
+    # `bpy.data.images.new` images have empty `filepath_raw` until we
+    # bind one and call `save()`.
+    png_path = Path(gx_dump_dir) / f"{tex_id}.png"
+    img.filepath_raw = str(png_path)
+    img.file_format = 'PNG'
+    img.save()
+
+    # Persist the raw GX payload too: bypass picks the .gx bytes
+    # byte-for-byte (avoiding CMP DXT1 round-trip quality loss) when
+    # the PNG hash still matches.
+    gx_path = Path(gx_dump_dir) / f"{tex_id}.gx"
+    gx_path.write_bytes(gx_bytes)
+
+    img['mkgp2_gx_path'] = str(gx_path)
+    img['mkgp2_gx_format'] = fmt_name
+    img['mkgp2_gx_width'] = int(width)
+    img['mkgp2_gx_height'] = int(height)
+    img['mkgp2_gx_size'] = len(gx_bytes)
+    # Hash matches what `_png_bytes_for_image` will read at export time
+    # (= the file content `img.save()` just wrote).
+    img['mkgp2_png_hash'] = hashlib.sha1(png_path.read_bytes()).hexdigest()
+
     image_cache[tex_id] = img
     return img
 
@@ -413,33 +526,78 @@ def build_mesh(mesh_dto, materials_by_id):
     return mesh
 
 
-def import_scene(scene_json_path):
-    scene_json_path = Path(scene_json_path).resolve()
-    base_dir = scene_json_path.parent
-    print(f"\n[mkgp2 hsd import] {scene_json_path}")
-    with open(scene_json_path, 'r', encoding='utf-8') as f:
-        scene = json.load(f)
+def import_dat_directly(dat_path, *, gx_dump_dir=None):
+    """Import a vanilla .dat into Blender as a `mkgp2:<dat>` bundle.
 
-    # 1. Images
+    Pipeline (Python-only, no external CLI):
+      1. Read .dat bytes from disk.
+      2. `hsdraw.export_scene_json(...)` -> scene.json equivalent in
+         memory (joints / materials / textures / meshes / aliases).
+      3. Walk the .dat's JObj/DObj/MObj/TObj chains in Python to
+         collect each unique TObj's raw GX bytes. SHA-1 dedup keys
+         match scene.json `textures[].id` by construction.
+      4. `gx_decode` each unique texture into RGBA8 -> Blender Image
+         via `bpy.data.images.new`. GX bytes also written to
+         `gx_dump_dir` so the M3 exporter's bypass path works.
+      5. Reuse `make_material` / `build_mesh` / joint-Empty pipeline
+         from the legacy importer (their inputs are scene.json DTOs
+         which have not changed).
+      6. Stash `mkgp2_source_dat` / `mkgp2_joint_aliases` /
+         `mkgp2_joints` / `mkgp2_scene_json` (now a JSON STRING, not a
+         file path) on the collection for the export round-trip.
+
+    `gx_dump_dir` defaults to a per-source-file temp dir; pass an
+    explicit dir if you want the artifacts to live somewhere stable.
+    Returns the new `bpy.types.Collection`.
+    """
+    import hsdraw
+
+    dat_path = Path(dat_path).resolve()
+    print(f"\n[mkgp2 hsd import (Python)] {dat_path}")
+    raw = dat_path.read_bytes()
+
+    # --- 1. scene.json equivalent metadata ---------------------------
+    scene_json_str = hsdraw.export_scene_json(
+        raw, source_dat=dat_path.name, tex_dir="tex")
+    scene = json.loads(scene_json_str)
+
+    # --- 2. GX bytes per unique texture ------------------------------
+    if gx_dump_dir is None:
+        gx_dump_dir = Path(tempfile.gettempdir()) / f"mkgp2_gx_{dat_path.stem}"
+    gx_dump_dir = Path(gx_dump_dir)
+    gx_dump_dir.mkdir(parents=True, exist_ok=True)
+
+    dat = hsdraw.parse_dat(raw)
+    gx_by_sha = _collect_gx_bytes(dat)
+
+    # --- 3. Build Blender Images (one per unique texture) ------------
     image_cache = {}
     for tex in scene['textures']:
-        make_image(tex, base_dir, image_cache)
+        tex_id = tex['id']
+        gx_bytes = gx_by_sha.get(tex_id)
+        if gx_bytes is None:
+            print(f"  WARN: scene.json references texture {tex_id} but the "
+                  ".dat walk did not surface matching GX bytes; skipping")
+            continue
+        make_image_from_gx(
+            tex_id, gx_bytes,
+            tex['format'], int(tex['width']), int(tex['height']),
+            gx_dump_dir, image_cache)
     print(f"  loaded textures: {len(image_cache)} / {len(scene['textures'])}")
 
-    # 2. Materials
+    # --- 4. Materials -------------------------------------------------
     materials_by_id = {}
     for mat_dto in scene['materials']:
         materials_by_id[mat_dto['id']] = make_material(mat_dto, image_cache)
     print(f"  built materials: {len(materials_by_id)}")
 
-    # 3. Collection
+    # --- 5. Collection ------------------------------------------------
     coll_name = f"mkgp2:{scene['source_dat']}"
     coll = bpy.data.collections.new(coll_name)
     bpy.context.scene.collection.children.link(coll)
 
-    # 4. Meshes
-    n_meshes = 0
-    n_skipped = 0
+    # --- 6. Meshes ----------------------------------------------------
+    n_meshes = n_skipped = 0
     for mesh_dto in scene['meshes']:
         try:
             mesh = build_mesh(mesh_dto, materials_by_id)
@@ -448,7 +606,6 @@ def import_scene(scene_json_path):
                 continue
             obj = bpy.data.objects.new(mesh_dto['id'], mesh)
             coll.objects.link(obj)
-            # Round-trip metadata
             obj['mkgp2_joint_id'] = mesh_dto['joint']
             if mesh_dto.get('single_bind_joint'):
                 obj['mkgp2_single_bind_joint'] = mesh_dto['single_bind_joint']
@@ -459,29 +616,22 @@ def import_scene(scene_json_path):
             print(f"  ERR mesh {mesh_dto['id']}: {ex}")
             n_skipped += 1
 
-    # 5. Stash joint table on the collection for round-trip
+    # --- 7. Stash for round-trip --------------------------------------
+    # `mkgp2_scene_json` is now the JSON STRING itself rather than a
+    # path on disk. The M3 exporter (`_export_mkgp2_bundle`) accepts
+    # either form for backward compatibility but new bundles always
+    # carry the inline string.
     coll['mkgp2_source_dat'] = scene['source_dat']
     coll['mkgp2_joint_aliases'] = json.dumps(scene['joint_aliases'])
     coll['mkgp2_joints'] = json.dumps(scene['joints'])
-    # Path back to scene.json so the M3 unified exporter can re-read
-    # materials / textures (those aren't stashed on the Blender side --
-    # importer translates them into Blender materials whose render-flag /
-    # color-op metadata is hard to round-trip back from Blender alone).
-    coll['mkgp2_scene_json'] = str(scene_json_path)
+    coll['mkgp2_scene_json'] = scene_json_str
 
-    # 6. Joint hierarchy as Outliner-visible Empty metadata.
-    #
-    # The HSD csx exports vertices already-baked to world space, so we
-    # cannot make these Empties drive visual placement (would
-    # double-transform). They live at identity in their parent's frame
-    # and serve only as a Blender-native expression of the joint
-    # parent/children chain. The Export HSD operator reads each
-    # Empty's `.parent` to update the stashed `mkgp2_joints` parent /
-    # children fields before invoking the writer csx.
-    #
-    # TRS / flag editing still flows through the stashed JSON (or the
-    # alias panel for joint_aliases). A future iteration can rebake
-    # vertices to local-space and let Empty TRS drive position.
+    # --- 8. Joint Empty hierarchy -------------------------------------
+    # World-baked vertices mean these Empties cannot drive visual
+    # placement (would double-transform). They serve as a Blender-
+    # native expression of the joint parent/children chain. The Export
+    # HSD operator reads each Empty's `.parent` to update the stashed
+    # `mkgp2_joints` parent / children fields before invoking the writer.
     id_to_empty = {}
     for jdto in scene['joints']:
         jid = jdto['id']
@@ -491,15 +641,11 @@ def import_scene(scene_json_path):
         empty['mkgp2_jobj_id'] = jid
         if jdto.get('flags'):
             empty['mkgp2_jobj_flags'] = ",".join(jdto['flags'])
-        # Stash original local TRS so a future panel can expose it
-        # without re-parsing the bundle's mkgp2_joints stash on every
-        # redraw.
         empty['mkgp2_jobj_local_t'] = list(jdto.get('translation', [0, 0, 0]))
         empty['mkgp2_jobj_local_r'] = list(jdto.get('rotation', [0, 0, 0]))
         empty['mkgp2_jobj_local_s'] = list(jdto.get('scale', [1, 1, 1]))
         coll.objects.link(empty)
         id_to_empty[jid] = empty
-    # Second pass: wire parents
     for jdto in scene['joints']:
         parent_id = jdto.get('parent')
         if parent_id and parent_id in id_to_empty:
@@ -510,18 +656,26 @@ def import_scene(scene_json_path):
     print(f"  built meshes: {n_meshes} (skipped {n_skipped})")
     print(f"  collection: {coll_name}")
     print(f"[done]")
+    return coll
+
+
+# Backwards-compat shim: addon code historically called
+# `hsd_imp.import_scene(...)`. Forward to the new entry point so a
+# stale prefs/test still functions if it lands during the transition.
+def import_scene(target):
+    """Compat shim. Routes to import_dat_directly."""
+    return import_dat_directly(target)
 
 
 if __name__ == "__main__":
-    # Detect "--" CLI arg (blender passes everything after it)
-    #   blender --background --python this.py -- <scene.json> [save-blend-path]
+    # CLI usage: blender --background --python this.py -- <foo.dat> [save.blend]
     argv = sys.argv
     if "--" in argv:
         argv = argv[argv.index("--") + 1:]
     else:
         argv = []
-    target = argv[0] if argv else SCENE_JSON
-    import_scene(target)
+    target = argv[0] if argv else DAT_PATH
+    import_dat_directly(target)
     if len(argv) >= 2:
         save_path = argv[1]
         bpy.ops.wm.save_as_mainfile(filepath=save_path)

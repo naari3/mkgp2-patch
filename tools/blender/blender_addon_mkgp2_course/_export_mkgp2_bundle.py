@@ -569,7 +569,7 @@ def _build_pobj_for_mesh(obj, joint_world, sb_world, cull, hsdraw, *, log,
 
 def export_bundle_to_dat(
     bundle,
-    scene_json_path,
+    scene_json,
     output_dat,
     *,
     log_fn=None,
@@ -578,12 +578,15 @@ def export_bundle_to_dat(
     fresh HSD .dat at `output_dat`.
 
     Parameters:
-      bundle           Blender Collection. Must carry the M2 stashed
-                       props (`mkgp2_joints`, `mkgp2_joint_aliases`).
-      scene_json_path  Path to the original `scene.json` the bundle was
-                       imported from. Materials / texture refs are read
-                       from here (the bundle doesn't stash them).
-      output_dat       Destination .dat path.
+      bundle      Blender Collection. Must carry the M2 stashed props
+                  (`mkgp2_joints`, `mkgp2_joint_aliases`).
+      scene_json  Either an inline JSON string (new-style bundles, kept
+                  on the collection's `mkgp2_scene_json` custom prop as
+                  a literal string) or a filesystem path to a scene.json
+                  file (legacy csx-era bundles). Auto-detected: a string
+                  starting with `{` is treated as inline JSON, anything
+                  else is parsed as a path.
+      output_dat  Destination .dat path.
 
     Returns a stats dict. Raises TextureBuildError / RuntimeError on
     fatal inconsistencies (missing stash, malformed material reference,
@@ -594,11 +597,14 @@ def export_bundle_to_dat(
 
     log = log_fn if log_fn is not None else print
     output_dat = Path(output_dat)
-    scene_json_path = Path(scene_json_path)
 
-    if not scene_json_path.is_file():
-        raise FileNotFoundError(f"scene.json not found: {scene_json_path}")
-    scene = json.loads(scene_json_path.read_text(encoding="utf-8"))
+    if isinstance(scene_json, str) and scene_json.lstrip().startswith('{'):
+        scene = json.loads(scene_json)
+    else:
+        scene_json_path = Path(scene_json)
+        if not scene_json_path.is_file():
+            raise FileNotFoundError(f"scene.json not found: {scene_json_path}")
+        scene = json.loads(scene_json_path.read_text(encoding="utf-8"))
     materials_by_id = {m["id"]: m for m in scene.get("materials", [])}
     texture_dtos = {t["id"]: t for t in scene.get("textures", [])}
     # Per-mesh DTOs let us know which attributes were present in the
@@ -761,6 +767,37 @@ def export_bundle_to_dat(
         jobj_by_id[jid].set_dobj(dobjs[0])
     log(f"meshes  : built={len(mesh_objs)-skipped}  skipped={skipped}  "
         f"verts={total_verts}  tris={total_tris}")
+
+    # ---- Pass 5b: rendering-flag autocomplete --------------------------
+    # vis: bundle (from-scratch course) は flags 列が空のままなことが多い。
+    # HSD renderer は ROOT_OPA / ROOT_XLU / ROOT_TEXEDGE のいずれも立っていない
+    # JObj tree を traverse skip するので、画面が真っ黒になる
+    # (test_course=`OPA, ROOT_OPA`、MR_highway=`ROOT_OPA, ROOT_XLU, ROOT_TEXEDGE`
+    #  に対し my_course=`NULL` だった原因)。
+    #
+    # 補完ルール (元の flags が完全に空ビットだった joint だけ上書き):
+    #   - DObj を持つ joint              → OPA を立てる
+    #   - parent を持たない root joint   → ROOT_OPA を追加
+    # 明示的に flags が指定済みの joint には触らない (vanilla 再 export 経路の
+    # XLU や TEXEDGE 等の保持を壊さないため)。
+    autofill = 0
+    parents = {j["id"]: j.get("parent") for j in joints}
+    for j in joints:
+        jid = j["id"]
+        nj = jobj_by_id[jid]
+        if nj.flags != 0:
+            continue  # source had explicit flags -> preserve
+        new_flags = 0
+        if jid in dobj_chain_by_jid:
+            new_flags |= _JOBJ_FLAG["OPA"]
+        if not parents.get(jid):
+            new_flags |= _JOBJ_FLAG["ROOT_OPA"]
+        if new_flags:
+            nj.flags = new_flags
+            autofill += 1
+    if autofill:
+        log(f"flagfill: auto-set OPA/ROOT_OPA on {autofill} JObj "
+            f"(source had no rendering flags)")
 
     # ---- Pass 6: emit Dat with scene_data + alias roots ----------------
     # Identify the root joint -- the one with no parent and (by csv

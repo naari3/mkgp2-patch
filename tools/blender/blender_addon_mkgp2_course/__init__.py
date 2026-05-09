@@ -34,8 +34,6 @@ import bpy
 import json
 import os
 import platform
-import shutil
-import subprocess
 import sys
 import tempfile
 import importlib
@@ -57,9 +55,9 @@ from bpy.props import StringProperty, IntProperty, BoolProperty, FloatProperty
 # downstream module imports can rely on `import hsdraw`.
 #
 # If the platform isn't covered (e.g. Linux distro shipped with a
-# vendor/ stripped of the matching wheel) the import simply fails -- the
-# addon then falls back to the dotnet-script + csx writer path (see
-# MKGP2_OT_ExportHSD).
+# vendor/ stripped of the matching wheel) the import simply fails. HSD
+# import / export operators check `HSDRAW_AVAILABLE` and refuse with a
+# clear error when the extension is missing.
 
 def _resolve_hsdraw_platform_dir():
     arch = platform.machine().lower()
@@ -84,8 +82,9 @@ except ImportError as _ex:
     HSDRAW_AVAILABLE = False
     HSDRAW_VERSION = None
     _hsdraw_module = None
-    print(f"[mkgp2 addon] hsdraw not available ({_ex}); writer falls back "
-          f"to csx (set platform vendor dir at {_hsdraw_dir} if needed)")
+    print(f"[mkgp2 addon] hsdraw not available ({_ex}); HSD import / "
+          f"export operators will refuse until the wheel is installed at "
+          f"{_hsdraw_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +96,6 @@ hsd_imp = None
 col_imp = None
 line_imp = None
 auto_imp = None
-course_imp = None
 line_exp = None
 auto_exp = None
 col_exp = None
@@ -137,7 +135,7 @@ def reload_modules():
 
     Returns (ok: bool, error: Optional[str]).
     """
-    global hsd_imp, col_imp, line_imp, auto_imp, course_imp
+    global hsd_imp, col_imp, line_imp, auto_imp
     global line_exp, auto_exp, col_exp, validate
 
     path = _resolve_source_path()
@@ -151,7 +149,6 @@ def reload_modules():
         col_imp = _import_or_reload("blender_import_collision")
         line_imp = _import_or_reload("blender_import_line")
         auto_imp = _import_or_reload("blender_import_auto")
-        course_imp = _import_or_reload("blender_import_course_all")
         line_exp = _import_or_reload("blender_export_line")
         auto_exp = _import_or_reload("blender_export_auto")
         col_exp = _import_or_reload("blender_export_collision")
@@ -197,101 +194,23 @@ def _seed_filepath(op_self, default_filename="", *, prefer_output=False):
 
 
 # ---------------------------------------------------------------------------
-# csx (HSD export pipeline) helpers
+# HSD .dat -> bundle (Python-only, no csx)
 # ---------------------------------------------------------------------------
 #
-# `tools/hsd/hsd_export_for_blender.csx` extracts an HSD .dat file into
-# a Blender-friendly bundle (scene.json + tex/<sha1>.png). Vanilla
-# course .dat names follow the fixed `<Prefix>_<round>_A.dat` pattern,
-# so the addon can run the csx automatically given just bin_dir +
-# prefix and hide scene.json entirely as an internal representation.
+# Earlier versions shelled out to `tools/hsd/hsd_export_for_blender.csx`
+# (HSDLib + dotnet-script + ImageSharp) to produce a scene.json + PNG
+# bundle from a vanilla .dat, then handed the bundle to the importer.
+# The vendored `hsdraw` Rust extension now covers both halves of that
+# pipeline (`hsdraw.export_scene_json` for the JSON, `hsdraw.gx_decode`
+# for the texture pixels), so the importer reads .dat files directly.
+# The csx file still ships in `tools/hsd/` as a parity oracle for
+# `hsdraw.export_scene_json`, but the addon does not invoke it.
 #
-# Strategy: locate dotnet-script, run csx via subprocess, return the
-# generated scene.json path. Errors surface via raised exceptions; the
-# operator turns them into Blender ERROR reports.
-
-
-def _resolve_dotnet_script():
-    """Locate the `dotnet-script` launcher.
-
-    Precedence:
-      1. Addon preference `dotnet_script_path` if set and existing.
-      2. `dotnet-script` on PATH.
-      3. Default `dotnet tool install` location:
-           %USERPROFILE%/.dotnet/tools/dotnet-script(.exe)
-    """
-    try:
-        prefs = bpy.context.preferences.addons[__name__].preferences
-        p = (prefs.dotnet_script_path or "").strip()
-        if p and os.path.isfile(p):
-            return p
-    except Exception:
-        pass
-    p = shutil.which("dotnet-script")
-    if p:
-        return p
-    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
-    for cand in ("dotnet-script.exe", "dotnet-script"):
-        full = os.path.join(home, ".dotnet", "tools", cand)
-        if os.path.isfile(full):
-            return full
-    return None
-
-
-def _resolve_csx_path():
-    """Path to tools/hsd/hsd_export_for_blender.csx."""
-    src = _resolve_source_path()  # .../tools/blender
-    return os.path.normpath(os.path.join(src, "..", "hsd",
-                                         "hsd_export_for_blender.csx"))
-
-
-def _run_csx_for_dat(dat_path, out_dir, *, timeout=240):
-    """Run hsd_export_for_blender.csx <dat_path> <out_dir> via dotnet-script.
-
-    Raises RuntimeError on any failure (with the captured stderr/stdout
-    appended for triage). Returns the path to <out_dir>/scene.json.
-    """
-    csx = _resolve_csx_path()
-    if not os.path.isfile(csx):
-        raise RuntimeError(
-            f"csx script not found at {csx}. Is the addon installed via a "
-            "junction back into tools/blender? Adjust source_modules_path."
-        )
-    dotnet = _resolve_dotnet_script()
-    if not dotnet:
-        raise RuntimeError(
-            "dotnet-script not found. Install it with "
-            "`dotnet tool install --global dotnet-script` or set the "
-            "addon preference `dotnet_script_path`."
-        )
-
-    os.makedirs(out_dir, exist_ok=True)
-    cmd = [dotnet, csx, "--", str(dat_path), str(out_dir)]
-    proc = subprocess.run(cmd, capture_output=True, text=True,
-                          timeout=timeout)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"csx returned {proc.returncode} for {os.path.basename(dat_path)}\n"
-            f"stdout: {proc.stdout.strip()[:500]}\n"
-            f"stderr: {proc.stderr.strip()[:500]}"
-        )
-    scene_json = os.path.join(out_dir, "scene.json")
-    if not os.path.isfile(scene_json):
-        raise RuntimeError(
-            f"csx finished but did not produce scene.json at {scene_json}\n"
-            f"stdout: {proc.stdout.strip()[:500]}"
-        )
-    return scene_json
-
-
 # M3b retired the `_run_writer_*` family along with the
 # `MKGP2_OT_PromoteVisToHSD` operator. The unified MKGP2_OT_ExportHSD
 # now invokes `_export_mkgp2_bundle` (for HSD bundles) or
 # `_promote_vis_to_hsd` (for vis: collections) directly via the
-# vendored hsdraw extension. The `_hsd_writer.py` Python port and
-# `tools/hsd/hsd_import_from_blender.csx` still live in-tree as
-# reference / batch-processing helpers but are not on the addon's
-# execute path anymore.
+# vendored hsdraw extension.
 
 
 def _find_vanilla_dat(bin_dir, prefix, round_label):
@@ -378,9 +297,10 @@ def _resolve_course_collection(context):
 def _resolve_hsd_bundle_collection(context):
     """Resolve an HSD bundle collection from the current context.
 
-    Bundle collections are created by `MKGP2_OT_ImportHSD` /
-    `_run_csx_for_dat` and have `mkgp2_source_dat` + `mkgp2_joints` +
-    `mkgp2_joint_aliases` custom props. Their conventional name is
+    Bundle collections are created by `MKGP2_OT_ImportHSD` (.dat
+    direct read via hsdraw) and carry `mkgp2_source_dat` +
+    `mkgp2_joints` + `mkgp2_joint_aliases` custom props. Their
+    conventional name is
     `mkgp2:<dat_filename>` but identification is by prop, not name.
 
     Resolution order:
@@ -439,19 +359,25 @@ def _link_collections_to_collection(parent_coll, child_colls):
 # ---------------------------------------------------------------------------
 
 class MKGP2_OT_ImportHSD(Operator):
-    """Import an HSD scene.json bundle (created by hsd_export_for_blender.csx)"""
+    """Import an HSD .dat directly into Blender as a `mkgp2:<dat>` bundle.
+
+    Uses `hsdraw.export_scene_json` + `hsdraw.gx_decode` to materialize
+    the scene fully in Python (no csx / dotnet-script). GX bytes for
+    each unique texture are written to a per-source-file temp dir so
+    the unified exporter's bypass dispatch keeps working.
+    """
     bl_idname = "import_scene.mkgp2_hsd_json"
-    bl_label = "Import MKGP2 HSD (scene.json)"
+    bl_label = "Import MKGP2 HSD (.dat)"
     bl_options = {'PRESET', 'UNDO'}
 
     filepath: StringProperty(subtype='FILE_PATH')
-    filter_glob: StringProperty(default="*.json", options={'HIDDEN'})
+    filter_glob: StringProperty(default="*.dat", options={'HIDDEN'})
 
     def execute(self, context):
         if not _need_modules(self):
             return {'CANCELLED'}
         try:
-            hsd_imp.import_scene(self.filepath)
+            hsd_imp.import_dat_directly(self.filepath)
         except Exception as ex:
             self.report({'ERROR'}, f"HSD import failed: {ex}")
             return {'CANCELLED'}
@@ -495,10 +421,10 @@ class MKGP2_OT_ExportHSD(Operator):
 
       * **vis: editor-only collection** (`vis:<name>` populated with
         Blender meshes + Principled BSDF materials): invokes
-        `_promote_vis_to_hsd.promote_vis_to_dat` with a vanilla `.dat`
-        as structural template. Promotion synthesizes one POBJ per
-        (mesh, material slot), single root JObj, scene_data RootJoint
-        repointed.
+        `_promote_vis_to_hsd.promote_vis_to_dat`. Promotion synthesizes
+        one POBJ per (mesh, material slot), one root JObj, and a fresh
+        scene_data SObj allocated from scratch via
+        `hsdraw.Dat.alloc_scene_data()`. No vanilla `.dat` is read.
 
     The dispatcher prefers an HSD bundle if both are reachable from
     context (the bundle is the typical edit target).
@@ -509,17 +435,6 @@ class MKGP2_OT_ExportHSD(Operator):
 
     filepath: StringProperty(subtype='FILE_PATH')
     filter_glob: StringProperty(default="*.dat", options={'HIDDEN'})
-
-    # Optional structural base for the vis: branch. The bundle branch
-    # ignores it (everything comes from stash + scene.json).
-    base_dat: StringProperty(
-        name="Structural base .dat (vis: only)",
-        description="Vanilla .dat to use as the SObj template for the "
-                    "vis: collection branch. Ignored when exporting an "
-                    "HSD bundle.",
-        subtype='FILE_PATH',
-        default="",
-    )
 
     def _resolve_target(self, context):
         """Decide which branch to take. Returns ('bundle', coll) or
@@ -558,12 +473,22 @@ class MKGP2_OT_ExportHSD(Operator):
         return {'CANCELLED'}
 
     def _execute_bundle(self, context, bundle):
+        # `mkgp2_scene_json` is either an inline JSON string (post-csx-
+        # retirement bundles) or a path on disk (legacy csx-era bundles).
+        # `_export_mkgp2_bundle.export_bundle_to_dat` accepts either form.
         scene_json = bundle.get("mkgp2_scene_json", "")
-        if not scene_json or not Path(scene_json).is_file():
+        if not scene_json:
             self.report({'ERROR'},
-                f"Bundle '{bundle.name}' has no usable mkgp2_scene_json "
-                f"prop ({scene_json!r}). Re-import the .dat with the "
-                "M2-capable importer to re-stash it.")
+                f"Bundle '{bundle.name}' has no mkgp2_scene_json prop. "
+                "Re-import the source .dat to re-stash it.")
+            return {'CANCELLED'}
+        if not (isinstance(scene_json, str)
+                and scene_json.lstrip().startswith('{')) \
+                and not Path(scene_json).is_file():
+            self.report({'ERROR'},
+                f"Bundle '{bundle.name}' mkgp2_scene_json is neither inline "
+                f"JSON nor an existing path ({scene_json!r:.80}). Re-import "
+                "the source .dat to re-stash it.")
             return {'CANCELLED'}
 
         # Sync joint parent / children from any Empty hierarchy that was
@@ -619,29 +544,13 @@ class MKGP2_OT_ExportHSD(Operator):
         return {'FINISHED'}
 
     def _execute_vis(self, context, vis):
-        # vis: branch needs a structural base .dat as the SObj template
-        # (the promote pipeline still piggybacks on a vanilla scene_data
-        # to source SObj/JOBJDescs/JObjDesc layout). Default to
-        # MR_highway_short_A.dat under the vanilla bin dir if blank.
-        base = self.base_dat.strip()
-        if not base:
-            van = _vanilla_bin_dir()
-            if van:
-                guess = os.path.join(van, "MR_highway_short_A.dat")
-                if os.path.isfile(guess):
-                    base = guess
-        if not base or not os.path.isfile(base):
-            self.report({'ERROR'},
-                "vis: branch needs a structural base .dat. Pick one in "
-                "the operator dialog (base_dat) or configure Vanilla "
-                "bin directory in addon preferences so the default "
-                "MR_highway_short_A.dat is reachable.")
-            return {'CANCELLED'}
-
+        # vis: branch is fully independent. The promote pipeline allocates
+        # scene_data from scratch via `hsdraw.Dat.alloc_scene_data()`, so
+        # no vanilla .dat is needed (or read).
         from . import _promote_vis_to_hsd
         try:
             stats = _promote_vis_to_hsd.promote_vis_to_dat(
-                vis, base, self.filepath,
+                vis, self.filepath,
             )
         except Exception as ex:
             self.report({'ERROR'}, f"vis: promote failed: {ex}")
@@ -671,14 +580,6 @@ class MKGP2_OT_ExportHSD(Operator):
                 self.filepath = os.path.join(out_dir, base_name)
             else:
                 self.filepath = base_name
-        # vis: branch defaults base_dat once -- the user can override in
-        # the dialog via the operator props panel before confirming.
-        if kind == "vis" and not self.base_dat:
-            van = _vanilla_bin_dir()
-            if van:
-                guess = os.path.join(van, "MR_highway_short_A.dat")
-                if os.path.isfile(guess):
-                    self.base_dat = guess
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
@@ -732,8 +633,8 @@ class MKGP2_OT_HsdAliasAdd(Operator):
     The alias name is the public symbol that game code will look up
     (e.g. `MR_highway_inu_joint`); the target joint id is one of the
     bundle's `jobj_<n>` entries from its joints list. On the next
-    Export HSD, the writer csx will splice this name into file.Roots
-    pointing at the same struct as the target joint.
+    Export HSD, the writer splices this name into file.Roots pointing
+    at the same struct as the target joint.
     """
     bl_idname = "scene.mkgp2_hsd_alias_add"
     bl_label = "Add HSD alias"
@@ -882,32 +783,17 @@ class MKGP2_OT_ImportAuto(Operator):
 
 
 class MKGP2_OT_ImportFullCourse(Operator):
-    """Load HSD scene (auto-extracted via csx) + collision + line + auto
-    for one vanilla course.
+    """Load HSD + collision + line + auto for one vanilla course.
 
-    Default flow (scene_json blank): the addon runs
-    `tools/hsd/hsd_export_for_blender.csx` over
-    `<bin_dir>/<Prefix>_short_A.dat` and `<Prefix>_long_A.dat`,
-    importing each generated bundle. csx + dotnet-script are auto
-    detected; override paths in addon preferences if needed.
-
-    Manual flow (scene_json filled): treat the explicit bundle as
-    short, then sweep collision/line/auto by suffix as before. Useful
-    when you've pre-generated a single scene.json.
+    Auto-discovers `<bin_dir>/<Prefix>_short_A.dat` and
+    `<Prefix>_long_A.dat` and reads each via `hsd_imp.import_dat_directly`
+    (Python-only, no external CLI), then sweeps the collision / line /
+    auto .bin files by suffix.
     """
     bl_idname = "import_scene.mkgp2_full_course"
     bl_label = "Import MKGP2 Full Course"
     bl_options = {'PRESET', 'UNDO'}
 
-    scene_json: StringProperty(
-        name="scene.json (legacy)",
-        description=(
-            "Optional explicit HSD bundle. Leave empty to let the "
-            "addon auto-discover and run csx on the matching .dat "
-            "files in bin directory."
-        ),
-        subtype='FILE_PATH',
-    )
     bin_dir: StringProperty(
         name="bin directory",
         description="Folder containing <prefix>_short.bin / _line.bin / _Auto.bin etc.",
@@ -932,49 +818,32 @@ class MKGP2_OT_ImportFullCourse(Operator):
             self.report({'ERROR'}, "bin directory and prefix required")
             return {'CANCELLED'}
         try:
-            if self.scene_json:
-                # Legacy single-bundle path; preserved so existing
-                # workflows that pre-extracted scene.json keep working.
-                course_imp.import_course(self.scene_json, self.bin_dir,
-                                         self.prefix)
-            else:
-                # Auto path: csx on each round's .dat, then sweep .bin set.
-                self._auto_import(self.bin_dir, self.prefix)
+            self._auto_import(self.bin_dir, self.prefix)
         except Exception as ex:
             self.report({'ERROR'}, f"Full course import failed: {ex}")
             return {'CANCELLED'}
         return {'FINISHED'}
 
     def _auto_import(self, bin_dir, prefix):
-        """Run csx over every <Prefix>_<round>_A.dat we can find,
-        import each bundle, then sweep the standard .bin filenames."""
+        """Import every <Prefix>_<round>_A.dat we can find via the
+        Python-only .dat reader, then sweep the standard .bin filenames."""
         bin_dir_p = Path(bin_dir)
 
-        # 1) HSD bundles per round
-        bundles = []
+        # 1) HSD bundles per round (Python direct .dat read; no csx)
         for round_label in ("short", "long"):
             dat = _find_vanilla_dat(bin_dir_p, prefix, round_label)
             if dat is None:
                 print(f"[mkgp2 full] no .dat for {round_label} "
                       f"(<{prefix}>_{round_label}_A.dat); HSD skipped")
                 continue
-            out_dir = tempfile.mkdtemp(
-                prefix=f"mkgp2_hsd_{prefix}_{round_label}_")
             try:
-                scene_json = _run_csx_for_dat(str(dat), out_dir)
+                hsd_imp.import_dat_directly(str(dat))
             except Exception as ex:
                 # Make HSD failures non-fatal: collision/line/auto are
                 # still importable without the visual reference.
-                print(f"[mkgp2 full] HSD csx failed for {dat.name}: {ex}")
+                print(f"[mkgp2 full] HSD import failed for {dat.name}: {ex}")
                 continue
-            print(f"[mkgp2 full] csx OK: {dat.name} -> {scene_json}")
-            bundles.append(scene_json)
-
-        for sj in bundles:
-            try:
-                hsd_imp.import_scene(sj)
-            except Exception as ex:
-                print(f"[mkgp2 full] hsd import failed for {sj}: {ex}")
+            print(f"[mkgp2 full] HSD OK: {dat.name}")
 
         # 2) Collision / Line / Auto, mirroring blender_import_course_all.
         for round_label in ("short", "long"):
@@ -1398,13 +1267,12 @@ def _on_course_collision_path_change(self, context):
     if not self.name:
         self.name = stem
     if not self.hsd_path:
-        # Conventional bundle layouts produced by hsd_export_for_blender.csx:
-        #   <hsd_export_dir>/scene.json (one bundle per .dat)
-        # Plain ".dat" siblings are not directly importable by Blender; pick a
-        # scene.json sibling if present so the user doesn't have to hunt.
-        for candidate in (parent_dir / f"{stem}_scene.json",
-                          parent_dir / f"{stem}.json",
-                          parent_dir / "scene.json"):
+        # Sibling .dat conventions:
+        #   <stem>.dat            (line / auto / collision share one .dat)
+        #   <stem>_road.dat       (vanilla MKGP2 naming for road geometry)
+        # Pick the first hit so the user doesn't have to hunt for it.
+        for candidate in (parent_dir / f"{stem}.dat",
+                          parent_dir / f"{stem}_road.dat"):
             if candidate.exists():
                 self.hsd_path = str(candidate)
                 break
@@ -1432,21 +1300,23 @@ class MKGP2_OT_ImportCourse(Operator):
     auto_f_path: StringProperty(name="Auto F .bin", subtype='FILE_PATH')
     auto_r_path: StringProperty(name="Auto R .bin", subtype='FILE_PATH')
     hsd_path: StringProperty(
-        name="HSD scene.json",
+        name="HSD .dat",
         description=(
-            "Optional HSD bundle (scene.json produced by hsd_export_for_blender.csx). "
-            "When given, the bundle's mesh collection is nested inside the course "
-            "collection. Leave empty to skip — a custom course can author collision/"
-            "line/auto without an HSD reference."
+            "Optional HSD source .dat. When given, the resulting "
+            "`mkgp2:<dat>` collection (= visual reference geometry) is "
+            "nested inside the course collection. Leave empty to skip — "
+            "a custom course can author collision/line/auto without an "
+            "HSD reference."
         ),
         subtype='FILE_PATH',
     )
     hsd_dat_filename: StringProperty(
-        name="HSD .dat filename",
+        name="HSD .dat filename (override)",
         description=(
-            "Name of the .dat the HSD bundle came from (e.g. test_course_road.dat). "
-            "Stored as mkgp2_hsd_dat on the course collection. Leave empty to use "
-            "the source_dat field embedded in scene.json."
+            "Optional override for the recorded .dat filename "
+            "(e.g. test_course_road.dat). Stored as mkgp2_hsd_dat on "
+            "the course collection. Leave empty to derive from the HSD "
+            "source path."
         ),
         default="",
     )
@@ -1521,7 +1391,7 @@ class MKGP2_OT_ImportCourse(Operator):
                 _link_objs_to_collection(coll, new_objs)
             if self.hsd_path:
                 new_colls = _capture_new_collections(
-                    lambda: hsd_imp.import_scene(self.hsd_path))
+                    lambda: hsd_imp.import_dat_directly(self.hsd_path))
                 _link_collections_to_collection(coll, new_colls)
                 # Capture .dat name: explicit override > nested collection's
                 # mkgp2_source_dat custom prop (set by the HSD importer).
@@ -1810,8 +1680,8 @@ class MKGP2_OT_AttachHsdToCourse(Operator):
                          and _find_parent_collection(c).get("mkgp2_kind") == "course"
                      )]
             hint = (f"Available unhosted bundles: {roots}. "
-                    "Generate the matching .dat scene.json via "
-                    "tools/hsd/hsd_export_for_blender.csx and re-import."
+                    "Re-import the matching .dat via Import HSD so the "
+                    "bundle name picks up the course canonical name."
                     if roots else
                     "No unhosted mkgp2:<dat> collection in the scene.")
             self.report({'ERROR'},
@@ -2732,20 +2602,10 @@ class MKGP2AddonPreferences(AddonPreferences):
         default="",
     )
 
-    dotnet_script_path: StringProperty(
-        name="dotnet-script path (optional)",
-        description=(
-            "Override for the dotnet-script launcher. Leave empty to "
-            "auto-detect via PATH and ~/.dotnet/tools/. Required only "
-            "if Vanilla auto-import via csx fails to find dotnet-script."
-        ),
-        subtype='FILE_PATH',
-        default="",
-    )
-
     # (M3b removed `hsd_writer_backend`: there's only one writer path now,
     # the in-process `hsdraw` extension; the CSX/HSDLib detour is gone
-    # from the operator's execute path.)
+    # from the operator's execute path. Subsequent retirement of csx from
+    # the importer dropped the `dotnet_script_path` preference too.)
 
     def draw(self, context):
         layout = self.layout
@@ -2771,15 +2631,7 @@ class MKGP2AddonPreferences(AddonPreferences):
             except Exception:
                 pass
         col.separator()
-        col.label(text="HSD pipeline (Vanilla auto-import):")
-        col.prop(self, "dotnet_script_path")
-        ds = _resolve_dotnet_script()
-        col.label(text=f"  Resolved dotnet-script: {ds or '(not found)'}")
-        cs = _resolve_csx_path()
-        col.label(text=f"  Resolved csx: {cs}"
-                       f"{'' if os.path.isfile(cs) else ' (missing!)'}")
-        col.separator()
-        col.label(text="HSD writer (Export HSD):")
+        col.label(text="HSD reader / writer (Import / Export HSD):")
         if HSDRAW_AVAILABLE:
             col.label(text=f"  hsdraw vendored: yes (v{HSDRAW_VERSION})",
                       icon='CHECKMARK')

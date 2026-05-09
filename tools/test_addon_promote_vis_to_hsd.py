@@ -9,22 +9,20 @@ Pipeline:
      `export_scene.mkgp2_hsd_json` (EXEC_DEFAULT). The operator's
      dispatcher branches to the vis: promote path because the active
      collection name starts with `vis:`.
-  3) Verify the output .dat exists at the expected path with a sane
-     size (markedly smaller than the structural base .dat -- the bulk
-     of MR_highway_short_A is GC'd once non-`scene_data` roots are
-     stripped).
+  3) Verify the output .dat exists at the expected path. The vis:
+     pipeline is fully independent (no vanilla `.dat` is read), so
+     the output should only carry scene_data + the synthesized alias.
   4) Parse the result via the vendored `hsdraw` and verify:
         * scene_data root present
         * `<stem>_joint` alias root present
         * scene_data.JOBJDescs[0].RootJoint identical to the
-          `<stem>_joint` root (i.e. RootJoint was repointed at the
-          synthesized JObj)
+          `<stem>_joint` root (i.e. fresh SObj's JObjDesc was set
+          to the synthesized JObj)
         * No other roots remain
   5) Vanilla guard: refuse to write into the configured vanilla bin.
 
 Skips cleanly when:
   * `hsdraw` is not vendored for the host platform.
-  * `MR_highway_short_A.dat` is missing from the vanilla bin dir.
 
   blender --background --python tools/test_addon_promote_vis_to_hsd.py
 """
@@ -38,7 +36,6 @@ from pathlib import Path
 
 ADDON_DIR = r"C:\Users\naari\src\github.com\naari3\mkgp2-patch\tools\blender"
 VANILLA_BIN = r"C:\Users\naari\Documents\Dolphin ROMs\Triforce\mkgp2\files"
-BASE_DAT_NAME = "MR_highway_short_A.dat"
 COURSE_STEM = "test_oval"
 
 
@@ -91,10 +88,6 @@ def main():
         if not addon.HSDRAW_AVAILABLE:
             print("[test] SKIP: hsdraw not vendored for this platform")
             return
-        base_dat = Path(VANILLA_BIN) / BASE_DAT_NAME
-        if not base_dat.is_file():
-            print(f"[test] SKIP: base .dat not found at {base_dat}")
-            return
 
         # ---- Pref wiring (EXEC_DEFAULT bypasses invoke, but the
         #      operator still calls _vanilla_bin_dir / _is_inside_vanilla
@@ -125,7 +118,6 @@ def main():
             result = bpy.ops.export_scene.mkgp2_hsd_json(
                 'EXEC_DEFAULT',
                 filepath=out_dat,
-                base_dat=str(base_dat),
             )
             assert result == {'FINISHED'}, f"export (vis: branch): {result}"
             print(f"[test] operator returned FINISHED (vis: branch)")
@@ -133,16 +125,14 @@ def main():
             # ---- 3) File exists + size sanity ----------------------
             assert os.path.isfile(out_dat), f"writer did not produce {out_dat}"
             out_size = os.path.getsize(out_dat)
-            base_size = base_dat.stat().st_size
-            print(f"[test] wrote {Path(out_dat).name}: {out_size} bytes "
-                  f"(base {base_size} bytes)")
-            # Promoted .dat carries only scene_data + our new root, so it
-            # should be DRASTICALLY smaller than the full MR_highway base
-            # (~2.8MB). Allow plenty of headroom in case the structural
-            # base shrinks one day, but assert at least a 5x reduction.
-            assert out_size < base_size // 5, (
-                f"output {out_size} should be << base {base_size}; "
-                "non-scene_data roots may not have been stripped")
+            print(f"[test] wrote {Path(out_dat).name}: {out_size} bytes")
+            # 2-cube vis: collection (12 tris each, 2 materials) should
+            # produce a small fully-independent .dat. Be generous with
+            # the upper bound but catch obvious regressions like
+            # accidentally re-loading a vanilla base again.
+            assert out_size < 200_000, (
+                f"output {out_size} unexpectedly large for a 2-cube test "
+                "scene; the pipeline may be loading a vanilla base again")
 
             # ---- 4) Parse via hsdraw and verify ---------------------
             import hsdraw
@@ -191,7 +181,6 @@ def main():
             result = bpy.ops.export_scene.mkgp2_hsd_json(
                 'EXEC_DEFAULT',
                 filepath=evil,
-                base_dat=str(base_dat),
             )
         except RuntimeError:
             result = {'CANCELLED'}

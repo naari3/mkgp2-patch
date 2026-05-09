@@ -2,18 +2,15 @@
 a vanilla .dat through the Blender addon -> _export_mkgp2_bundle path.
 
 Coverage:
-  - Auto-regenerate the test scene.json bundle via M1+ csx so the run
-    is self-bootstrapping and the bundle always carries the M2 GX
-    metadata the new exporter needs.
-  - Import the bundle and invoke `export_scene.mkgp2_hsd_json` to a
-    tempdir. The dispatcher branch is the bundle path (the active
-    layer collection is `mkgp2:<dat>`).
+  - Import a vanilla .dat directly via the Python-only ImportHSD path
+    (`hsdraw.export_scene_json` + `hsdraw.gx_decode`, no csx).
+  - Invoke `export_scene.mkgp2_hsd_json` against the resulting bundle.
+    `mkgp2_scene_json` is now an inline JSON string rather than a path.
   - Verify the produced .dat exists, parses via hsdraw, has all
-    expected roots (scene_data + every alias), and that re-import
-    gives the same joint / mesh / texture counts.
+    expected roots (scene_data + every alias), and that the byte size
+    is in a sensible envelope vs the vanilla source.
   - Vanilla guard: refusing to write into the read-only vanilla bin.
-  - SKIPs cleanly when dotnet-script / hsdraw / vanilla .dat is
-    missing so the test works on machines without the HSD toolchain.
+  - SKIPs cleanly when hsdraw / vanilla .dat is missing.
 
   blender --background --python tools/test_addon_hsd_export.py
 """
@@ -21,7 +18,6 @@ Coverage:
 import bpy
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import traceback
@@ -46,27 +42,16 @@ def _activate_layer_for(coll):
     bpy.context.view_layer.active_layer_collection = lc
 
 
-def _ensure_bundle(addon, base_dat, out_dir):
-    """Run the M1+ csx to produce a fresh scene.json bundle for `base_dat`
-    in `out_dir`. Returns the absolute path to scene.json. Raises
-    RuntimeError if dotnet-script / csx isn't reachable."""
-    csx = addon._resolve_csx_path()
-    if not Path(csx).is_file():
-        raise RuntimeError(f"csx not found at {csx}")
-    dotnet = addon._resolve_dotnet_script()
-    if dotnet is None:
-        raise RuntimeError("dotnet-script not found")
-    proc = subprocess.run(
-        [dotnet, csx, "--", str(base_dat), str(out_dir)],
-        capture_output=True, text=True, timeout=240,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"csx returned {proc.returncode}\nstdout: "
-            f"{proc.stdout[-500:]}\nstderr: {proc.stderr[-500:]}")
-    sj = Path(out_dir) / "scene.json"
-    assert sj.is_file(), "csx did not produce scene.json"
-    return str(sj)
+def _import_dat_via_operator(base_dat):
+    """Import `base_dat` via ImportHSD (= Python direct .dat read).
+    Returns the new mkgp2:<dat> Collection."""
+    pre = set(c.name for c in bpy.data.collections)
+    result = bpy.ops.import_scene.mkgp2_hsd_json(
+        'EXEC_DEFAULT', filepath=str(base_dat))
+    assert result == {'FINISHED'}, f"import: {result}"
+    post = [c for c in bpy.data.collections if c.name not in pre]
+    assert post, "ImportHSD did not create a new collection"
+    return post[0]
 
 
 def _export(addon, bundle, out_dat):
@@ -109,9 +94,6 @@ def main():
         if not addon.HSDRAW_AVAILABLE:
             print("[test] SKIP: hsdraw not vendored for this platform")
             return
-        if addon._resolve_dotnet_script() is None:
-            print("[test] SKIP: dotnet-script not found")
-            return
         base_dat = Path(VANILLA_BIN) / BASE_DAT_NAME
         if not base_dat.is_file():
             print(f"[test] SKIP: base .dat missing at {base_dat}")
@@ -122,22 +104,17 @@ def main():
         addon._output_bin_dir = lambda: tempfile.gettempdir()
 
         with tempfile.TemporaryDirectory(prefix="mkgp2_hsd_test_") as td:
-            # ---- 0) Regenerate bundle via M1+ csx ---------------------
-            scene_json = _ensure_bundle(addon, base_dat, td)
-            print(f"[test] bundle: {scene_json}")
-
-            # ---- 1) Import HSD bundle via the operator ----------------
-            result = bpy.ops.import_scene.mkgp2_hsd_json(
-                'EXEC_DEFAULT', filepath=scene_json)
-            assert result == {'FINISHED'}, f"import: {result}"
-            bundle = next((c for c in bpy.data.collections
-                           if c.name.startswith("mkgp2:")), None)
-            assert bundle is not None, "import did not create mkgp2:<dat>"
+            # ---- 1) Import vanilla .dat via the operator (Python only) -
+            bundle = _import_dat_via_operator(base_dat)
             source_dat = bundle.get("mkgp2_source_dat")
             assert source_dat, "imported bundle has no mkgp2_source_dat"
-            assert bundle.get("mkgp2_scene_json"), "missing mkgp2_scene_json"
+            sj = bundle.get("mkgp2_scene_json")
+            assert sj, "missing mkgp2_scene_json"
+            assert sj.lstrip().startswith('{'), (
+                "mkgp2_scene_json should be inline JSON now, got: "
+                f"{sj[:80]!r}")
             print(f"[test] imported bundle: {bundle.name} "
-                  f"(source_dat={source_dat})")
+                  f"(source_dat={source_dat}, scene_json {len(sj)} chars)")
 
             base_size = base_dat.stat().st_size
 
