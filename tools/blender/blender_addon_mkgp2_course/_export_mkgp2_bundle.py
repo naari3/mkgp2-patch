@@ -406,19 +406,15 @@ def _build_mobj(material_dto, image_cache, hsdraw, *, log):
     mobj = hsdraw.MObj.alloc()
     mobj.render_flags = int(material_dto.get("render_flags_raw", 0))
 
-    mat = hsdraw.Material.alloc()
     dif = material_dto.get("diffuse_rgba") or [255, 255, 255, 255]
-    # dif_rgba / amb_rgba / spc_rgba are exposed as (r, g, b, a) byte
-    # tuples by the binding (the C side packs them into a single u32
-    # but the Python contract is per-channel).
-    mat.dif_rgba = (
-        int(dif[0]) & 0xFF, int(dif[1]) & 0xFF,
-        int(dif[2]) & 0xFF, int(dif[3]) & 0xFF,
+    mat = hsdraw.Material.new(
+        dif=(int(dif[0]) & 0xFF, int(dif[1]) & 0xFF,
+             int(dif[2]) & 0xFF, int(dif[3]) & 0xFF),
+        amb=(255, 255, 255, 255),
+        spc=(255, 255, 255, 255),
+        alpha=float(material_dto.get("alpha", 1.0)),
+        shininess=50.0,
     )
-    mat.amb_rgba = (255, 255, 255, 255)
-    mat.spc_rgba = (255, 255, 255, 255)
-    mat.alpha = float(material_dto.get("alpha", 1.0))
-    mat.shininess = 50.0
     mobj.set_material(mat)
 
     head = _build_tobj_chain(material_dto, image_cache, hsdraw, log=log)

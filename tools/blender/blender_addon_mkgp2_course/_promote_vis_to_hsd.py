@@ -147,7 +147,14 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
         mb.add_position(*p)
     for u, v in uvs:
         mb.add_uv(u, v)
-    return mb.build(), color, img_tuple, len(positions), tri_count
+    pobj = mb.build()
+    # POBJ.flags=0x8000 (= CULLBACK; vanilla 94-97% の primary mesh が使う)
+    # は hsdraw 2026-05-11 wheel から writable property 化、直 setter で。
+    # 過去は post-write の bm.patch_pobj_flags() byte patch を使っていた。
+    # winding は CCW→CW reversed 済み (`tri_corners` 逆順) なので CULLBACK ON
+    # で正しい face が表に出る。
+    pobj.flags = 0x8000
+    return pobj, color, img_tuple, len(positions), tri_count
 
 
 # `_make_textured_mobj` lives in `_blender_material` now; keep an alias
@@ -307,20 +314,13 @@ def promote_vis_to_dat(
     alias_name = f"{name}_joint"
     dat.add_root(alias_name, root_jobj)
 
+    # GXTexGenSrc / repeat_s/t / POBJ.flags はすべて hsdraw 2026-05-11 wheel の
+    # writable property を経由して構築段階で設定済 (= 過去の post-write byte
+    # patch 経路 `bm.patch_pobj_flags` / `bm.patch_tobj_tex_gen_src` は撤去)。
     out_bytes = bytes(dat.write())
-    # GXTexGenSrc=4 (TG_TEX0) は make_textured_mobj 内で `tobj.tex_gen_src = 4`
-    # 直 setter (hsdraw 2026-05-11 wheel から property 化) で設定済み。
-    # 過去の post-write byte-patch 経路 (`bm.patch_tobj_tex_gen_src`) は撤去。
-    #
-    # POBJ.flags=0x8000 (= CULLBACK; vanilla 94-97% の primary mesh が使う) は
-    # hsdraw の MeshBuilder.build() が直接立てないため、引き続き post-write で
-    # patch する。winding は CCW→CW reversed 済み (`_build_pobj_for_slot` の
-    # `tri_corners` 逆順) なので CULLBACK ON で正しい face が表に出る。
-    out_bytes, n_pobj_patched = bm.patch_pobj_flags(hsdraw, out_bytes, flags_value=0x8000)
     output_dat.write_bytes(out_bytes)
     log(f"  wrote {output_dat.name}: {len(out_bytes)} bytes "
-        f"({len(dobjs)} DObjs, {total_verts} verts, {total_tris} tris, "
-        f"{n_pobj_patched} POBJ.flags patched -> CULLBACK 0x8000)")
+        f"({len(dobjs)} DObjs, {total_verts} verts, {total_tris} tris)")
 
     return {
         "dobj_count": len(dobjs),

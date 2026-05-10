@@ -420,12 +420,13 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
     # WHITE so COLORMAP_BLEND with blending=1.0 yields `texel` exactly
     # (the per-mesh color is carried in the texel itself, see the
     # synth-4x4 fallback above).
-    mat = hsdraw.Material.alloc()
-    mat.amb_rgba = (128, 128, 128, 255)
-    mat.dif_rgba = (255, 255, 255, 255)
-    mat.spc_rgba = (255, 255, 255, 255)
-    mat.shininess = 50.0
-    mat.alpha = 1.0
+    mat = hsdraw.Material.new(
+        amb=(128, 128, 128, 255),
+        dif=(255, 255, 255, 255),
+        spc=(255, 255, 255, 255),
+        shininess=50.0,
+        alpha=1.0,
+    )
 
     # MObj.alloc() instead of alloc_unlit_color() -- the unlit preset
     # leaves amb/spc at zero which steers the renderer down the no-
@@ -510,92 +511,6 @@ def load_scene_template_dat(hsdraw, template_path):
         if rn != "scene_data":
             dat.remove_root(rn)
     return dat
-
-
-# -- Post-write byte patcher: POBJ.flags --------------------------------------
-
-def patch_pobj_flags(hsdraw, file_bytes, flags_value: int = 0x8000) -> tuple:
-    """Patch the ``flags`` field (offset 0x0C inside each POBJ, big-endian
-    u16) of every POBJ in `file_bytes` to ``flags_value``.
-
-    Why this exists: hsdraw's ``MeshBuilder.build()`` produces POBJs
-    with ``flags=0x0000`` (= POBJ_TYPE.SHAPE), but every textured POBJ
-    in vanilla MKGP2 course .dats carries ``flags=0x8000`` (=
-    POBJ_TYPE.ENVELOPE).  The in-game HSD renderer dispatches its
-    TexCoord pipeline on this flag: SHAPE-typed textured POBJs that use
-    ``MATINDEX_A.tex0=IDENTITY(60)`` get the IDENTITY matrix slot
-    silently treated as a zero matrix (so every UV collapses to (0,0)
-    and the texture renders as one repeated texel), while ENVELOPE-typed
-    POBJs route through the path that recognises IDENTITY as a hardware
-    pass-through.  Confirmed empirically against vanilla YI_land_long_a:
-    every textured POBJ there is 0x8000, none is 0x0000.
-
-    Disambiguation strategy walks the Dat to snapshot each POBJ raw and
-    finds it as substring of `file_bytes`:
-    walk the dat, snapshot each POBJ's ``HsdStruct.raw()`` (unique per
-    POBJ because the embedded VtxAttrGroup / DList pointers differ),
-    locate that signature in `file_bytes`, and overwrite bytes 0x0C..
-    0x0D.  Refuses to patch if a signature is missing or duplicated.
-
-    Returns ``(patched_bytes, n_patched)``.
-    """
-    out = bytearray(file_bytes)
-    dat = hsdraw.parse_dat(file_bytes)
-    seen_offsets = set()
-    patched = 0
-    flags_bytes = flags_value.to_bytes(2, "big")
-    for r in dat.roots():
-        if r.name == "scene_data":
-            continue
-        rj = hsdraw.JObj.from_struct(r.data)
-        stack = [rj]
-        while stack:
-            j = stack.pop()
-            if j is None:
-                continue
-            for off, ref in j.as_struct().references():
-                if off == 16:  # JObj's DObj-head pointer slot
-                    d = hsdraw.DObj.from_struct(ref)
-                    while d is not None:
-                        # POBJ chain (DObj.pobj is the head)
-                        pobj_attr = d.pobj
-                        while pobj_attr is not None:
-                            if isinstance(pobj_attr, hsdraw.HsdStruct):
-                                pobj = hsdraw.Pobj.from_struct(pobj_attr)
-                            else:
-                                pobj = pobj_attr
-                            raw = pobj.as_struct().raw()
-                            first = file_bytes.find(raw)
-                            second = file_bytes.find(raw, first + 1) if first != -1 else -1
-                            if first == -1:
-                                raise RuntimeError(
-                                    "patch_pobj_flags: POBJ raw signature not "
-                                    "found in file bytes; hsdraw .raw() shape "
-                                    "changed?")
-                            if second != -1:
-                                raise RuntimeError(
-                                    "patch_pobj_flags: POBJ raw signature found "
-                                    f"at multiple offsets (first={first}, "
-                                    f"second={second}); cannot disambiguate")
-                            if first not in seen_offsets:
-                                out[first + 0x0C : first + 0x0E] = flags_bytes
-                                seen_offsets.add(first)
-                                patched += 1
-                            pobj_attr = pobj.next
-                        d = d.next
-            try:
-                nx = j.next
-            except Exception:
-                nx = None
-            try:
-                ch = j.child
-            except Exception:
-                ch = None
-            if nx is not None:
-                stack.append(nx)
-            if ch is not None:
-                stack.append(ch)
-    return bytes(out), patched
 
 
 # -- Coordinate transform --------------------------------------------------
