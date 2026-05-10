@@ -258,50 +258,47 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
     """Build an MObj with TObj+Image attached, configured to match the
     vanilla MR_highway road's *lit + textured* pattern.
 
-    The pattern, byte-for-byte from a vanilla road DObj's MObj/TObj:
+    The result, byte-for-byte from a vanilla road DObj's MObj/TObj:
 
       * MObj.render_flags = 0x2011 (CONSTANT | TEX0 | ALPHA_MAT)
-      * MObj.material:
-          amb_rgba = (128, 128, 128, 255) — standard ambient
-          dif_rgba = ``color``             — user's BSDF base color
-          spc_rgba = (255, 255, 255, 255) — standard specular
-          shininess = 50, alpha = 1
-      * TObj.flags = 0x40010
-          = LIGHTMAP_DIFFUSE (bit 4 = 0x10)
-          + COLORMAP_MODULATE (bits 16-19 = 4, value 0x40000)
-        plus wrap_s=GX_REPEAT, wrap_t=GX_MIRROR, mag=GX_LINEAR.
+      * MObj.material via Material.new(...): amb=128,128,128 / dif=WHITE
+        / spc=WHITE / shininess=50 / alpha=1
+      * TObj.flags = 0x40010 (LIGHTMAP_DIFFUSE 0x10 + COLORMAP_MODULATE
+        in bits 16-19), wrap_s/t=CLAMP, mag=LINEAR, repeat_s/t=1,
+        scale=(1,1,1) identity, tex_gen_src=TG_TEX0.
 
-    Why this ditched the previous `alloc_unlit_color` + REPLACE path:
-    MKGP2's course renderer only samples TEX0 along its **lit-mesh
-    TEV pipeline**.  TObjs that lack the LIGHTMAP_DIFFUSE bit fall
-    through to a "no texture, output Material.dif" fallback — which is
-    why every billboard collapsed to its BSDF Base Color default
-    (#cccccc) regardless of the image we attached, and why solid-color
-    course meshes also displayed only their Material.dif (which by
-    coincidence carried the right color, masking the bug for solid
-    meshes).  Switching to `MObj.alloc()` + manual lit Material +
-    LIGHTMAP_DIFFUSE TObj routes the mesh through the path that
-    actually samples the texel.
+    Construction goes through ``hsdraw.MObj.alloc_textured(material,
+    image, **kwargs)`` (added in the 2026-05-11 hsdraw wheel,
+    de-coupling action item #5).  The hsdraw library deliberately does
+    NOT ship a course-genre wrapper -- the kwargs explicitly capture
+    every value the MKGP2 course renderer expects, with rationale in
+    the inline comments around the call.
 
-    The tradeoff: COLORMAP_MODULATE means ``final_color = texel * dif``,
-    so the synth 4x4 path now fills the texel with **white** so
-    Material.dif (= ``color``) survives the multiplication unchanged.
-    Real Image Texture meshes get their pattern multiplied by Material.dif
-    -- if the user wants the texture pattern to display at full
-    saturation, set the BSDF Base Color to white (= no tint).
+    Why we use lit + textured (not unlit): MKGP2's course renderer only
+    samples TEX0 along its lit-mesh TEV pipeline.  TObjs that lack the
+    LIGHTMAP_DIFFUSE bit fall through to a "no texture, output
+    Material.dif" fallback -- every billboard collapsed to its BSDF
+    Base Color default (#cccccc) regardless of the image we attached,
+    until we routed the mesh through the lit pipeline.  COLORMAP_MODULATE
+    means ``final_color = texel * dif``, so the synth 4x4 path fills
+    the texel with the BSDF base color and Material.dif stays WHITE so
+    the per-mesh color survives the multiplication unchanged.  Real
+    Image Texture meshes get their pattern multiplied by Material.dif
+    -- set BSDF Base Color = white (= no tint) for full saturation.
 
     Parameters
     ----------
     color : (R, G, B, A) byte tuple
-        Material.dif_rgba.  For solid-color meshes the texel is white
-        and this color shows through; for real-texture meshes this
-        acts as a multiplicative tint.
+        Used for the synth 4x4 tile (= img_tuple is None) so the per-
+        mesh BSDF color survives MODULATE with Material.dif=WHITE.
     img_tuple : (w, h, raw_rgba_bytes) or None
-        When None, a 4x4 white synth tile is generated.
+        Fully assembled top-down RGBA8 raster from the BSDF Image
+        Texture node (already auto-clamped to <=1024 dim and 4-aligned;
+        see ``_clamp_texture_size_for_gx``).  None -> synth 4x4.
     target_format : str | int | None
-        GX target format ("RGBA8", "CMP", "RGB5A3", or the matching int).
-        Falls back to RGBA8 if the requested format demands tile
-        alignment this (w, h) pair can't satisfy (CMP needs 4×4).
+        GX target format ("RGBA8" / "CMP" / "RGB5A3" or the matching
+        int).  Silently downgrades to RGBA8 if the requested format
+        demands tile alignment this (w, h) pair can't satisfy.
     """
     if img_tuple is None:
         # Synth 4x4 tile filled with the BSDF base color.  Under
@@ -357,69 +354,9 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
     img.format = fmt_int
     img.set_image_data_bytes(gx_bytes)
 
-    # TObj configured to match vanilla road's 0x40010 pattern.  The
-    # public hsdraw setters cover ColorMap (bits 16-19), AlphaMap
-    # (bits 20-23), and CoordType (bits 0-3) — but NOT the
-    # LIGHTMAP_DIFFUSE bit at 0x10, which we OR in by hand.
-    tobj = hsdraw.TObj.alloc()
-    tobj.tex_map_id = 0          # GX_TEXMAP0
-    # GXTexGenSrc=4 (TG_TEX0) — vertex の TEX0 attribute から UV を取る。
-    # hsdraw 2026-05-11 wheel で property 化された (それ以前は post-write
-    # byte patch でしか設定できなかった、memory project_hsdraw_no_tex_gen_src_setter.md)。
-    tobj.tex_gen_src = 4
-    # RepeatS / RepeatT は HSDLib HSD_TObj.cs の offset 0x3C/0x3D (u8) field。
-    # vanilla MR_highway_long_A.dat の **全 275 textured TObj が repeat_s=1
-    # repeat_t=1**。hsdraw.TObj.alloc() default の 0 のままだと MKGP2 HSD runtime
-    # が GX_IDENTITY+src=Tex0 経路 (= TEX0_MTX[60] zero matrix で UV 全 collapse)
-    # に乗せ、textured POBJ が flat color になる (2026-05-11 fifolog diff で確証、
-    # memory project_mkgp2_two_texcoord_paths.md)。1 にすると vanilla 経路
-    # (Geom-based UV gen + TEX0_MTX[0] camera mtx load) に乗るはず。
-    tobj.repeat_s = 1
-    tobj.repeat_t = 1
-    # GX wrap mode: 0=CLAMP, 1=REPEAT, 2=MIRROR (HSDLib GXWrapMode enum;
-    # earlier comments labelled 0=REPEAT/1=MIRROR — that was wrong).
-    # Bisect 2026-05-10 step 6: in-game observed that fmt_test_planes
-    # render as the *exact arithmetic average* of their 2 checker
-    # source colors (e.g. (0x00,0x59,0x00)+(0x1a,0xf2,0x33) → 0x0da61a).
-    # The TEX0 buffer in our exported .dat has correctly varying UVs
-    # (verified via diag_fmt_test_geom.py), so the GX TexCoord pipeline
-    # must be collapsing UVs to a single point and bilinear-averaging at
-    # that point.  With wrap_s=CLAMP + wrap_t=REPEAT, sampling UV (0,0)
-    # under bilinear mag-filter wraps the V axis: the 2 footprint texels
-    # are (0,0) and (0,h-1) — opposite cells in a 4×4-cell checker → the
-    # 50/50 average we observed.  Forcing wrap_t=CLAMP collapses the V
-    # footprint to {(0,0),(0,0)} → single cell colour → confirms the
-    # matrix-collapse mechanism if the in-game flat colour switches from
-    # the average to one of the two cell colours.  INU's working textured
-    # POBJ also uses CLAMP/CLAMP, lending circumstantial support.
-    tobj.wrap_s = 0              # GX_CLAMP
-    tobj.wrap_t = 0              # GX_CLAMP (was 1=REPEAT; see comment above)
-    tobj.set_image_data(img)
-    # COLORMAP_MODULATE (= 4) matches inu_aliased.dat (= 動く modded
-    # course) の textured POBJ pattern (TObj.flags=0x00040010)。
-    # `final_color = texel * Material.dif` で、Material.dif は (255,255,255)
-    # に固定しているので texel が透けて出る (synth 4x4 fallback も image
-    # texture も Material.dif で tint されない)。
-    tobj.set_color_operation(4)  # COLORMAP_MODULATE (texture × Material.dif)
-    tobj.set_alpha_operation(0)  # ALPHAMAP_NONE
-    tobj.set_coord_type(0)       # CoordType=UV (= bits 0-3 = 0)
-    tobj.set_lightmap_diffuse(True)  # LIGHTMAP_DIFFUSE bit (hsdraw 2026-05-11
-                                      # wheel から名前付き setter、過去は
-                                      # `tobj.flags |= 0x10` 直 RMW だった)
-    tobj.blending = 1.0
-    tobj.mag_filter = 1          # GX_LINEAR (inu pattern; was 0=NEAREST)
-    # Identity UV transform.  hsdraw.TObj.alloc() leaves the rotation /
-    # scale / translation fields all zero; with scale = 0 the renderer
-    # multiplies every UV by 0 and samples a single texel for every
-    # fragment.  Calling the setters explicitly produces the vanilla
-    # 1.0 / 0.0 / 0.0 identity transform.
-    tobj.set_rotation(0.0, 0.0, 0.0)
-    tobj.set_scale(1.0, 1.0, 1.0)
-    tobj.set_translation(0.0, 0.0, 0.0)
-
     # Material with vanilla YI_land_long_a textured-POBJ values: amb /
     # spc non-zero so the lit-mesh TEV pipeline has color sources, dif
-    # WHITE so COLORMAP_BLEND with blending=1.0 yields `texel` exactly
+    # WHITE so COLORMAP_MODULATE with blending=1.0 yields `texel` exactly
     # (the per-mesh color is carried in the texel itself, see the
     # synth-4x4 fallback above).
     mat = hsdraw.Material.new(
@@ -430,24 +367,54 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
         alpha=1.0,
     )
 
-    # MObj.alloc() instead of alloc_unlit_color() -- the unlit preset
-    # leaves amb/spc at zero which steers the renderer down the no-
-    # texture fallback (the very bug this rewrite addresses).
-    mobj = hsdraw.MObj.alloc()
-    mobj.set_material(mat)
-    # bisect 2026-05-10:
-    #  - 0x40002011 (TEXEDGE PE setup, bit 30 ON) was tested in step 3 and
-    #    in-game produced a *worse* state: every my_course mesh went black
-    #    while the player kart (separate .dat) was unaffected. Hypothesis:
-    #    the agent-decoded `GX_SetAlphaCompare` first arg is not "enabled"
-    #    but `GXCompare comp0` (NEVER=0, LESS=1, ..., ALWAYS=7); with bit
-    #    28 OFF, comp0=0=NEVER discards every pixel. vanilla 0x40002011
-    #    works in alpha_joint context, our reuse for primary mesh doesn't.
-    #  - reverted to 0x2011 (XLU PE setup, blend ON) which is what every
-    #    vanilla CULLBACK textured POBJ uses for primary mesh. This pairs
-    #    with POBJ.flags=0x8000 + reversed triangle winding (step 4).
-    mobj.render_flags = 0x2011   # CONSTANT|TEX0|ALPHA_MAT, vanilla CULLBACK road
-    mobj.set_textures(tobj)
+    # Build the MObj+TObj chain in one call via the hsdraw 2026-05-11
+    # `MObj.alloc_textured(material, image, **kwargs)` preset (handoff
+    # `_for_course_mesh` 不採用、caller が kwargs で course-genre 寄せ
+    # 設定を明示する責務)。byte-equivalent to the prior 25-line explicit
+    # setter sequence: render_flags / wrap / alpha_op / lightmap_diffuse /
+    # repeat / scale / mag_filter / color_op / blending / tex_gen_src /
+    # tex_map_id all match vanilla course textured POBJ pattern.
+    #
+    # Rationale per kwarg (= the comment trail from the explicit
+    # version, condensed):
+    #   render_flags=0x2011  CONSTANT|TEX0|ALPHA_MAT, vanilla CULLBACK
+    #     road. 0x40002011 (TEXEDGE) caused every my_course mesh to go
+    #     black on bisect 2026-05-10 step 3 (= GXCompare NEVER discards
+    #     every pixel when bit 28 is off).
+    #   tex_gen_src=4 (TG_TEX0)  use vertex TEX0 attribute as UV input.
+    #   repeat_s/t=1  vanilla MR_highway_long_A.dat の全 275 textured
+    #     TObj が 1。hsdraw default の 0 だと MKGP2 runtime が
+    #     TObj_RebuildTransformMtx で Scale(0/SX,...) を slot 60 に load
+    #     して UV collapse (memory project_repeat_st_fixes_uv_collapse.md /
+    #     docs/hsd_research/ghidra_gx_matrix_init_trace_part2.md)。
+    #   wrap_s/t=0 (GX_CLAMP)  bisect 2026-05-10 step 6: REPEAT を選ぶと
+    #     UV (0,0) sampling 時に bilinear footprint が opposite cell まで
+    #     広がって 2-cell 平均色が出る; CLAMP で同 cell 内に収まる。inu
+    #     aliased もすべて CLAMP/CLAMP。
+    #   color_op=4 (COLORMAP_MODULATE)  texel × Material.dif。dif WHITE
+    #     なので texel そのまま出る。
+    #   alpha_op=0 (ALPHAMAP_NONE)  texel.A は素通し (bisect で MODULATE
+    #     にしたら一部 alpha 描画が崩れた)。
+    #   mag_filter=1 (GX_LINEAR)  inu_aliased pattern。
+    #   lightmap_diffuse=True  TObj.flags bit 0x10。これが無いと MKGP2
+    #     course renderer が「no texture, output Material.dif」 fallback
+    #     に落ちて texture が出ない (memory
+    #     project_alloc_unlit_color_no_tex_sampling.md)。
+    #   scale=(1,1,1)  identity UV transform; default の 0 だと
+    #     UV × 0 = 0 で全 fragment が texel(0,0) 単色 (= UV collapse)。
+    mobj = hsdraw.MObj.alloc_textured(
+        mat, img,
+        render_flags=0x2011,
+        tex_map_id=0,
+        tex_gen_src=4,
+        scale=(1.0, 1.0, 1.0),
+        wrap_s=0, wrap_t=0,
+        repeat_s=1, repeat_t=1,
+        mag_filter=1,
+        color_op=4, alpha_op=0,
+        blending=1.0,
+        lightmap_diffuse=True,
+    )
     return mobj
 
 
