@@ -70,24 +70,20 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
     # vanilla の textured POBJ (= POS+TEX0) と同 layout に揃えると
     # MKGP2 renderer の TEX0 + IDENTITY matrix path がちゃんと UV を
     # interpolate するようになる (NRM 含めると flat-color バグ再発)。
-    positions: list = []
-    uvs:       list = []
-    mb = hsdraw.MeshBuilder()
-    # Don't call `mb.set_cull_back(True)`.  hsdraw's set_cull_back
-    # toggles POBJ.flags bit `0x4000`, but the game's POBJ_FLAG enum
-    # uses bits 0x1000 / 0x2000 / 0x8000 for SHAPESET_AVERAGE /
-    # SHAPESET_ADDITIVE / ENVELOPE; bit 0x4000 is **not** a POBJ type
-    # the game's renderer recognises.  Setting it makes the game treat
-    # the mesh as an unknown POBJ type and skip TEX0 sampling on it
-    # (we observed this as the BSDF Image Texture failing to display
-    # in-game while Material.DIF still leaked through, in the
-    # 2026-05-09 my_course billboard test).  Vanilla MR_highway POBJs
-    # are `pf=0x0000` (SHAPE) or `pf=0x8000` (ENVELOPE) -- never
-    # `0x4000` -- so we leave the flag at zero and configure cull mode
-    # via PE_DESC instead (TODO: when hsdraw exposes that surface).
-    # For now this means both faces of every triangle are visible;
-    # all our course meshes are closed solids so back-face leakage is
-    # invisible from the cart's POV.
+    # Geometry buffers — collected per-triangle, then bulk-pushed via
+    # MeshBuilder.from_arrays at the end (= per-vertex add_position /
+    # add_uv loops would be ~3 Python→Rust crossings per vertex; bulk
+    # path is one crossing total, ≥1.3x faster on small mesh and
+    # ≥4.8x on 1000-vert smoke per hsdraw maintainer's measurement).
+    positions: list = []   # flat list[float]: x0,y0,z0, x1,y1,z1, ...
+    uvs:       list = []   # flat list[float]: u0,v0, u1,v1, ...
+    triangles: list = []   # flat list[int]:   i0,i1,i2, i0,i1,i2, ...
+    # Note: cull-mode is NOT configured via mb.set_cull_back(True) — that
+    # toggles POBJ.flags bit 0x4000 which the game's POBJ_FLAG enum
+    # treats as an unknown POBJ type (sampler skips TEX0; my_course
+    # billboards rendered as Material.DIF only on 2026-05-09).  We set
+    # `pobj.flags = 0x8000` (= CULLBACK) explicitly after build instead.
+    # Vanilla MR_highway POBJs are `pf=0x0000` or `pf=0x8000` only.
 
     # Fallback per-corner UVs, used when the mesh has no active UV layer.
     # tri: standard right-triangle covering half the texture; quad: full
@@ -132,21 +128,21 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
         else:
             tri_corners = [(0, k + 1, k) for k in range(1, nv - 1)]
         for tc in tri_corners:
-            ws = [
-                _blender_to_hsd(obj.matrix_world @ me.vertices[verts[c]].co)
-                for c in tc
-            ]
-            base = len(positions)
-            for c, ws_i in zip(tc, ws):
-                positions.append(ws_i)
-                uvs.append(corner_uvs[c])
-            mb.add_triangle(base, base + 1, base + 2)
+            base = len(positions) // 3
+            for c in tc:
+                x, y, z = _blender_to_hsd(obj.matrix_world @ me.vertices[verts[c]].co)
+                positions.append(x); positions.append(y); positions.append(z)
+                u, v = corner_uvs[c]
+                uvs.append(u); uvs.append(v)
+            triangles.append(base);     triangles.append(base + 1)
+            triangles.append(base + 2)
             tri_count += 1
 
-    for p in positions:
-        mb.add_position(*p)
-    for u, v in uvs:
-        mb.add_uv(u, v)
+    mb = hsdraw.MeshBuilder.from_arrays(
+        positions=positions,
+        triangles=triangles,
+        uvs=uvs,
+    )
     pobj = mb.build()
     # POBJ.flags=0x8000 (= CULLBACK; vanilla 94-97% の primary mesh が使う)
     # は hsdraw 2026-05-11 wheel から writable property 化、直 setter で。
@@ -154,7 +150,8 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
     # winding は CCW→CW reversed 済み (`tri_corners` 逆順) なので CULLBACK ON
     # で正しい face が表に出る。
     pobj.flags = 0x8000
-    return pobj, color, img_tuple, len(positions), tri_count
+    # `len(positions) // 3` because positions is a flat list of x/y/z floats.
+    return pobj, color, img_tuple, len(positions) // 3, tri_count
 
 
 # `_make_textured_mobj` lives in `_blender_material` now; keep an alias

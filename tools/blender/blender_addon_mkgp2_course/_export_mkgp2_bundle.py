@@ -542,28 +542,29 @@ def _build_pobj_for_mesh(obj, joint_world, sb_world, cull, hsdraw, *, log,
     if not triangles:
         return None, 0, 0
 
-    mb = hsdraw.MeshBuilder()
-    for p in positions:
-        mb.add_position(*p)
+    # Bulk-push via MeshBuilder.from_arrays (= one Python→Rust crossing per
+    # attribute instead of N per-vertex add_*).  positions/normals are
+    # 3-tuples of float, uvs 2-tuples of float, colors 4-tuples of byte,
+    # triangles 3-tuples of vert index — flatten all into 1-D arrays for
+    # the new ctor.
+    kwargs = {
+        "positions":  [c for p in positions for c in p],
+        "triangles":  [c for t in triangles for c in t],
+    }
     if has_normals:
-        for n in normals:
-            mb.add_normal(*n)
+        kwargs["normals"] = [c for n in normals for c in n]
     if have_color:
-        for c in colors:
-            mb.add_color(*c)
+        # `colors` is bytes-like per-vertex; from_arrays accepts list/bytes
+        kwargs["colors"] = bytes(c for col in colors for c in col)
     if have_uv:
-        for u in uvs:
-            mb.add_uv(*u)
-    for tri in triangles:
-        mb.add_triangle(*tri)
+        kwargs["uvs"] = [c for u in uvs for c in u]
 
-    # NOTE: hsdraw's set_cull_back / set_cull_front toggle POBJ.flags
-    # bits 0x4000 / (presumably) 0x2000 respectively, but the game's
-    # POBJ_FLAG enum uses 0x1000 / 0x2000 for SHAPESET, 0x8000 for
-    # ENVELOPE, and treats 0x4000 as an unknown POBJ type — TEX0
-    # sampling stops working when that bit is set.  Cull mode lives
-    # in PE_DESC, not in POBJ.flags, so we deliberately skip these
-    # calls.  TODO: route cull through PE_DESC when hsdraw exposes it.
+    # Cull-mode is NOT configured via mb.set_cull_back/_front — those
+    # toggle POBJ.flags bits 0x4000 / 0x2000 which the game's POBJ_FLAG
+    # enum treats as unknown POBJ types (TEX0 sampling stops working).
+    # Cull mode belongs in PE_DESC, not POBJ.flags; skipped until hsdraw
+    # exposes that surface.
+    mb = hsdraw.MeshBuilder.from_arrays(**kwargs)
     pobj = mb.build()
     return pobj, len(positions), len(triangles)
 
