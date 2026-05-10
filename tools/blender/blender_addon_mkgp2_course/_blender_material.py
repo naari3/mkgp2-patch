@@ -117,6 +117,100 @@ def _format_alignment_ok(fmt_name: str, w: int, h: int) -> bool:
     return True
 
 
+# -- Texture size clamp for GX hardware ------------------------------------
+
+# GX texture wrap registers cap dimensions at 1024.  Source: libogc gx.h
+# (`#define GX_MAX_TEX_WIDTH 1024`); sysdolphin / Smash / vanilla MKGP2
+# course .dats all stay within this.  Anything larger silently breaks --
+# in practice the dolphin emulator either refuses to bind the texture
+# (= mesh renders as the magenta default) or wraps the dimensions back
+# under 1024 and samples garbage (= garbled stripes).  Clamping here
+# means the user can drop any high-res Image Texture into Blender and
+# the pipeline will downscale just before encoding.
+GX_MAX_TEXTURE_DIM = 1024
+
+
+def _clamp_texture_size_for_gx(img, max_dim: int = GX_MAX_TEXTURE_DIM):
+    """Read pixels from `img`, downscaling to <= max_dim if needed and
+    aligning both dims to multiples of 4 (= CMP tile size; harmless for
+    other formats).
+
+    Returns (out_w, out_h, raw_rgba_bytes) where rows are top-down (GX
+    convention; Blender stores bottom-up so we flip).  Source image is
+    not mutated -- when resampling is needed, a temporary `img.copy()`
+    is scaled and then removed from `bpy.data.images`.
+
+    Edge cases:
+      * w/h already <= max_dim AND already 4-aligned -> direct read,
+        no copy / scale.
+      * Aspect-preserving scale that lands on a non-/4 dim -> rounded
+        DOWN to nearest /4 (worst case 3 pixel crop per side).  Keeps
+        CMP / non-CMP encoding paths identical so format choice is not
+        silently downgraded by the alignment guard in make_textured_mobj.
+      * `img.copy()` raising (image deleted mid-call etc.) -> falls back
+        to direct read of the source at original size; caller's existing
+        alignment guard kicks in if the format demands /4.
+    """
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        return None
+
+    # Decide target dimensions.
+    needs_scale = max(w, h) > max_dim or (w % 4) != 0 or (h % 4) != 0
+    if needs_scale:
+        if max(w, h) > max_dim:
+            scale = max_dim / max(w, h)
+        else:
+            scale = 1.0
+        nw = max(4, (round(w * scale) // 4) * 4)
+        nh = max(4, (round(h * scale) // 4) * 4)
+    else:
+        nw, nh = w, h
+
+    if (nw, nh) != (w, h):
+        try:
+            scaled = img.copy()
+        except Exception as ex:
+            print(f"  texture clamp: img.copy() failed for {img.name!r}: "
+                  f"{type(ex).__name__}: {ex}; using source dims {w}x{h}")
+            scaled = None
+
+        if scaled is not None:
+            try:
+                scaled.scale(nw, nh)
+                px = list(scaled.pixels)
+                print(f"  texture auto-clamp: {img.name!r} {w}x{h} -> "
+                      f"{nw}x{nh} (GX max={max_dim}, /4 aligned)")
+                w, h = nw, nh
+            finally:
+                # Best-effort cleanup; bpy.data.images.remove() can raise
+                # in odd contexts (image still referenced, etc.).
+                try:
+                    import bpy
+                    bpy.data.images.remove(scaled)
+                except Exception:
+                    pass
+        else:
+            px = list(img.pixels)
+    else:
+        px = list(img.pixels)
+
+    # Blender stores pixels as flat float RGBA (row-major, bottom-up).
+    # GX expects top-down, so flip rows.
+    raw = bytearray(w * h * 4)
+    for y in range(h):
+        src_row = (h - 1 - y) * w * 4
+        dst_row = y * w * 4
+        for i in range(w * 4):
+            v = px[src_row + i]
+            if v < 0.0:
+                v = 0.0
+            elif v > 1.0:
+                v = 1.0
+            raw[dst_row + i] = int(round(v * 255))
+    return w, h, bytes(raw)
+
+
 # -- BSDF readers ----------------------------------------------------------
 
 def bsdf_base_color(mat) -> tuple:
@@ -135,7 +229,11 @@ def bsdf_base_color(mat) -> tuple:
 
 def bsdf_image_texture(mat):
     """Find the Image Texture node feeding mat's BSDF Base Color.
-    Returns the image as (width, height, raw_rgba_bytes) or None."""
+    Returns the image as (width, height, raw_rgba_bytes) or None.
+
+    Image is auto-clamped to GX hardware max (= ``GX_MAX_TEXTURE_DIM``,
+    1024) and 4-pixel-aligned.  See ``_clamp_texture_size_for_gx``.
+    """
     if mat is None or not mat.use_nodes or mat.node_tree is None:
         return None
     bsdf = None
@@ -151,23 +249,7 @@ def bsdf_image_texture(mat):
     src = bc.links[0].from_node
     if src is None or src.type != 'TEX_IMAGE' or src.image is None:
         return None
-    img = src.image
-    w, h = img.size
-    if w <= 0 or h <= 0:
-        return None
-    # Blender stores pixels as flat float RGBA (row-major, bottom-up).
-    # GX expects top-down, so flip rows.
-    px = list(img.pixels)
-    raw = bytearray(w * h * 4)
-    for y in range(h):
-        src_row = (h - 1 - y) * w * 4
-        dst_row = y * w * 4
-        for i in range(w * 4):
-            v = px[src_row + i]
-            if v < 0.0: v = 0.0
-            elif v > 1.0: v = 1.0
-            raw[dst_row + i] = int(round(v * 255))
-    return (w, h, bytes(raw))
+    return _clamp_texture_size_for_gx(src.image)
 
 
 # -- HSD MObj/TObj/Image construction --------------------------------------
