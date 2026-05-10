@@ -358,6 +358,11 @@ def _build_tobj_chain(material_dto, image_cache, hsdraw, *, log):
         # tex_map_id
         tmid = _TEXMAPID.get(ref.get("tex_map_id", "GX_TEXMAP0"), 0)
         tobj.tex_map_id = tmid
+        # GXTexGenSrc=4 (TG_TEX0) — vertex の TEX0 attribute から UV を取る。
+        # csx export は今のところ gen_src を記録していないが vanilla 全件
+        # TG_TEX0 なのでハードコード。hsdraw 2026-05-11 wheel から property
+        # 化済 (それ以前は post-write byte patch でしか設定できなかった)。
+        tobj.tex_gen_src = 4
 
         # wrap / repeat
         ws = _WRAPMODE.get(ref.get("wrap_s", "CLAMP"), 0)
@@ -881,13 +886,15 @@ def export_bundle_to_dat(
         dat.add_root(alias_name, target)
 
     out_bytes = bytes(dat.write())
-    # See bm.patch_tobj_tex_gen_src and _promote_vis_to_hsd's matching
-    # call site for the rationale.  Required for the in-game renderer
-    # to take texture coords from the POBJ TEX0 attribute.
-    out_bytes, n_patched = bm.patch_tobj_tex_gen_src(hsdraw, out_bytes, src_value=4)
+    # GXTexGenSrc=4 (TG_TEX0) は _build_tobj_chain 内で `tobj.tex_gen_src = 4`
+    # 直 setter (hsdraw 2026-05-11 wheel から property 化) で設定済み。
+    # 過去の post-write byte-patch (`bm.patch_tobj_tex_gen_src`) は撤去。
+    #
+    # POBJ.flags=0x8000 patch は bundle 経路では引き続き未適用 (vis: 経路の
+    # 床真っ黒 / billboard 透明 regression が出た 2026-05-10 を踏まえ、
+    # bundle (= 既存 mod 編集) では vanilla bytes をなるべく弄らない方針)。
     output_dat.write_bytes(out_bytes)
-    log(f"wrote   : {output_dat.name}  size={len(out_bytes)}  "
-        f"(GXTexGenSrc patched: {n_patched} TObjs)")
+    log(f"wrote   : {output_dat.name}  size={len(out_bytes)}")
 
     return {
         "joints": len(jobj_by_id),

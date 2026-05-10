@@ -222,15 +222,13 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
         alignment this (w, h) pair can't satisfy (CMP needs 4×4).
     """
     if img_tuple is None:
-        # Synth 4x4 WHITE tile.  Under COLORMAP_MODULATE the renderer
-        # computes `texel * dif`; a white texel passes Material.dif
-        # through verbatim, preserving the user's BSDF base color.
-        # Earlier versions filled the synth tile with `color` and used
-        # the REPLACE path -- that worked visually for solid meshes but
-        # never displayed real Image Textures (see make_textured_mobj
-        # docstring for the why).
+        # Synth 4x4 tile filled with the BSDF base color.  Under
+        # COLORMAP_BLEND with Material.dif=WHITE and tobj.blending=1.0
+        # the renderer outputs `texel` directly, so the per-mesh BSDF
+        # color survives by being baked into the synth tile (instead of
+        # being multiplied by a white texel).
         w, h = 4, 4
-        pixel = b"\xff\xff\xff\xff"
+        pixel = bytes(color)  # (R, G, B, A) per BSDF base color
         raw = pixel * (w * h)
     else:
         w, h, raw = img_tuple
@@ -283,15 +281,49 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
     # LIGHTMAP_DIFFUSE bit at 0x10, which we OR in by hand.
     tobj = hsdraw.TObj.alloc()
     tobj.tex_map_id = 0          # GX_TEXMAP0
-    tobj.wrap_s = 0              # GX_REPEAT
-    tobj.wrap_t = 1              # GX_MIRROR (vanilla road convention)
+    # GXTexGenSrc=4 (TG_TEX0) — vertex の TEX0 attribute から UV を取る。
+    # hsdraw 2026-05-11 wheel で property 化された (それ以前は post-write
+    # byte patch でしか設定できなかった、memory project_hsdraw_no_tex_gen_src_setter.md)。
+    tobj.tex_gen_src = 4
+    # RepeatS / RepeatT は HSDLib HSD_TObj.cs の offset 0x3C/0x3D (u8) field。
+    # vanilla MR_highway_long_A.dat の **全 275 textured TObj が repeat_s=1
+    # repeat_t=1**。hsdraw.TObj.alloc() default の 0 のままだと MKGP2 HSD runtime
+    # が GX_IDENTITY+src=Tex0 経路 (= TEX0_MTX[60] zero matrix で UV 全 collapse)
+    # に乗せ、textured POBJ が flat color になる (2026-05-11 fifolog diff で確証、
+    # memory project_mkgp2_two_texcoord_paths.md)。1 にすると vanilla 経路
+    # (Geom-based UV gen + TEX0_MTX[0] camera mtx load) に乗るはず。
+    tobj.repeat_s = 1
+    tobj.repeat_t = 1
+    # GX wrap mode: 0=CLAMP, 1=REPEAT, 2=MIRROR (HSDLib GXWrapMode enum;
+    # earlier comments labelled 0=REPEAT/1=MIRROR — that was wrong).
+    # Bisect 2026-05-10 step 6: in-game observed that fmt_test_planes
+    # render as the *exact arithmetic average* of their 2 checker
+    # source colors (e.g. (0x00,0x59,0x00)+(0x1a,0xf2,0x33) → 0x0da61a).
+    # The TEX0 buffer in our exported .dat has correctly varying UVs
+    # (verified via diag_fmt_test_geom.py), so the GX TexCoord pipeline
+    # must be collapsing UVs to a single point and bilinear-averaging at
+    # that point.  With wrap_s=CLAMP + wrap_t=REPEAT, sampling UV (0,0)
+    # under bilinear mag-filter wraps the V axis: the 2 footprint texels
+    # are (0,0) and (0,h-1) — opposite cells in a 4×4-cell checker → the
+    # 50/50 average we observed.  Forcing wrap_t=CLAMP collapses the V
+    # footprint to {(0,0),(0,0)} → single cell colour → confirms the
+    # matrix-collapse mechanism if the in-game flat colour switches from
+    # the average to one of the two cell colours.  INU's working textured
+    # POBJ also uses CLAMP/CLAMP, lending circumstantial support.
+    tobj.wrap_s = 0              # GX_CLAMP
+    tobj.wrap_t = 0              # GX_CLAMP (was 1=REPEAT; see comment above)
     tobj.set_image_data(img)
-    tobj.set_color_operation(4)  # COLORMAP_MODULATE = texel * material color
+    # COLORMAP_MODULATE (= 4) matches inu_aliased.dat (= 動く modded
+    # course) の textured POBJ pattern (TObj.flags=0x00040010)。
+    # `final_color = texel * Material.dif` で、Material.dif は (255,255,255)
+    # に固定しているので texel が透けて出る (synth 4x4 fallback も image
+    # texture も Material.dif で tint されない)。
+    tobj.set_color_operation(4)  # COLORMAP_MODULATE (texture × Material.dif)
     tobj.set_alpha_operation(0)  # ALPHAMAP_NONE
     tobj.set_coord_type(0)       # CoordType=UV (= bits 0-3 = 0)
     tobj.flags |= 0x10           # LIGHTMAP_DIFFUSE — no public setter
     tobj.blending = 1.0
-    tobj.mag_filter = 0          # GX_NEAR (= NEAREST)
+    tobj.mag_filter = 1          # GX_LINEAR (inu pattern; was 0=NEAREST)
     # Identity UV transform.  hsdraw.TObj.alloc() leaves the rotation /
     # scale / translation fields all zero; with scale = 0 the renderer
     # multiplies every UV by 0 and samples a single texel for every
@@ -301,12 +333,14 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
     tobj.set_scale(1.0, 1.0, 1.0)
     tobj.set_translation(0.0, 0.0, 0.0)
 
-    # Material with vanilla course conventions: ambient + spc non-zero
-    # so the lit-mesh TEV pipeline (the one actually sampling our TObj)
-    # has color sources to work with.
+    # Material with vanilla YI_land_long_a textured-POBJ values: amb /
+    # spc non-zero so the lit-mesh TEV pipeline has color sources, dif
+    # WHITE so COLORMAP_BLEND with blending=1.0 yields `texel` exactly
+    # (the per-mesh color is carried in the texel itself, see the
+    # synth-4x4 fallback above).
     mat = hsdraw.Material.alloc()
     mat.amb_rgba = (128, 128, 128, 255)
-    mat.dif_rgba = tuple(color)
+    mat.dif_rgba = (255, 255, 255, 255)
     mat.spc_rgba = (255, 255, 255, 255)
     mat.shininess = 50.0
     mat.alpha = 1.0
@@ -316,7 +350,18 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
     # texture fallback (the very bug this rewrite addresses).
     mobj = hsdraw.MObj.alloc()
     mobj.set_material(mat)
-    mobj.render_flags = 0x2011   # CONSTANT|TEX0|ALPHA_MAT, vanilla road
+    # bisect 2026-05-10:
+    #  - 0x40002011 (TEXEDGE PE setup, bit 30 ON) was tested in step 3 and
+    #    in-game produced a *worse* state: every my_course mesh went black
+    #    while the player kart (separate .dat) was unaffected. Hypothesis:
+    #    the agent-decoded `GX_SetAlphaCompare` first arg is not "enabled"
+    #    but `GXCompare comp0` (NEVER=0, LESS=1, ..., ALWAYS=7); with bit
+    #    28 OFF, comp0=0=NEVER discards every pixel. vanilla 0x40002011
+    #    works in alpha_joint context, our reuse for primary mesh doesn't.
+    #  - reverted to 0x2011 (XLU PE setup, blend ON) which is what every
+    #    vanilla CULLBACK textured POBJ uses for primary mesh. This pairs
+    #    with POBJ.flags=0x8000 + reversed triangle winding (step 4).
+    mobj.render_flags = 0x2011   # CONSTANT|TEX0|ALPHA_MAT, vanilla CULLBACK road
     mobj.set_textures(tobj)
     return mobj
 
@@ -385,40 +430,38 @@ def load_scene_template_dat(hsdraw, template_path):
     return dat
 
 
-# -- Post-write byte patcher: TObj.GXTexGenSrc --------------------------------
+# -- Post-write byte patcher: POBJ.flags --------------------------------------
 
-def patch_tobj_tex_gen_src(hsdraw, file_bytes, src_value: int = 4) -> bytes:
-    """Patch the ``GXTexGenSrc`` field (offset 0x0C inside each TObj) of
-    every TObj in `file_bytes` to ``src_value``.
+def patch_pobj_flags(hsdraw, file_bytes, flags_value: int = 0x8000) -> tuple:
+    """Patch the ``flags`` field (offset 0x0C inside each POBJ, big-endian
+    u16) of every POBJ in `file_bytes` to ``flags_value``.
 
-    Why this exists: the vendored hsdraw binding does not expose any
-    setter for ``GXTexGenSrc``.  hsdraw's ``TObj.alloc()`` leaves the
-    field at 0 (= ``GX_TG_POS``), which makes the renderer compute the
-    texture coordinate from the vertex position — for our 600×600
-    billboards at world coords in the thousands the resulting UV is
-    enormous and wraps the texture so densely that the screen reads as
-    the texture's average color.  Vanilla MKGP2 TObjs use 4
-    (= ``GX_TG_TEX0``) so the renderer takes the UV from the POBJ's
-    TEX0 attribute.
+    Why this exists: hsdraw's ``MeshBuilder.build()`` produces POBJs
+    with ``flags=0x0000`` (= POBJ_TYPE.SHAPE), but every textured POBJ
+    in vanilla MKGP2 course .dats carries ``flags=0x8000`` (=
+    POBJ_TYPE.ENVELOPE).  The in-game HSD renderer dispatches its
+    TexCoord pipeline on this flag: SHAPE-typed textured POBJs that use
+    ``MATINDEX_A.tex0=IDENTITY(60)`` get the IDENTITY matrix slot
+    silently treated as a zero matrix (so every UV collapses to (0,0)
+    and the texture renders as one repeated texel), while ENVELOPE-typed
+    POBJs route through the path that recognises IDENTITY as a hardware
+    pass-through.  Confirmed empirically against vanilla YI_land_long_a:
+    every textured POBJ there is 0x8000, none is 0x0000.
 
-    The function locates each TObj by walking the dat, takes a snapshot
-    of every TObj's `HsdStruct.raw()` (which is unique per TObj because
-    the embedded ImageDesc/LODDesc/TObjTev pointer values differ), and
-    finds that 92-byte sequence as a substring of `file_bytes`.  In
-    practice every TObj raw appears exactly once in the file so the
-    patch is unambiguous; the function refuses to patch when a
-    signature is found 0 or >1 times to fail loudly rather than
-    corrupt the .dat.
+    Disambiguation strategy walks the Dat to snapshot each POBJ raw and
+    finds it as substring of `file_bytes`:
+    walk the dat, snapshot each POBJ's ``HsdStruct.raw()`` (unique per
+    POBJ because the embedded VtxAttrGroup / DList pointers differ),
+    locate that signature in `file_bytes`, and overwrite bytes 0x0C..
+    0x0D.  Refuses to patch if a signature is missing or duplicated.
 
-    Returns the patched bytes.  TODO: replace with a proper hsdraw
-    upstream setter (`tobj.tex_gen_src = src_value`) when available.
+    Returns ``(patched_bytes, n_patched)``.
     """
     out = bytearray(file_bytes)
     dat = hsdraw.parse_dat(file_bytes)
-
-    # Walk every TObj: scene_data is excluded (no DObjs there).
     seen_offsets = set()
     patched = 0
+    flags_bytes = flags_value.to_bytes(2, "big")
     for r in dat.roots():
         if r.name == "scene_data":
             continue
@@ -432,37 +475,31 @@ def patch_tobj_tex_gen_src(hsdraw, file_bytes, src_value: int = 4) -> bytes:
                 if off == 16:  # JObj's DObj-head pointer slot
                     d = hsdraw.DObj.from_struct(ref)
                     while d is not None:
-                        if d.mobj is not None:
-                            m = hsdraw.MObj.from_struct(d.mobj)
-                            tex_attr = m.textures
-                            while tex_attr is not None:
-                                if isinstance(tex_attr, hsdraw.HsdStruct):
-                                    tobj = hsdraw.TObj.from_struct(tex_attr)
-                                else:
-                                    tobj = tex_attr
-                                raw = tobj.as_struct().raw()
-                                # Find the unique offset.  Scan the
-                                # whole file to confirm uniqueness.
-                                first = file_bytes.find(raw)
-                                second = file_bytes.find(raw, first + 1) if first != -1 else -1
-                                if first == -1:
-                                    raise RuntimeError(
-                                        "patch_tobj_tex_gen_src: TObj raw "
-                                        "signature not found in file bytes; "
-                                        "hsdraw .raw() shape changed?")
-                                if second != -1:
-                                    raise RuntimeError(
-                                        "patch_tobj_tex_gen_src: TObj raw "
-                                        f"signature found at multiple offsets "
-                                        f"(first={first}, second={second}); "
-                                        "cannot disambiguate which TObj to "
-                                        "patch")
-                                if first not in seen_offsets:
-                                    out[first + 0x0C : first + 0x10] = (
-                                        src_value.to_bytes(4, "big"))
-                                    seen_offsets.add(first)
-                                    patched += 1
-                                tex_attr = tobj.next
+                        # POBJ chain (DObj.pobj is the head)
+                        pobj_attr = d.pobj
+                        while pobj_attr is not None:
+                            if isinstance(pobj_attr, hsdraw.HsdStruct):
+                                pobj = hsdraw.Pobj.from_struct(pobj_attr)
+                            else:
+                                pobj = pobj_attr
+                            raw = pobj.as_struct().raw()
+                            first = file_bytes.find(raw)
+                            second = file_bytes.find(raw, first + 1) if first != -1 else -1
+                            if first == -1:
+                                raise RuntimeError(
+                                    "patch_pobj_flags: POBJ raw signature not "
+                                    "found in file bytes; hsdraw .raw() shape "
+                                    "changed?")
+                            if second != -1:
+                                raise RuntimeError(
+                                    "patch_pobj_flags: POBJ raw signature found "
+                                    f"at multiple offsets (first={first}, "
+                                    f"second={second}); cannot disambiguate")
+                            if first not in seen_offsets:
+                                out[first + 0x0C : first + 0x0E] = flags_bytes
+                                seen_offsets.add(first)
+                                patched += 1
+                            pobj_attr = pobj.next
                         d = d.next
             try:
                 nx = j.next

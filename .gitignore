@@ -41,6 +41,8 @@ tools/**/__pycache__/
 .claude/settings.local.json
 # Scheduled-task lock file from the /loop wakeup mechanism. Per-session.
 .claude/scheduled_tasks.lock
+# Sub-agent isolated worktrees (`isolation: "worktree"`); per-task scratch.
+.claude/worktrees/
 
 # One-shot debug scripts kept locally during investigations. Reusable
 # dump / compare helpers (hsd_compare_*, hsd_dump_*) live alongside

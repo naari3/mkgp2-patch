@@ -40,8 +40,14 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
     Texture if present, else None (caller will fall back to a synthetic
     solid texture from `color_tuple`).
 
-    POBJ attributes: POS + NRM + TEX0 (UV) — vanilla course primary
-    geometry compatible. Per-triangle face normal は flat shading 用。
+    POBJ attributes: POS + TEX0 (UV) — vanilla textured-POBJ pattern
+    (every textured POBJ in vanilla YI_land_long_a uses POS+TEX0 with
+    no NRM; lighting is handled per-vertex via CLR0 or omitted entirely
+    for unlit scenery).  Including NRM here -- the pre-2026-05-10 path
+    -- triggers an MKGP2 HSD renderer code path that collapses the TEX0
+    pipeline to a single texel sample, producing the flat-color render
+    we observed on the 3 fmt_test_planes.
+
     UV は Blender の active UV layer から per-loop で読み出す。UV が無い
     場合は polygon の corner index に基づく fallback (tri/quad は
     natural unit square mapping、n-gon は (0,0) flat)。
@@ -57,13 +63,14 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
 
     uv_layer = me.uv_layers.active
 
-    # 実装方針: per-triangle の face normal を 3 vert 全部に同じ値で書き、
-    # vert dedup は捨て、triangle ごとに 3 vert を独立 emit (normal 競合回避)。
+    # 実装方針: 各 vert を triangle ごとに独立 emit (vert dedup なし)。
     # UV は active UV layer の per-loop データを採用; 無ければ corner index
     # から (0,0)/(1,0)/(1,1)/(0,1) を生成。GameCube/HSD は V が下向きの
-    # convention なので Blender V を 1.0 - v で反転。
+    # convention なので Blender V を 1.0 - v で反転。NRM は emit しない:
+    # vanilla の textured POBJ (= POS+TEX0) と同 layout に揃えると
+    # MKGP2 renderer の TEX0 + IDENTITY matrix path がちゃんと UV を
+    # interpolate するようになる (NRM 含めると flat-color バグ再発)。
     positions: list = []
-    normals:   list = []
     uvs:       list = []
     mb = hsdraw.MeshBuilder()
     # Don't call `mb.set_cull_back(True)`.  hsdraw's set_cull_back
@@ -81,17 +88,6 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
     # For now this means both faces of every triangle are visible;
     # all our course meshes are closed solids so back-face leakage is
     # invisible from the cart's POV.
-
-    def _face_normal(p0, p1, p2):
-        ax = p1[0] - p0[0]; ay = p1[1] - p0[1]; az = p1[2] - p0[2]
-        bx = p2[0] - p0[0]; by = p2[1] - p0[1]; bz = p2[2] - p0[2]
-        nx = ay * bz - az * by
-        ny = az * bx - ax * bz
-        nz = ax * by - ay * bx
-        ln = (nx * nx + ny * ny + nz * nz) ** 0.5
-        if ln < 1e-9:
-            return (0.0, 1.0, 0.0)
-        return (nx / ln, ny / ln, nz / ln)
 
     # Fallback per-corner UVs, used when the mesh has no active UV layer.
     # tri: standard right-triangle covering half the texture; quad: full
@@ -124,30 +120,31 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
         else:
             corner_uvs = [(0.0, 0.0)] * nv
         # Triangulate as corner-index lists into `verts`/`corner_uvs`.
+        # Winding: bisect 2026-05-10 step 4 で REVERSED に切替。
+        # Blender CCW (front face = counter-clockwise from outside) ↔
+        # GameCube GX hardware の front face = CW のため、Blender 順をそのまま
+        # emit すると全 face が back-facing 判定 → POBJ.flags=0x8000 (CULLBACK)
+        # と組合せると全面 cull → 真っ黒/透明。reverse して CW 順で emit。
         if nv == 3:
-            tri_corners = [(0, 1, 2)]
+            tri_corners = [(0, 2, 1)]
         elif nv == 4:
-            tri_corners = [(0, 1, 2), (0, 2, 3)]
+            tri_corners = [(0, 2, 1), (0, 3, 2)]
         else:
-            tri_corners = [(0, k, k + 1) for k in range(1, nv - 1)]
+            tri_corners = [(0, k + 1, k) for k in range(1, nv - 1)]
         for tc in tri_corners:
             ws = [
                 _blender_to_hsd(obj.matrix_world @ me.vertices[verts[c]].co)
                 for c in tc
             ]
-            n = _face_normal(*ws)
             base = len(positions)
             for c, ws_i in zip(tc, ws):
                 positions.append(ws_i)
-                normals.append(n)
                 uvs.append(corner_uvs[c])
             mb.add_triangle(base, base + 1, base + 2)
             tri_count += 1
 
     for p in positions:
         mb.add_position(*p)
-    for n in normals:
-        mb.add_normal(*n)
     for u, v in uvs:
         mb.add_uv(u, v)
     return mb.build(), color, img_tuple, len(positions), tri_count
@@ -255,23 +252,26 @@ def promote_vis_to_dat(
         dobjs[i].set_next(dobjs[i + 1])
 
     # Root JObj housing the chain.
-    # HSD renderer は ROOT_OPA / ROOT_XLU / ROOT_TEXEDGE が立った tree しか
-    # OPA/XLU pass scan で traverse しないので OPA | ROOT_OPA を立てる。
     #
-    # **LIGHTING bit (1<<7) は立てない**。vanilla の textured course primary
-    # mesh (test_course_road, MR_highway road など) も LIGHTING bit 無しで
-    # `OPA, ROOT_OPA` (= 0x10040000) で書かれている。textured mesh は
-    # texture sample が色を提供するので光源計算は不要。LIGHTING bit を
-    # 立てると scene の LObj (= game-side で実体化される default light)
-    # が mesh に specular highlight を乗せて、camera 移動で highlights が
-    # スライド = 「光源反射のような動き」の opacity 点滅を起こす (実機で
-    # 確認済み)。
-    # LIGHTING を立てるのは vanilla `DN_stadium_shade_al.dat` 等の
-    # **textureless shade object** だけ (texture 無しなので光源計算で色を出す)。
-    _JOBJ_OPA      = 1 << 18  # 0x00040000
-    _JOBJ_ROOT_OPA = 1 << 28  # 0x10000000
+    # bisect 2026-05-10 step 5:
+    # 動く例 `MR_highway_short_A_inu_aliased.dat` の `MR_highway_inu_joint`
+    # と structural diff を取った結果、INU は JObj の 3 pass bit
+    # (OPA|XLU|TEXEDGE + ROOT_OPA|ROOT_XLU|ROOT_TEXEDGE = 0x701c0000)
+    # を立てて 3 pass 全部に出席している。我々は OPA-only だったため、
+    # OPA pass の TEV state setup が SHAPE textured POBJ を正しく描画でき
+    # ていなかった疑い。INU 構造は container-root + child JObj だが、ここでは
+    # root に直接 3 pass bit を立てる (我々は flat tree)。
+    _JOBJ_OPA          = 1 << 18  # 0x00040000
+    _JOBJ_XLU          = 1 << 19  # 0x00080000
+    _JOBJ_TEXEDGE      = 1 << 20  # 0x00100000
+    _JOBJ_ROOT_OPA     = 1 << 28  # 0x10000000
+    _JOBJ_ROOT_XLU     = 1 << 29  # 0x20000000
+    _JOBJ_ROOT_TEXEDGE = 1 << 30  # 0x40000000
     root_jobj = hsdraw.JObj.alloc()
-    root_jobj.flags = _JOBJ_OPA | _JOBJ_ROOT_OPA
+    root_jobj.flags = (
+        _JOBJ_OPA | _JOBJ_XLU | _JOBJ_TEXEDGE
+        | _JOBJ_ROOT_OPA | _JOBJ_ROOT_XLU | _JOBJ_ROOT_TEXEDGE
+    )  # = 0x701c0000 — match INU pattern
     root_jobj.set_dobj(dobjs[0])
 
     # ---- Build the .dat from a scene template --------------------------
@@ -308,15 +308,19 @@ def promote_vis_to_dat(
     dat.add_root(alias_name, root_jobj)
 
     out_bytes = bytes(dat.write())
-    # Patch every TObj's GXTexGenSrc field to TG_TEX0 (hsdraw has no
-    # public setter; see bm.patch_tobj_tex_gen_src docstring).  Without
-    # this the renderer pulls texture coords from vertex position and
-    # the surface reads as the texture's average color.
-    out_bytes, n_patched = bm.patch_tobj_tex_gen_src(hsdraw, out_bytes, src_value=4)
+    # GXTexGenSrc=4 (TG_TEX0) は make_textured_mobj 内で `tobj.tex_gen_src = 4`
+    # 直 setter (hsdraw 2026-05-11 wheel から property 化) で設定済み。
+    # 過去の post-write byte-patch 経路 (`bm.patch_tobj_tex_gen_src`) は撤去。
+    #
+    # POBJ.flags=0x8000 (= CULLBACK; vanilla 94-97% の primary mesh が使う) は
+    # hsdraw の MeshBuilder.build() が直接立てないため、引き続き post-write で
+    # patch する。winding は CCW→CW reversed 済み (`_build_pobj_for_slot` の
+    # `tri_corners` 逆順) なので CULLBACK ON で正しい face が表に出る。
+    out_bytes, n_pobj_patched = bm.patch_pobj_flags(hsdraw, out_bytes, flags_value=0x8000)
     output_dat.write_bytes(out_bytes)
     log(f"  wrote {output_dat.name}: {len(out_bytes)} bytes "
         f"({len(dobjs)} DObjs, {total_verts} verts, {total_tris} tris, "
-        f"{n_patched} TObj GXTexGenSrc patched -> TG_TEX0)")
+        f"{n_pobj_patched} POBJ.flags patched -> CULLBACK 0x8000)")
 
     return {
         "dobj_count": len(dobjs),
