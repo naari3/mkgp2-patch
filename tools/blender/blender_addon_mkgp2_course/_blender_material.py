@@ -403,7 +403,9 @@ def make_textured_mobj(hsdraw, color, img_tuple, target_format=None):
     tobj.set_color_operation(4)  # COLORMAP_MODULATE (texture × Material.dif)
     tobj.set_alpha_operation(0)  # ALPHAMAP_NONE
     tobj.set_coord_type(0)       # CoordType=UV (= bits 0-3 = 0)
-    tobj.flags |= 0x10           # LIGHTMAP_DIFFUSE — no public setter
+    tobj.set_lightmap_diffuse(True)  # LIGHTMAP_DIFFUSE bit (hsdraw 2026-05-11
+                                      # wheel から名前付き setter、過去は
+                                      # `tobj.flags |= 0x10` 直 RMW だった)
     tobj.blending = 1.0
     tobj.mag_filter = 1          # GX_LINEAR (inu pattern; was 0=NEAREST)
     # Identity UV transform.  hsdraw.TObj.alloc() leaves the rotation /
