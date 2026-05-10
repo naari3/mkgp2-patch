@@ -25,7 +25,7 @@ in the same `blender_addon_mkgp2_course` package):
   * ``load_scene_template_dat(hsdraw, template_path)`` -> hsdraw.Dat
     seeded from a vanilla course .dat with non-`scene_data` roots
     stripped; preserves LObj (lights) and COBJ (camera) descriptors
-    that `Dat.alloc_scene_data()` omits.
+    that `Dat.alloc_scene_data_minimal()` omits.
 
 Coordinate transform belongs here too because every Blender-side mesh
 exporter uses the same convention; centralizing it makes it harder to
@@ -459,7 +459,7 @@ def load_scene_template_dat(hsdraw, template_path):
     `hsdraw.Dat` ready for the caller to repoint
     ``scene_data.JOBJDescs[0].RootJoint`` and add their own alias roots.
 
-    Why this exists: ``hsdraw.Dat.alloc_scene_data()`` produces an SObj
+    Why this exists: ``hsdraw.Dat.alloc_scene_data_minimal()`` produces an SObj
     that holds **only** the JObjDesc array.  A vanilla course SObj
     additionally carries pointers to LObj (lights) and COBJ (camera)
     descriptors — the in-game renderer reads both, and an SObj that

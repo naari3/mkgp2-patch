@@ -175,10 +175,11 @@ def promote_vis_to_dat(
     that vanilla course .dat (everything except `scene_data` is stripped)
     so the SObj retains LObj (lights) and COBJ (camera) descriptors.
     The in-game renderer reads both: a Dat without them (the case when
-    we fall back to ``hsdraw.Dat.alloc_scene_data()``) leaves character
-    meshes dark and breaks texture sampling on our own geometry.  Pass
-    ``template_dat=None`` only for byte-equivalence tests / structural
-    asserts where the absence of light/camera data is acceptable.
+    we fall back to ``hsdraw.Dat.alloc_scene_data_minimal()``) leaves
+    character meshes dark and breaks texture sampling on our own
+    geometry.  Pass ``template_dat=None`` only for byte-equivalence
+    tests / structural asserts where the absence of light/camera data
+    is acceptable.
 
     Parameters:
       vis_collection -- the `vis:<name>` Collection to promote.
@@ -188,8 +189,9 @@ def promote_vis_to_dat(
                         leading `vis:`.
       template_dat   -- optional path to a vanilla course .dat used as
                         the scene template.  ``None`` falls back to
-                        ``hsdraw.Dat.alloc_scene_data()`` and emits a
-                        loud warning -- the output is unsafe to ship.
+                        ``hsdraw.Dat.alloc_scene_data_minimal()`` and
+                        emits a loud warning -- the output is unsafe
+                        to ship.
 
     Returns a stats dict (dobj_count, total_verts, total_tris,
     output_size).  Raises RuntimeError on any consistency failure
@@ -280,27 +282,27 @@ def promote_vis_to_dat(
 
     # ---- Build the .dat from a scene template --------------------------
     # The renderer needs the SObj to carry LObj (lights) + COBJ (camera)
-    # descriptors.  `Dat.alloc_scene_data()` only allocates the JObjDesc
-    # array, so its output leaves characters dark and breaks texture
-    # sampling.  `bm.load_scene_template_dat()` reads any vanilla course
-    # .dat, drops every root except `scene_data`, and hands us a Dat
-    # whose SObj keeps the template's LObj/COBJ verbatim — only the
+    # descriptors.  `Dat.alloc_scene_data_minimal()` only allocates the
+    # JObjDesc array, so its output leaves characters dark and breaks
+    # texture sampling.  `bm.load_scene_template_dat()` reads any vanilla
+    # course .dat, drops every root except `scene_data`, and hands us a
+    # Dat whose SObj keeps the template's LObj/COBJ verbatim — only the
     # JObjDesc[0].RootJoint and the alias roots need swapping in.
     if template_dat is not None:
         dat = bm.load_scene_template_dat(hsdraw, template_dat)
         log(f"  scene template: {Path(template_dat).name}")
     else:
         log("  WARN: no scene template; falling back to "
-            "Dat.alloc_scene_data() — output will be missing LObj/COBJ "
-            "and will render incorrectly in-game (characters dark, "
-            "course textures collapsed). Use only for byte-equivalence "
-            "tests, NEVER for shipping.")
-        dat = hsdraw.Dat.alloc_scene_data()
+            "Dat.alloc_scene_data_minimal() — output will be missing "
+            "LObj/COBJ and will render incorrectly in-game (characters "
+            "dark, course textures collapsed). Use only for byte-"
+            "equivalence tests, NEVER for shipping.")
+        dat = hsdraw.Dat.alloc_scene_data_minimal()
     sd = dat.scene_data()
     if sd is None:
         raise RuntimeError(
-            "scene template / alloc_scene_data() did not produce a "
-            "scene_data root; hsdraw bug?")
+            "scene template / alloc_scene_data_minimal() did not produce "
+            "a scene_data root; hsdraw bug?")
     sobj = hsdraw.SObj.from_struct(sd.data)
     descs = sobj.jobj_descs()
     if not descs:

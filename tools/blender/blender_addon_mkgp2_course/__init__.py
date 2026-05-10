@@ -424,7 +424,7 @@ class MKGP2_OT_ExportHSD(Operator):
         `_promote_vis_to_hsd.promote_vis_to_dat`. Promotion synthesizes
         one POBJ per (mesh, material slot), one root JObj, and a fresh
         scene_data SObj allocated from scratch via
-        `hsdraw.Dat.alloc_scene_data()`. No vanilla `.dat` is read.
+        `hsdraw.Dat.alloc_scene_data_minimal()`. No vanilla `.dat` is read.
 
     The dispatcher prefers an HSD bundle if both are reachable from
     context (the bundle is the typical edit target).
@@ -552,7 +552,7 @@ class MKGP2_OT_ExportHSD(Operator):
         # leaves character meshes dark and texture sampling collapses on
         # our own course geometry.  When the template is missing (the
         # vanilla bin dir preference is unset or the file is absent),
-        # the helper falls back to `Dat.alloc_scene_data()` and emits a
+        # the helper falls back to `Dat.alloc_scene_data_minimal()` and emits a
         # loud WARN to its log -- the operator still completes, but the
         # output is unsafe to ship.
         from . import _promote_vis_to_hsd
@@ -2771,7 +2771,7 @@ def _resolve_scene_template_dat():
 
     The HSD export pipeline (both `vis: -> .dat` and `mkgp2: -> .dat`)
     seeds the new Dat from this template so it keeps the SObj's LObj
-    (lights) + COBJ (camera) descriptors -- `Dat.alloc_scene_data()`
+    (lights) + COBJ (camera) descriptors -- `Dat.alloc_scene_data_minimal()`
     only allocates JObjDescs, and a Dat without LObj/COBJ leaves
     character meshes dark and breaks texture sampling on our own course
     geometry in-game.
@@ -2784,7 +2784,7 @@ def _resolve_scene_template_dat():
          default on a stock setup so the user does not have to wire
          up the preference just to get characters lit.
       3. Returns `None` -- the export helper falls back to
-         ``alloc_scene_data()`` and warns loudly.
+         ``alloc_scene_data_minimal()`` and warns loudly.
     """
     candidate_dirs = []
     bin_dir = _vanilla_bin_dir()

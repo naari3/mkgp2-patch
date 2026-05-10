@@ -597,8 +597,8 @@ def export_bundle_to_dat(
       template_dat  Optional path to a vanilla course .dat used as the
                   scene template — see ``_promote_vis_to_hsd`` for the
                   rationale.  ``None`` falls back to
-                  ``hsdraw.Dat.alloc_scene_data()`` (no LObj/COBJ;
-                  unsafe to ship, kept only for byte-equiv tests).
+                  ``hsdraw.Dat.alloc_scene_data_minimal()`` (no LObj/
+                  COBJ; unsafe to ship, kept only for byte-equiv tests).
 
     Returns a stats dict. Raises TextureBuildError / RuntimeError on
     fatal inconsistencies (missing stash, malformed material reference,
@@ -852,15 +852,15 @@ def export_bundle_to_dat(
         log(f"scene template: {Path(template_dat).name}")
     else:
         log("WARN: no scene template; falling back to "
-            "Dat.alloc_scene_data() — output will be missing LObj/COBJ "
-            "and will render incorrectly in-game (characters dark, "
-            "course textures collapsed). Use only for byte-equivalence "
-            "tests, NEVER for shipping.")
-        dat = hsdraw.Dat.alloc_scene_data()
+            "Dat.alloc_scene_data_minimal() — output will be missing "
+            "LObj/COBJ and will render incorrectly in-game (characters "
+            "dark, course textures collapsed). Use only for byte-"
+            "equivalence tests, NEVER for shipping.")
+        dat = hsdraw.Dat.alloc_scene_data_minimal()
     sd = dat.scene_data()
     if sd is None:
-        raise RuntimeError("scene template / alloc_scene_data() did not "
-                           "produce a scene_data root; hsdraw bug?")
+        raise RuntimeError("scene template / alloc_scene_data_minimal() "
+                           "did not produce a scene_data root; hsdraw bug?")
     sobj = hsdraw.SObj.from_struct(sd.data)
     descs = sobj.jobj_descs()
     if not descs:

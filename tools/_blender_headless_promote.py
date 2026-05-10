@@ -10,7 +10,7 @@ Run via:
 
 The vis: -> .dat pipeline is fully independent: no vanilla `.dat` is
 read, scene_data is allocated from scratch via
-`hsdraw.Dat.alloc_scene_data()`.
+`hsdraw.Dat.alloc_scene_data_minimal()`.
 
 addon import path のセットアップは __init__.py 経由ではなく、_promote_vis_to_hsd
 モジュールを直接 import して promote_vis_to_dat を呼ぶ (addon 登録不要)。
