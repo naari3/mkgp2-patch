@@ -172,6 +172,16 @@ class CPState:
         self.vtx_desc_hi = 0
         # vtx_attr: per-VAT 3 × u32 (a / b / c)
         self.vtx_attr = [[0, 0, 0] for _ in range(8)]
+        # INDEX-mode array base + stride per attribute slot.
+        # CP 0xa0..0xab = ARRAY_BASE for slots 0..11
+        #   (0=POS_MTX_DATA, 1..7=TEX_MTX_DATA, 8=POS, 9=NRM,
+        #    10=COLOR0, 11=COLOR1)
+        # CP 0xac..0xaf = ARRAY_BASE for TEX0..TEX3
+        # CP 0xb0..0xbb / 0xbc..0xbf = ARRAY_STRIDE for the same slots
+        # (Reference: VideoCommon/CPMemory.h ARRAY_xxxx + dolphin
+        # OpcodeDecoder switch on cmd2.)
+        self.array_base = [0] * 16
+        self.array_stride = [0] * 16
 
     def on_cp(self, cmd: int, value: int):
         if cmd == 0x50:
@@ -184,6 +194,10 @@ class CPState:
             self.vtx_attr[cmd - 0x80][1] = value
         elif 0x90 <= cmd <= 0x97:
             self.vtx_attr[cmd - 0x90][2] = value
+        elif 0xa0 <= cmd <= 0xaf:
+            self.array_base[cmd - 0xa0] = value
+        elif 0xb0 <= cmd <= 0xbf:
+            self.array_stride[cmd - 0xb0] = value
 
     def vertex_size(self, vat: int) -> int:
         """Compute byte size of one vertex under the given VAT.
@@ -501,7 +515,12 @@ def main():
         #   0xc0,0xc2,...,0xde: TEV_COLOR_ENV stages 0..15 (even cmd = color env)
         #   0xc1,0xc3,...,0xdf: TEV_ALPHA_ENV stages 0..15 (odd cmd = alpha env)
         xf_texmtxinfo = [None] * 8       # XF 0x1040..0x1047
-        xf_tex_mtx = [[None]*12 for _ in range(8)]  # XF 0x000..0x05f (8 mats × 12 floats)
+        # XFMEM_POSMATRICES = 0x000..0x0FF (256 floats = 64 rows × 4 floats)
+        # MATINDEX values address into this: idx 30 = TEXMTX0 (row 30..32 =
+        # XF 0x078..0x083), idx 60 = "IDENTITY" slot (row 60..62 =
+        # XF 0x0F0..0x0FB).  My earlier "tex_mtx[0..7]" tracking at
+        # 0x000..0x05f was actually reading POSITION matrices.
+        xf_pos_area = [None] * 256       # XF 0x000..0x0FF as raw u32
         xf_dual_tex_mtx = [[None]*12 for _ in range(8)]  # XF 0x500..0x55f (post-trans matrices)
         xf_matindex_a = None             # XF 0x1018 (pos + tex0..tex3 mtx indices)
         xf_matindex_b = None             # XF 0x1019 (tex4..tex7 mtx indices)
@@ -530,15 +549,11 @@ def main():
                     value = struct.unpack(">I", data[word_i*4:(word_i+1)*4])[0]
                     if 0x1040 <= xf_addr <= 0x1047:
                         xf_texmtxinfo[xf_addr - 0x1040] = value
-                    elif 0x000 <= xf_addr <= 0x05f:
-                        # Tex matrices 0..7 (12 floats each)
-                        m = xf_addr // 12
-                        c = xf_addr - m * 12
-                        if m < 8:
-                            xf_tex_mtx[m][c] = value
-                            if args.trace_xf_tex_mtx and m == 0:
-                                fv = struct.unpack('>f', struct.pack('>I', value))[0]
-                                print(f"  [pre-draw#{draw_count+1}] XF write TEX_MTX[{m}][{c}] = 0x{value:08x} ({fv:.4f})")
+                    elif 0x000 <= xf_addr <= 0x0ff:
+                        xf_pos_area[xf_addr] = value
+                        if args.trace_xf_tex_mtx and 0xf0 <= xf_addr <= 0xfb:
+                            fv = struct.unpack('>f', struct.pack('>I', value))[0]
+                            print(f"  [pre-draw#{draw_count+1}] XF write IDENTITY-slot[{xf_addr-0xf0}] = 0x{value:08x} ({fv:.4f})")
                     elif 0x500 <= xf_addr <= 0x55f:
                         m = (xf_addr - 0x500) // 12
                         c = (xf_addr - 0x500) - m * 12
@@ -622,21 +637,29 @@ def main():
                         print(f"    XF MATINDEX_A=0x{v:08x}  pos={_mtxname(pos_idx)} tex0={_mtxname(tex0_idx)} tex1={_mtxname(tex1_idx)} tex2={_mtxname(tex2_idx)} tex3={_mtxname(tex3_idx)}")
                     else:
                         print(f"    XF MATINDEX_A=<not loaded yet>")
-                    # XF Tex matrix 0 (3 rows × 4 cols of floats; XF 0x00..0x0b)
-                    if any(x is not None for x in xf_tex_mtx[0]):
+                    # Decode the matrix actually used by tex0 from MATINDEX_A.
+                    # Matrix index N -> XF address N*4 (3 rows × 4 floats).
+                    def _show_mtx_at(label, base_addr):
                         rows = []
+                        any_loaded = False
                         for r in range(3):
                             cols = []
                             for c in range(4):
-                                w = xf_tex_mtx[0][r*4+c]
+                                w = xf_pos_area[base_addr + r*4 + c] if base_addr + r*4 + c < 256 else None
                                 if w is None:
                                     cols.append("<>")
                                 else:
+                                    any_loaded = True
                                     cols.append(f"{struct.unpack('>f', struct.pack('>I', w))[0]:.4f}")
                             rows.append("[" + " ".join(cols) + "]")
-                        print(f"    XF TEX_MTX[0] = " + " ".join(rows))
-                    else:
-                        print(f"    XF TEX_MTX[0] = <not loaded>")
+                        marker = "" if any_loaded else "  <NOT LOADED, hardware reads stale/zero data>"
+                        print(f"    XF {label} = " + " ".join(rows) + marker)
+                    # POS matrix used (matindex_a bits 0-5)
+                    if xf_matindex_a is not None:
+                        pos_idx = xf_matindex_a & 0x3f
+                        tex0_idx = (xf_matindex_a >> 6) & 0x3f
+                        _show_mtx_at(f"POS_MTX (idx={pos_idx})", pos_idx * 4)
+                        _show_mtx_at(f"TEX0_MTX (idx={tex0_idx})", tex0_idx * 4)
                     # TREF: only show stages that are referenced by an active TEV stage
                     print(f"    BP TREF (TEV_ORDER):")
                     for i, v in enumerate(bp_tev_order):
@@ -737,6 +760,16 @@ def main():
                     print(f"    CP vtx_desc_lo=0x{cp.vtx_desc_lo:08x}  vtx_desc_hi=0x{cp.vtx_desc_hi:08x}")
                     a, b, c = cp.vtx_attr[vat]
                     print(f"    CP vtx_attr[vat={vat}]: a=0x{a:08x} b=0x{b:08x} c=0x{c:08x}")
+                    # CP ARRAY_BASE/STRIDE indexing per CPMemory.h::CPArray:
+                    # 0=POS 1=NRM 2=COLOR0 3=COLOR1 4=TEX0 ... 11=TEX7.
+                    _slot_names = {0:"POS", 1:"NRM", 2:"COLOR0", 3:"COLOR1",
+                                   4:"TEX0", 5:"TEX1", 6:"TEX2", 7:"TEX3",
+                                   8:"TEX4", 9:"TEX5", 10:"TEX6", 11:"TEX7"}
+                    for si in range(12):
+                        b = cp.array_base[si]
+                        st = cp.array_stride[si]
+                        if b or st:
+                            print(f"    CP ARRAY[{_slot_names[si]}]: base=0x{b:08x} stride={st}")
                     # Per-vertex raw bytes (for INDEX modes these are the
                     # array indices we'd need to look up to get coords/UVs).
                     print(f"    vertex_data ({nverts} × {vsize}B):")
