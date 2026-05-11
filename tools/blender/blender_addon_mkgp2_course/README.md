@@ -79,6 +79,26 @@ vanilla bin dir (Riivolution の元 ISO dump 先) への上書きは preference
 2. Blender で **"Reload course modules"** クリック
 3. 再 import で挙動確認
 
+## マテリアルテクスチャの Blender preview (任意)
+
+`vis:` 経路は **Principled BSDF の Base Color 単色**でも export 時に 4×4 fallback
+texture を `_promote_vis_to_hsd._make_textured_mobj` が自動合成するので、
+何もしなくても in-game では色が出る。ただし **Blender viewport 上では BSDF Base Color
+のみ表示** で、in-game に焼かれる texture そのものは見えない。
+
+viewport で「焼かれる texture を直接見たい」場合は、`_bake_vis_textures.py` の
+`bake_vis_collection_materials(vis_collection, log_fn=print)` を呼ぶと
+全 material に 4×4 単色 PNG を Image Texture node として attach する (= viewport
+shading で texture preview 可能)。現状は **CLI / headless 経由のみ** で
+Sidebar button は未実装 (`tools/_blender_headless_promote.py` で promote 前に
+自動 bake する経路あり)。手動 bake が必要なら Blender python console で:
+
+```python
+import sys; sys.path.insert(0, r"<repo>/tools/blender/blender_addon_mkgp2_course")
+import _bake_vis_textures as b, bpy
+b.bake_vis_collection_materials(bpy.data.collections["vis:my_course"], log_fn=print)
+```
+
 ## 既知の制約
 
 - HSD pipeline は vendored `hsdraw` PyO3 binding に依存。Windows 用 `.pyd` は

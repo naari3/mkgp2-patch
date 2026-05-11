@@ -1201,19 +1201,42 @@ def _resolve_collision_pair_by_stem(stem):
 # ---------------------------------------------------------------------------
 
 class MKGP2_OT_NewCourse(Operator):
-    """Create an empty MKGP2 course collection.
+    """Create an empty MKGP2 course shell collection (collision / line / auto).
 
-    Filename custom properties default to `<name>.bin`, `<name>_line.bin`,
-    `<name>_Auto.bin`, `<name>_Auto_R.bin`. Edit the resulting collection's
-    custom properties to override individual filenames.
+    Generates `MKGP2_Course/<name>/` with custom properties for the
+    `<name>.bin` / `<name>_line.bin` / `<name>_Auto.bin` / `<name>_Auto_R.bin`
+    filenames. The collection is intended as the **container** for a
+    CollisionMesh + WallSegments + line Empty + auto-path mesh that the
+    MKGP2 collision / line / auto exporters will read.
+
+    This operator does **not** create the visual mesh side. Two parallel
+    workflows live in different collection prefixes:
+
+      * `vis:<name>` -- a user-authored Blender collection holding the
+        visual course mesh (Principled BSDF materials, ordinary mesh
+        geometry). Promoted from-scratch into a fresh `<name>.dat` by
+        File > Export > MKGP2 HSD (with the `vis:<name>` collection
+        active, no vanilla `.dat` is read).
+      * `mkgp2:<dat>` -- the result of File > Import > MKGP2 HSD on an
+        existing `.dat` (vanilla or previously exported). Re-export
+        round-trips through `_export_mkgp2_bundle` (scene.json + mesh
+        bundle) for vanilla-edit workflows.
+
+    For a brand-new course you typically (1) call this operator, (2) build
+    `vis:<name>` by hand or via File > Import on an existing course you
+    want to start from, then (3) Full Course Export bundles the .bin
+    triplet from `MKGP2_Course/<name>/` and the .dat from `vis:<name>`.
     """
     bl_idname = "scene.mkgp2_new_course"
     bl_label = "New MKGP2 Course"
+    bl_description = ("Create an empty course shell (MKGP2_Course/<name>/) "
+                      "with collision/line/auto bin filename properties. "
+                      "vis:<name> for visual mesh editing must be created separately.")
     bl_options = {'UNDO'}
 
     name: StringProperty(
         name="Course name",
-        description="Becomes the collection name and the default filename stem",
+        description="Becomes the collection name and the default filename stem (without .bin)",
         default="my_course",
     )
 

@@ -156,12 +156,10 @@
 
 リポジトリ: `~/src/github.com/naari3/hsdraw/` (vendored: `tools/blender/blender_addon_mkgp2_course/vendor/<platform>/hsdraw/hsdraw.pyd`)
 
-- [ ] **A-1: 配列 API refactor (per-vertex → numpy bulk)**
-  - 現状: Python 側 mesh export は `add_position(x,y,z)` / `add_color(r,g,b,a)` を頂点ごとにループしている
-  - 目標: `from_arrays(positions=np.ndarray, colors=np.ndarray, ...)` 1 発に置き換え
-  - 動機: PyO3 + rust-numpy で zero-copy 化、hsdraw 本来の Rust 速度メリットを Python 経路でも享受
-  - 影響: `_export_mkgp2_bundle._build_pobj_for_mesh` / `_promote_vis_to_hsd._build_pobj_for_slot` の 2 箇所が numpy ベースに simplify される
-  - 詳細: memory `project_hsdraw_array_api_refactor.md`
+- [x] **A-1: 配列 API refactor (per-vertex → numpy bulk) — 完了 (2026-05-11)**
+  - hsdraw 上流で `MeshBuilder.from_arrays(positions=, triangles=, normals=, colors=, uvs=)` 実装、両経路 (promote + bundle) 置換済 (commit `f330543`)
+  - byte-equivalent + 1.34〜4.8x speedup を確認
+  - 詳細: memory `project_hsdraw_array_api_refactor.md` / `project_hsdraw_2026_05_11_refactor_pass.md`
 - [ ] **A-2: API consistency (JObj.dobj() getter, DObj.mobj 戻り値統一)**
   - `JObj` には `.child` / `.next` getter があるが `.dobj()` getter が無い (= mkgp2-patch 側が `as_struct().references()` 経由で offset 0x10 を手で引いている)
   - `DObj.mobj` は HsdStruct を raw で返すのに `DObj.next` は DObj wrapper を返す → 呼び側で `MObj.from_struct(s)` する必要があり inconsistent
@@ -205,10 +203,10 @@
   - 走らせるだけなら不要だが、何の path なのかは未解明 (= mini-map? AI 補助 line? camera path?)
   - PathManager 系ではないことだけ判明
   - 解明したら skill (`mkgp2-new-course` の「最低構成」表) と `mkgp2_course_layout_system.md` (Dolphin docs 側) を更新
-- [ ] **D-2: hsdraw `MObj.alloc_textured(color, w, h, raw)` 一発 helper (機能拡張ではなく純粋 refactor)**
-  - 確認済: D-2 は **機能拡張ではない**。任意の Blender Image Texture node 経由のテクスチャ表示は B-3 完了時点で既に動作 (`test_addon_bundle_add_mesh.py:v4` で 8x8 全 orange round-trip 検証 PASS、commit `f1afeda`)
-  - 残る価値: ローカル `_blender_material.make_textured_mobj` ~30 行 (= MObj/TObj/Image を手で配線、ALPHA_MAT 抜けバグの跡 `project_alloc_unlit_color_alpha_mat.md`) を hsdraw 上流の 1-call API (`MObj.alloc_textured(color_rgba, image_w, image_h, image_data)` で `render_flags=0x2011 / TObj+Image 自動配線` を内蔵) に置き換えれば ~5 行に縮む
-  - A-1/A-2 と一緒に hsdraw upstream PR で扱うのが筋
+- [x] **D-2: hsdraw `MObj.alloc_textured(material, image, **kwargs)` 一発 helper — 完了 (2026-05-11)**
+  - hsdraw handoff #5 で上流実装、addon 側で採用 (commit `cd981fc`)
+  - `_blender_material.make_textured_mobj` を ~25 行の explicit MObj/TObj/Image 配線から 1-call alloc_textured + 13 kwargs 明示に置換、byte-equivalent 検証済
+  - 詳細: memory `project_hsdraw_2026_05_11_refactor_pass.md`
 - [x] **format 選択 UI (Material EnumProperty `mkgp2_target_format`) — 完了 (2026-05-09)**
   - 当初は D-2 の関連 task として書いていたが、独立して完結したので別項目に切り出し
   - 採用: 3 択 (RGBA8 default / CMP / RGB5A3)、Material 単位で per-Material 設定、N panel `MKGP2 > Texture format` から
