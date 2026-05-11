@@ -1363,12 +1363,27 @@ kmBranch(0x8009c238, FUN_8009c238_Hook);
 // Group A: stride 0x8a pointer arrays -------------------------------------
 
 // FUN_8009c3c4: stride 0x8a pointer array, base 0x8040b930, no variantIdx.
+//
+// 戻り値は PathManager_UpdateAll @ 0x8003b6c4 で
+//   pfVar4[0]=p1.x, pfVar4[2]=p1.z, pfVar4[3]=p2.x, pfVar4[5]=p2.z
+// として Math_Segment2DIntersect に渡される 2D 線分 (= ラップ判定線)。
+// カスタム cup の round が `finish_line:` を yaml で持っていれば
+// kCustomFinishLine_<base>[6] (= float[6]) のアドレスを返す。指定が
+// 無ければ vanilla cupId=0 (test_course) alias 経由で返すが、my_course
+// 等の独自レイアウトでは座標系が違いラップ判定が崩れるため必ず指定すべき。
 extern "C" const char* FUN_8009c3c4_Hook() {
     EnsureDBATWidened();
     int cupId        = (int)*(unsigned int*)0x806cf108u;
     int longRound    = *(int*)0x806d1268u;
     int reverseRound = *(int*)0x806d1270u;
-    if (IsCustomCup((unsigned int)cupId)) cupId = 0;
+    if (IsCustomCup((unsigned int)cupId)) {
+        const struct CustomRound* round =
+            FindCustomRound((unsigned int)cupId, (int)g_roundIndex);
+        if (round != 0 && round->finishLine != 0) {
+            return (const char*)round->finishLine;
+        }
+        cupId = 0;  // fallback: cupId=0 alias (test_course finish line)
+    }
     if (cupId < 0) return 0;
     if (longRound < 0) return 0;
     return ((const char**)0x8040b930u)[reverseRound * 0x1c + longRound * 0x45 + cupId * 0x8a];

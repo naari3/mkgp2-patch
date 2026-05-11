@@ -163,6 +163,36 @@ def normalize_start_positions(field: str, value):
     return out
 
 
+def normalize_finish_line(field: str, value):
+    """Per-round finish_line: 2 points [[x,y,z],[x,y,z]] in HSD world coords.
+    Returns ((x1,y1,z1),(x2,y2,z2)) or None if absent.
+
+    PathManager_UpdateAll @ 0x8003b6c4 が FUN_8009c3c4 から取り出す pointer の
+    指す struct と同じ layout (6 floats, XZ のみ参照、Y は無視) で
+    Math_Segment2DIntersect に渡される。"""
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != 2:
+        raise SystemExit(
+            f"error: {field} must be 2-point list [[x,y,z],[x,y,z]], "
+            f"got {value!r}"
+        )
+    pts = []
+    for k, p in enumerate(value):
+        if not isinstance(p, list) or len(p) != 3 or \
+           not all(isinstance(c, (int, float)) for c in p):
+            raise SystemExit(
+                f"error: {field}[{k}] must be [x, y, z] of numbers, got {p!r}"
+            )
+        pts.append((float(p[0]), float(p[1]), float(p[2])))
+    if pts[0][0] == pts[1][0] and pts[0][2] == pts[1][2]:
+        raise SystemExit(
+            f"error: {field}: the two endpoints have identical XZ; "
+            "Math_Segment2DIntersect early-exits 0 on degenerate segments"
+        )
+    return tuple(pts)
+
+
 def normalize_base_speed_per_round(field: str, value):
     """Per-round base_speed: cc -> {lo, hi}. Returns 3-entry list of
     (lo, hi) tuples in cc order (50cc, 100cc, 150cc), or None if absent."""
@@ -324,9 +354,13 @@ def main() -> int:
             start_positions = normalize_start_positions(
                 f"{r_loc}.start_positions", rentry.get("start_positions")
             )
+            finish_line = normalize_finish_line(
+                f"{r_loc}.finish_line", rentry.get("finish_line")
+            )
 
             norm_rounds.append({
                 "start_positions": start_positions,
+                "finish_line":     finish_line,
                 "ident":   r_ident,
                 "course_model_id":   cm_id,
                 "course_model_file": cm["file"],
@@ -531,6 +565,27 @@ def main() -> int:
             L.append("};")
     L.append("")
 
+    # --- Per-round finish line arrays (2 points × 3 floats) ---
+    L.append("// Per-round lap-judgment line (HSD world coords, p1+p2 each XYZ).")
+    L.append("// 渡される先 (PathManager_UpdateAll @ 0x8003b6c4) は floats[0/2/3/5]")
+    L.append("// = (x1, z1, x2, z2) のみ参照、Y は無視される。NULL のままだと")
+    L.append("// FUN_8009c3c4_Hook が cupId=0 alias = test_course の判定線を")
+    L.append("// 返してしまうので、独自レイアウトの custom course は必ず指定する.")
+    for nc in norm_cups:
+        for nr in nc["rounds"]:
+            fl = nr["finish_line"]
+            if not fl:
+                continue
+            base = f"{nc['cup_id']}_{nr['ident']}"
+            L.append(f"static const float kCustomFinishLine_{base}[6] = {{")
+            for k, (x, y, z) in enumerate(fl):
+                tag = "p1" if k == 0 else "p2"
+                L.append(
+                    f"    {x!r}f, {y!r}f, {z!r}f,  // {tag} (X={x!r}, Y={y!r}, Z={z!r})"
+                )
+            L.append("};")
+    L.append("")
+
     # --- CustomRound struct ---
     L.append("// CustomRound = full per-round resource + setting bundle.")
     L.append("// All getter hooks read these via (cupId, round_index) lookup.")
@@ -546,6 +601,7 @@ def main() -> int:
     L.append("    const struct AILapBonusRule* lapBonusRules;  // NULL = vanilla")
     L.append("    const struct CupSpeedEntry*  baseSpeed;      // NULL = vanilla; [3]")
     L.append("    const float (*startPositions)[3];            // NULL = vanilla; [8] HSD world (x,y,z)")
+    L.append("    const float* finishLine;                     // NULL = vanilla alias; [6] = (p1.xyz, p2.xyz)")
     L.append("};")
     L.append("")
 
@@ -556,13 +612,14 @@ def main() -> int:
         for nr in nc["rounds"]:
             base = f"{nc['cup_id']}_{nr['ident']}"
             sp_sym = f"kCustomStartPos_{base}" if nr["start_positions"] else "0"
+            fl_sym = f"kCustomFinishLine_{base}" if nr["finish_line"] else "0"
             L.append(
                 f"    {{ kCustomCollision_{base}, kCustomLineBin_{base}, "
                 f"kCustomCourseModel_{base}, "
                 f"{nr['laps']}, {nr['time']!r}f, {nr['bonus']!r}f, "
                 f"{nr['bgm_id']}u, {nr['bgm_id']}u, "
-                f"{nr['ai_rules_sym']}, {nr['base_speed_sym']}, {sp_sym} }},  "
-                f"// {nr['ident']}"
+                f"{nr['ai_rules_sym']}, {nr['base_speed_sym']}, {sp_sym}, "
+                f"{fl_sym} }},  // {nr['ident']}"
             )
         L.append("};")
     L.append("")

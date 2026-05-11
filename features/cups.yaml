@@ -30,6 +30,8 @@
 #       ai_lap_bonus_rules: AI 速度補正ルール (詳細は cup_page3 docs 参照)
 #       base_speed:         AI base speed table (per ccClass)
 #       base_speed_rounds:  per-round 上書き (任意、cc_class 配列内 8 entry)
+#       finish_line:        ラップ判定線 [[x1,y1,z1],[x2,y2,z2]] HSD world 座標
+#                           (任意; 省略時は cupId=0 alias = test_course の線)
 #
 # Voice announcer queue は cup_page3 が共有 SFX を維持するので test_cup でも
 # 「3-2-1 GO!」等は鳴る。
@@ -173,6 +175,25 @@ cups:
           - [1300.0, 0.5,  -50.0]
           - [1300.0, 0.5,   50.0]
           - [1300.0, 0.5,  150.0]
+        # ラップ判定線 (HSD world). PathManager_UpdateAll @ 0x8003b6c4 が
+        # FUN_8009c3c4 から取り出す struct と同じ形 = 2 点 (x, y, z) で、
+        # XZ 平面の line segment として Math_Segment2DIntersect に渡される。
+        # カートの prev→cur position 線分がこの線分を交差した瞬間に lap が
+        # 確定する (= currentLap += 1)。
+        #
+        # 省略時は cup_page3.cpp の FUN_8009c3c4_Hook が cupId=0 alias 経由で
+        # vanilla test_course の判定線を返してしまい、my_course の path 形状
+        # と一致しないため lap が誤判定される (= 1 周しても順位が反映されず
+        # 急に最下位扱いになる挙動 / 2026-05-11 観測)。
+        #
+        # 配置の指針: lap path (line.bin variant 6) の wp 0 を法線方向に
+        # 横切るように、コース幅より少し広い水平線分を置く。my_course の wp 0
+        # は (1500, 11, 0)、wp 1 が (1492.78, 11, -225.44) で path tangent は
+        # ほぼ -Z 方向 → 法線は X 軸沿い。Z=0 で X=[1200,1800] の線分にすれば
+        # 1 周して wp 63→wp 0→wp 1 を通過する瞬間 (Z>0 → Z<0) で交差する。
+        finish_line:
+          - [1200.0, 0.0, 0.0]   # p1 (X=1200, Z=0)
+          - [1800.0, 0.0, 0.0]   # p2 (X=1800, Z=0)
 
       # round4 未定義 → round-select で locked、thumb は round 0/2 の duplicate
       # (Yoshi vanilla layout に合わせる)。round 4 を完全独立にしたい場合は
