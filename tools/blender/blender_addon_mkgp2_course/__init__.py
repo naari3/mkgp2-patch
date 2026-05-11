@@ -2061,7 +2061,14 @@ def _draw_arrows_callback():
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     shader.bind()
 
-    head_size = 0.7  # blender units; tune via WM if it becomes annoying
+    # Arrow head size adapts to segment length so the same code reads
+    # well at MKGP2 scale (waypoints ~50-500 units apart) without
+    # disappearing on short segments. Lower bound keeps tight knots
+    # readable; upper bound prevents huge straight-line arrows from
+    # dominating the viewport.
+    HEAD_FRAC = 0.30  # = arrow head occupies 30% of segment length
+    HEAD_MIN = 8.0    # blender units
+    HEAD_MAX = 60.0   # blender units
     coords = []
     for o in _iter_arrow_targets():
         mw = o.matrix_world
@@ -2082,6 +2089,7 @@ def _draw_arrows_callback():
             if perp.length < 1e-4:
                 perp = Vector((1.0, 0.0, 0.0))
             perp.normalize()
+            head_size = max(HEAD_MIN, min(HEAD_MAX, seg_len * HEAD_FRAC))
             tip = b
             base = b - d * head_size
             l = base + perp * (head_size * 0.4)
@@ -2092,7 +2100,7 @@ def _draw_arrows_callback():
         return
 
     if bpy.app.version >= (4, 0, 0):
-        gpu.state.line_width_set(1.5)
+        gpu.state.line_width_set(3.0)
     batch = batch_for_shader(shader, 'LINES', {"pos": coords})
     shader.uniform_float("color", (1.0, 0.85, 0.1, 1.0))
     batch.draw(shader)
