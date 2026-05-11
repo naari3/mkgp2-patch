@@ -226,13 +226,28 @@ def promote_vis_to_dat(
     # instance, etc.) are baked at export without requiring `Apply
     # Modifier` on the source.  This matches the convention used by
     # Blender's built-in FBX / glTF / OBJ / USD exporters.
+    #
+    # Object-type filter: every Blender data type that supports
+    # ``Object.to_mesh()`` -- i.e. MESH plus the non-mesh types whose
+    # depsgraph evaluation produces a Mesh (FONT/TextCurve, CURVE,
+    # SURFACE, META).  Restricting to MESH alone silently dropped Text
+    # objects, NURBS curves with bevel, metaball clusters, etc., even
+    # though they all evaluate to renderable geometry the moment you
+    # save / export from Blender's built-in exporters.  to_mesh() may
+    # still return None for the degenerate case (empty curve, font with
+    # no body), in which case we skip with a log line rather than
+    # raise.
+    _MESHABLE_TYPES = ('MESH', 'FONT', 'CURVE', 'SURFACE', 'META')
     depsgraph = bpy.context.evaluated_depsgraph_get()
     dobjs = []
     total_verts = 0
     total_tris = 0
-    for obj in [o for o in vis_collection.objects if o.type == 'MESH']:
+    for obj in [o for o in vis_collection.objects if o.type in _MESHABLE_TYPES]:
         eval_obj = obj.evaluated_get(depsgraph)
         eval_me = eval_obj.to_mesh()
+        if eval_me is None:
+            log(f"  skip {obj.name}: to_mesh() returned None (empty curve / no body?)")
+            continue
         try:
             slots = eval_obj.material_slots
             for slot_idx, slot in enumerate(slots):

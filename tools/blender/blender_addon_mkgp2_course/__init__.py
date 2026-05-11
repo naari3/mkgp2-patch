@@ -133,6 +133,29 @@ def _import_or_reload(name):
 def reload_modules():
     """Resolve source path, prepend it to sys.path, (re)import importer/exporter modules.
 
+    Two scopes get reloaded here:
+
+      1. The standalone per-asset scripts that live in ``tools/blender/``
+         (``blender_import_hsd`` and siblings). These are imported by
+         path, never as a Python package; importlib.reload picks up edits
+         after a save.
+
+      2. The addon's own private submodules (``_promote_vis_to_hsd``,
+         ``_export_mkgp2_bundle``, ``_blender_material``,
+         ``_bake_vis_textures``). These are package-internal -- referenced
+         from operator class methods via ``from . import _x`` -- so they
+         silently kept their last-imported version when only scope (1)
+         was reloaded. Editing one of them then required a full Blender
+         restart (or addon disable→enable cycle) for changes to take
+         effect from the operator path. Direct module calls via Python
+         picked up the edit immediately, which produced confusing
+         "operator does X but direct call does Y" reports.
+
+    Reloading the submodules in place is safe here because the operator
+    classes look them up by attribute (``mod.<name>``) at call time, not
+    at register time -- the freshly-loaded module slots into sys.modules
+    under the same package qualname.
+
     Returns (ok: bool, error: Optional[str]).
     """
     global hsd_imp, col_imp, line_imp, auto_imp
@@ -145,6 +168,7 @@ def reload_modules():
         sys.path.insert(0, path)
 
     try:
+        # Standalone per-asset scripts (under tools/blender/).
         hsd_imp = _import_or_reload("blender_import_hsd")
         col_imp = _import_or_reload("blender_import_collision")
         line_imp = _import_or_reload("blender_import_line")
@@ -153,6 +177,21 @@ def reload_modules():
         auto_exp = _import_or_reload("blender_export_auto")
         col_exp = _import_or_reload("blender_export_collision")
         validate = _import_or_reload("blender_validate")
+
+        # Addon-internal submodules (= package members of this addon).
+        # Reload _blender_material first because the other submodules
+        # import it (`from . import _blender_material`); reloading it
+        # last would leave the importers holding a stale reference to
+        # the pre-reload module object.
+        for sub in (
+            "_blender_material",
+            "_promote_vis_to_hsd",
+            "_export_mkgp2_bundle",
+            "_bake_vis_textures",
+        ):
+            qual = f"{__name__}.{sub}"
+            if qual in sys.modules:
+                importlib.reload(sys.modules[qual])
     except Exception as ex:
         return False, f"import failed (path={path}): {ex}"
     return True, None
