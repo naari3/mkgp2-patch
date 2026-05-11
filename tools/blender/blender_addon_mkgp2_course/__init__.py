@@ -2045,9 +2045,18 @@ _draw_handles = {"arrows": None, "waypoints": None}
 
 
 def _iter_arrow_targets():
-    """Yield (object, world_matrix) pairs whose edges should grow arrows."""
+    """Yield (object, world_matrix) pairs whose edges should grow arrows.
+
+    visible_get() walks the full visibility chain (eye toggle / Disable
+    in Viewports / collection hide / view-layer exclude), so hiding any
+    of those removes the arrows + waypoint labels for that object. The
+    older hide_get() check covered only the outliner eye toggle and
+    silently kept drawing for objects hidden via 'Disable in Viewports'
+    or a hidden parent collection."""
     for o in bpy.context.scene.objects:
-        if o.hide_get() or o.type != 'MESH':
+        if o.type != 'MESH':
+            continue
+        if not o.visible_get():
             continue
         if o.name.startswith("Auto_") or o.name.startswith("LineVariant_"):
             yield o
