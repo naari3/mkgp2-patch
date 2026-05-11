@@ -201,8 +201,39 @@ cups:
           - [1200.0, 0.0, 0.0]   # p1 (X=1200, Z=0)
           - [1800.0, 0.0, 0.0]   # p2 (X=1800, Z=0)
 
-      # round4 未定義 → round-select で locked、thumb は round 0/2 の duplicate
-      # (Yoshi vanilla layout に合わせる)。round 4 を完全独立にしたい場合は
-      # clFlowRound_Init の preload list 拡張が要るかもしれない
-      # (sub_index*16 + 12 offset)。round_select.cpp の PreloadInjectIds は
-      # 既に 8 slot 全部 preload しているので、3 round までは直接動く想定。
+      - id: round4
+        # 8 の字 (中央交差) + ヒル+バレーの草原コース。設計詳細は
+        # tasks/todo_meadow_loop.md。北 loop = hill (Y up to ~80)、
+        # 南 loop = valley (Y down to ~-40)、中央 crossing は Y=0。
+        # 周長 ~4400 unit、3 lap で ~150 sec、150cc 想定で 30〜45 sec/lap。
+        course_model: meadow_loop
+        collision:    meadow_loop.bin
+        line_bin:     meadow_loop_line.bin
+        laps:  3
+        time:  180.0
+        bonus: 30.0
+        bgm_l: bgm01_demoL.dsp
+        bgm_r: bgm01_demoR.dsp
+        thumb:       images/test_cup_course4_thumb.png
+        thumb_road:  images/test_cup_course4_thumb_road.png
+        ai_lap_bonus_rules: *shared_ai_lap_bonus_rules
+        base_speed:         *shared_base_speed
+        # 中央 crossing 南側 (Z=400-700) に 4×2 並べる。lap path wp 0 を
+        # finish_line (Z=300) として、全 8 体を Z>300 の同じ側に揃える
+        # (= position cap pitfall 回避、project_position_cap_finish_line_straddle.md)。
+        # X は road 中心線 X=0 を挟んで ±70 の 2 列。
+        start_positions:
+          - [ 70.0, 0.5, 400.0]
+          - [-70.0, 0.5, 400.0]
+          - [ 70.0, 0.5, 500.0]
+          - [-70.0, 0.5, 500.0]
+          - [ 70.0, 0.5, 600.0]
+          - [-70.0, 0.5, 600.0]
+          - [ 70.0, 0.5, 700.0]
+          - [-70.0, 0.5, 700.0]
+        # 中央 crossing の南側 (Z=300) に幅 300 の水平線分。lap path wp 0 は
+        # 中央 crossing 南直後 (= 南 loop に進入する手前) に置くので、
+        # 1 周ごとに wp 63→wp 0 の transition でこの線を XZ で交差する。
+        finish_line:
+          - [-150.0, 0.0, 300.0]
+          - [ 150.0, 0.0, 300.0]

@@ -34,3 +34,12 @@ course_models:
     file: my_course.dat
     # joints 省略は test_course と同じ理由 (cupId=17 の joint_extend は no-op)。
     joints: []
+
+  meadow_loop:
+    # 8 の字 (中央交差) コース、草原テーマ、ヒル+バレーの勾配付き。
+    # 中央 crossing は同一 (X,Z) 1 枚 (collision の 2D heightfield 制約
+    # = project_collision_heightmap_obstacle_recipe.md に従う)。
+    # 北 loop が hill (Y up to ~80)、南 loop が valley (Y down to ~-40)、
+    # crossing は Y=0 平面。周長 ~4400 unit、3 lap で ~50 sec/lap (150cc 想定)。
+    file: meadow_loop.dat
+    joints: []
