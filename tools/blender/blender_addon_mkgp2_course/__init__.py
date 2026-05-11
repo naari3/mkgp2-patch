@@ -2460,14 +2460,10 @@ class MKGP2_PT_CoursePanel(Panel):
         # it into MKGP2_OT_ExportHSD's dispatcher, so users now activate
         # the vis: collection and click "HSD bundle (.dat)" below.
 
-        # ---- Vanilla course (short/long pair, retained for round-trip) --
-        box = layout.box()
-        box.label(text="Vanilla course (short+long pair):", icon='WORLD')
-        col = box.column(align=True)
-        col.operator("import_scene.mkgp2_full_course", text="Import HSD + col + line + auto")
-        col.operator("export_scene.mkgp2_full_course", text="Export all collision / line / auto")
-        col.operator("scene.mkgp2_promote_vanilla",
-                     text="Promote to course collection(s)", icon='OUTLINER_COLLECTION')
+        # ---- Vanilla course / Per-asset import / Per-asset export ----
+        # 3 sub-panels (DEFAULT_CLOSED) below; see the dedicated Panel
+        # classes (MKGP2_PT_VanillaCoursePanel / MKGP2_PT_PerAssetImportPanel
+        # / MKGP2_PT_PerAssetExportPanel). Daily workflow stays at the top.
 
         # ---- Visualization (T1b) -------------------------------------
         box = layout.box()
@@ -2504,27 +2500,75 @@ class MKGP2_PT_CoursePanel(Panel):
         row.operator("mkgp2.add_origin_marker",
                      text="Origin marker", icon='EMPTY_AXIS')
 
-        # ---- Per-asset (escape hatch) ----------------------------------
-        box = layout.box()
-        box.label(text="Per-asset import:", icon='IMPORT')
-        col = box.column(align=True)
+        layout.separator()
+        layout.operator("mkgp2.reload_modules", text="Reload course modules", icon='FILE_REFRESH')
+        layout.label(text=f"src: {_resolve_source_path()}", icon='FILE_FOLDER')
+
+
+class MKGP2_PT_VanillaCoursePanel(Panel):
+    """Vanilla course full-set import/export and one-time wrapper into
+    a custom course collection. Collapsed by default -- typical use is
+    a single round of vanilla import early in a project's life."""
+    bl_label = "Vanilla course (short+long pair)"
+    bl_idname = "MKGP2_PT_vanilla_course_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'MKGP2'
+    bl_parent_id = "MKGP2_PT_course_panel"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column(align=True)
+        col.operator("import_scene.mkgp2_full_course", text="Import HSD + col + line + auto")
+        col.operator("export_scene.mkgp2_full_course", text="Export all collision / line / auto")
+        col.operator("scene.mkgp2_promote_vanilla",
+                     text="Promote to course collection(s)", icon='OUTLINER_COLLECTION')
+
+
+class MKGP2_PT_PerAssetImportPanel(Panel):
+    """Per-asset import escape hatch. Same operators are duplicated in
+    File > Import > MKGP2 ... -- the Sidebar mirror is kept collapsed by
+    default since the typical workflow uses Custom course or the File
+    menu."""
+    bl_label = "Per-asset import"
+    bl_idname = "MKGP2_PT_per_asset_import_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'MKGP2'
+    bl_parent_id = "MKGP2_PT_course_panel"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column(align=True)
         col.operator("import_scene.mkgp2_hsd_json", text="HSD scene.json")
         col.operator("import_mesh.mkgp2_collision_bin", text="Collision (.bin)")
         col.operator("import_mesh.mkgp2_line_bin", text="Line (.bin)")
         col.operator("import_mesh.mkgp2_auto_bin", text="Auto path (.bin)")
 
-        box = layout.box()
-        box.label(text="Per-asset export:", icon='EXPORT')
-        col = box.column(align=True)
+
+class MKGP2_PT_PerAssetExportPanel(Panel):
+    """Per-asset export escape hatch. Active target > Export this and
+    Custom course > Export selected course cover most needs; this panel
+    is kept collapsed by default for cases where the user wants to write
+    a single .bin without re-emitting the full set."""
+    bl_label = "Per-asset export"
+    bl_idname = "MKGP2_PT_per_asset_export_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'MKGP2'
+    bl_parent_id = "MKGP2_PT_course_panel"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column(align=True)
         col.operator("export_mesh.mkgp2_collision_bin", text="Collision (.bin)")
         col.operator("export_scene.mkgp2_line_bin", text="Line (.bin)")
         col.operator("export_scene.mkgp2_auto_bin", text="Auto path (.bin)")
         col.operator("export_scene.mkgp2_hsd_json",
                      text="HSD bundle (.dat)")
-
-        layout.separator()
-        layout.operator("mkgp2.reload_modules", text="Reload course modules", icon='FILE_REFRESH')
-        layout.label(text=f"src: {_resolve_source_path()}", icon='FILE_FOLDER')
 
 
 class MKGP2_PT_HsdAliasPanel(Panel):
@@ -2906,6 +2950,9 @@ CLASSES = (
     MKGP2_OT_AddCourseRoot,
     MKGP2_OT_ReloadModules,
     MKGP2_PT_CoursePanel,
+    MKGP2_PT_VanillaCoursePanel,
+    MKGP2_PT_PerAssetImportPanel,
+    MKGP2_PT_PerAssetExportPanel,
     MKGP2_PT_HsdAliasPanel,
     MKGP2_PT_TextureFormatPanel,
 )
