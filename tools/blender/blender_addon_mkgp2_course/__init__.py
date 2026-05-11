@@ -2066,9 +2066,9 @@ def _draw_arrows_callback():
     # disappearing on short segments. Lower bound keeps tight knots
     # readable; upper bound prevents huge straight-line arrows from
     # dominating the viewport.
-    HEAD_FRAC = 0.30  # = arrow head occupies 30% of segment length
-    HEAD_MIN = 8.0    # blender units
-    HEAD_MAX = 60.0   # blender units
+    HEAD_FRAC = 0.12  # = arrow head occupies ~12% of segment length
+    HEAD_MIN = 3.0    # blender units
+    HEAD_MAX = 18.0   # blender units
     coords = []
     for o in _iter_arrow_targets():
         mw = o.matrix_world
@@ -2100,7 +2100,7 @@ def _draw_arrows_callback():
         return
 
     if bpy.app.version >= (4, 0, 0):
-        gpu.state.line_width_set(3.0)
+        gpu.state.line_width_set(2.0)
     batch = batch_for_shader(shader, 'LINES', {"pos": coords})
     shader.uniform_float("color", (1.0, 0.85, 0.1, 1.0))
     batch.draw(shader)
