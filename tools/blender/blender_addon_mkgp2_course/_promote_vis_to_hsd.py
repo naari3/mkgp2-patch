@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import bpy
+
 from . import _blender_material as bm
 
 # Re-export the helpers under their historical underscore names so any
@@ -31,10 +33,20 @@ _bsdf_image_texture_node = bm.bsdf_image_texture
 _blender_to_hsd = bm.blender_to_hsd
 
 
-def _build_pobj_for_slot(obj, slot_idx, hsdraw):
+def _build_pobj_for_slot(obj, me, slot_idx, hsdraw):
     """Build a POBJ from `obj`'s polygons whose material_index ==
     slot_idx.  Returns (Pobj, color_tuple, image_tuple, vert_count, tri_count) or
     None if the slot has no faces.
+
+    Parameters:
+      obj  -- Blender Object (caller passes the depsgraph-evaluated copy
+              so material slots stay consistent with `me`).  Used for
+              material_slots and name only -- geometry comes from `me`.
+      me   -- Mesh to read geometry/UV from.  Usually
+              ``eval_obj.to_mesh()``; passing the evaluated form means
+              modifier stacks (Subdivision Surface, Solidify, Geometry
+              Nodes scatter etc.) get baked transparently at export
+              time without `Apply Modifier` on the source.
 
     `image_tuple` is (width, height, rgba_bytes) for the BSDF Image
     Texture if present, else None (caller will fall back to a synthetic
@@ -52,7 +64,6 @@ def _build_pobj_for_slot(obj, slot_idx, hsdraw):
     場合は polygon の corner index に基づく fallback (tri/quad は
     natural unit square mapping、n-gon は (0,0) flat)。
     """
-    me = obj.data
     poly_idxs = [i for i, p in enumerate(me.polygons)
                  if p.material_index == slot_idx]
     if not poly_idxs:
@@ -210,43 +221,55 @@ def promote_vis_to_dat(
         raise RuntimeError("could not derive a course stem from the collection name")
 
     # ---- Build the DObj chain ------------------------------------------
+    # Read geometry through the depsgraph so modifier stacks (Subdivision
+    # Surface, Solidify, Mirror, Array, Bevel, Geometry Nodes scatter /
+    # instance, etc.) are baked at export without requiring `Apply
+    # Modifier` on the source.  This matches the convention used by
+    # Blender's built-in FBX / glTF / OBJ / USD exporters.
+    depsgraph = bpy.context.evaluated_depsgraph_get()
     dobjs = []
     total_verts = 0
     total_tris = 0
     for obj in [o for o in vis_collection.objects if o.type == 'MESH']:
-        for slot_idx, slot in enumerate(obj.material_slots):
-            r = _build_pobj_for_slot(obj, slot_idx, hsdraw)
-            if r is None:
-                continue
-            pobj, color, img_tuple, nv, nt = r
-            mat_name = slot.material.name if slot.material else "?"
-            tex_info = (f"img={img_tuple[0]}x{img_tuple[1]}"
-                        if img_tuple else "synth-4x4")
-            fmt_name, fmt_int = bm.material_target_format(slot.material)
-            log(f"  built {obj.name}.{mat_name}: {nv}v / {nt}t "
-                f"color={color} {tex_info} format={fmt_name}")
-            mobj = _make_textured_mobj(
-                hsdraw, color, img_tuple, target_format=fmt_int)
-            d = hsdraw.DObj.alloc()
-            d.set_mobj(mobj)
-            d.set_pobj(pobj)
-            dobjs.append(d)
-            total_verts += nv
-            total_tris += nt
-        if not obj.material_slots:
-            r = _build_pobj_for_slot(obj, 0, hsdraw)
-            if r is not None:
+        eval_obj = obj.evaluated_get(depsgraph)
+        eval_me = eval_obj.to_mesh()
+        try:
+            slots = eval_obj.material_slots
+            for slot_idx, slot in enumerate(slots):
+                r = _build_pobj_for_slot(eval_obj, eval_me, slot_idx, hsdraw)
+                if r is None:
+                    continue
                 pobj, color, img_tuple, nv, nt = r
-                log(f"  built {obj.name}.<no-slot>: {nv}v / {nt}t (default grey)")
-                # No material -> no per-material format prop; default RGBA8.
+                mat_name = slot.material.name if slot.material else "?"
+                tex_info = (f"img={img_tuple[0]}x{img_tuple[1]}"
+                            if img_tuple else "synth-4x4")
+                fmt_name, fmt_int = bm.material_target_format(slot.material)
+                log(f"  built {obj.name}.{mat_name}: {nv}v / {nt}t "
+                    f"color={color} {tex_info} format={fmt_name}")
                 mobj = _make_textured_mobj(
-                    hsdraw, (200, 200, 200, 255), img_tuple)
+                    hsdraw, color, img_tuple, target_format=fmt_int)
                 d = hsdraw.DObj.alloc()
                 d.set_mobj(mobj)
                 d.set_pobj(pobj)
                 dobjs.append(d)
                 total_verts += nv
                 total_tris += nt
+            if not slots:
+                r = _build_pobj_for_slot(eval_obj, eval_me, 0, hsdraw)
+                if r is not None:
+                    pobj, color, img_tuple, nv, nt = r
+                    log(f"  built {obj.name}.<no-slot>: {nv}v / {nt}t (default grey)")
+                    # No material -> no per-material format prop; default RGBA8.
+                    mobj = _make_textured_mobj(
+                        hsdraw, (200, 200, 200, 255), img_tuple)
+                    d = hsdraw.DObj.alloc()
+                    d.set_mobj(mobj)
+                    d.set_pobj(pobj)
+                    dobjs.append(d)
+                    total_verts += nv
+                    total_tris += nt
+        finally:
+            eval_obj.to_mesh_clear()
 
     if not dobjs:
         raise RuntimeError(

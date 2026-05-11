@@ -168,64 +168,84 @@ class ExportWallSegment:
 
 
 def collect_triangles(obj):
-    """Read triangles from Blender mesh object."""
+    """Read triangles from Blender mesh object.
+
+    Geometry is read through the depsgraph so modifier stacks (Subdivision
+    Surface, Solidify, Mirror, Array, Geometry Nodes scatter etc.) are
+    baked into the exported collision without `Apply Modifier`.
+    """
     # Ensure edit mode changes are committed to mesh data
     bpy.context.view_layer.objects.active = obj
     if obj.mode == 'EDIT':
         bpy.ops.object.mode_set(mode='OBJECT')
 
-    bm = bmesh.new()
-    bm.from_mesh(obj.data)
-    bmesh.ops.triangulate(bm, faces=bm.faces[:])
-    bm.faces.ensure_lookup_table()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_obj = obj.evaluated_get(depsgraph)
+    eval_me = eval_obj.to_mesh()
+    try:
+        bm = bmesh.new()
+        bm.from_mesh(eval_me)
+        bmesh.ops.triangulate(bm, faces=bm.faces[:])
+        bm.faces.ensure_lookup_table()
 
-    flags_layer = bm.faces.layers.int.get("collision_flags")
-    emask_layer = bm.faces.layers.int.get("edge_mask")
+        flags_layer = bm.faces.layers.int.get("collision_flags")
+        emask_layer = bm.faces.layers.int.get("edge_mask")
 
-    triangles = []
-    for face in bm.faces:
-        if len(face.verts) != 3:
-            continue
-        verts_blender = [v.co for v in face.verts]
-        verts_game = [blender_to_game(v.x, v.y, v.z) for v in verts_blender]
+        triangles = []
+        for face in bm.faces:
+            if len(face.verts) != 3:
+                continue
+            verts_blender = [v.co for v in face.verts]
+            verts_game = [blender_to_game(v.x, v.y, v.z) for v in verts_blender]
 
-        flags = 0
-        edge_mask = 0
-        if flags_layer:
-            flags = signed_to_unsigned(face[flags_layer])
-        if emask_layer:
-            edge_mask = signed_to_unsigned(face[emask_layer])
+            flags = 0
+            edge_mask = 0
+            if flags_layer:
+                flags = signed_to_unsigned(face[flags_layer])
+            if emask_layer:
+                edge_mask = signed_to_unsigned(face[emask_layer])
 
-        tri = ExportTriangle(verts_game[0], verts_game[1], verts_game[2],
-                             flags=flags, edge_mask=edge_mask)
-        triangles.append(tri)
+            tri = ExportTriangle(verts_game[0], verts_game[1], verts_game[2],
+                                 flags=flags, edge_mask=edge_mask)
+            triangles.append(tri)
 
-    # Debug: show Y range (game height) to verify edits are captured
-    if triangles:
-        all_y = []
-        for t in triangles:
-            all_y.extend([t.v0[1], t.v1[1], t.v2[1]])
-        print(f"  Game Y range: {min(all_y):.2f} to {max(all_y):.2f}")
-        # Show first 3 triangles
-        for i, t in enumerate(triangles[:3]):
-            print(f"  tri[{i}] v0={t.v0} v1={t.v1} v2={t.v2}")
+        # Debug: show Y range (game height) to verify edits are captured
+        if triangles:
+            all_y = []
+            for t in triangles:
+                all_y.extend([t.v0[1], t.v1[1], t.v2[1]])
+            print(f"  Game Y range: {min(all_y):.2f} to {max(all_y):.2f}")
+            # Show first 3 triangles
+            for i, t in enumerate(triangles[:3]):
+                print(f"  tri[{i}] v0={t.v0} v1={t.v1} v2={t.v2}")
 
-    bm.free()
-    return triangles
+        bm.free()
+        return triangles
+    finally:
+        eval_obj.to_mesh_clear()
 
 
 def collect_wall_segments(obj):
-    """Read wall segments from Blender edge mesh."""
-    mesh = obj.data
-    segments = []
-    for edge in mesh.edges:
-        v0 = mesh.vertices[edge.vertices[0]].co
-        v1 = mesh.vertices[edge.vertices[1]].co
-        g0 = blender_to_game(v0.x, v0.y, v0.z)
-        g1 = blender_to_game(v1.x, v1.y, v1.z)
-        seg = ExportWallSegment(g0[0], g0[2], g1[0], g1[2])
-        segments.append(seg)
-    return segments
+    """Read wall segments from Blender edge mesh.
+
+    Geometry is read through the depsgraph so modifier stacks are baked
+    transparently at export.
+    """
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_obj = obj.evaluated_get(depsgraph)
+    mesh = eval_obj.to_mesh()
+    try:
+        segments = []
+        for edge in mesh.edges:
+            v0 = mesh.vertices[edge.vertices[0]].co
+            v1 = mesh.vertices[edge.vertices[1]].co
+            g0 = blender_to_game(v0.x, v0.y, v0.z)
+            g1 = blender_to_game(v1.x, v1.y, v1.z)
+            seg = ExportWallSegment(g0[0], g0[2], g1[0], g1[2])
+            segments.append(seg)
+        return segments
+    finally:
+        eval_obj.to_mesh_clear()
 
 
 def build_grid(triangles, wall_segments, grid_width, grid_height,

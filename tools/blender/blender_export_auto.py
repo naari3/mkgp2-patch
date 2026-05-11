@@ -70,28 +70,37 @@ def blender_to_game(x, y, z):
 
 def collect_records(obj):
     """Walk obj's mesh vertices in index order. Return list of
-    (type_or_flags, gameX, gameY, gameZ)."""
+    (type_or_flags, gameX, gameY, gameZ).
+
+    Geometry is read through the depsgraph so modifier stacks /
+    Geometry Nodes outputs are baked at export without `Apply Modifier`.
+    """
     if obj is None or obj.type != 'MESH':
         raise RuntimeError("Select a mesh object before exporting")
 
-    mesh = obj.data
-    bm = bmesh.new()
-    bm.from_mesh(mesh)
-    bm.verts.ensure_lookup_table()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_obj = obj.evaluated_get(depsgraph)
+    mesh = eval_obj.to_mesh()
+    try:
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        bm.verts.ensure_lookup_table()
 
-    type_layer = bm.verts.layers.int.get("wp_type")
+        type_layer = bm.verts.layers.int.get("wp_type")
 
-    records = []
-    world_matrix = obj.matrix_world
-    for v in bm.verts:
-        rec_type = v[type_layer] if type_layer else 0
-        # Apply world matrix so the exporter respects object transform.
-        world_co = world_matrix @ v.co
-        gx, gy, gz = blender_to_game(world_co.x, world_co.y, world_co.z)
-        records.append((rec_type, gx, gy, gz))
+        records = []
+        world_matrix = obj.matrix_world
+        for v in bm.verts:
+            rec_type = v[type_layer] if type_layer else 0
+            # Apply world matrix so the exporter respects object transform.
+            world_co = world_matrix @ v.co
+            gx, gy, gz = blender_to_game(world_co.x, world_co.y, world_co.z)
+            records.append((rec_type, gx, gy, gz))
 
-    bm.free()
-    return records
+        bm.free()
+        return records
+    finally:
+        eval_obj.to_mesh_clear()
 
 
 def write_auto_bin(path, records, terminator_count=None):

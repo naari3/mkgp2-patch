@@ -135,28 +135,41 @@ def find_root_and_variants(obj):
 
 def collect_variant_waypoints(obj):
     """Walk obj's mesh vertices in index order. Return list of
-    (type_or_flags, gameX, gameY, gameZ)."""
-    mesh = obj.data
-    bm = bmesh.new()
-    bm.from_mesh(mesh)
-    bm.verts.ensure_lookup_table()
+    (type_or_flags, gameX, gameY, gameZ).
 
-    type_layer = bm.verts.layers.int.get("wp_type")
+    Geometry is read through the depsgraph so modifier stacks (Array on a
+    curve for waypoint scatter, Geometry Nodes to lay out waypoints
+    along splines, etc.) are baked at export without `Apply Modifier`.
+    The bmesh custom int layer ``wp_type`` is preserved across depsgraph
+    eval for plain modifiers; Geometry Nodes outputs need to write
+    ``wp_type`` as a named attribute for it to survive.
+    """
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_obj = obj.evaluated_get(depsgraph)
+    mesh = eval_obj.to_mesh()
+    try:
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        bm.verts.ensure_lookup_table()
 
-    waypoints = []
-    world_matrix = obj.matrix_world
-    for v in bm.verts:
-        if type_layer is not None:
-            raw = v[type_layer]
-            wp_type = struct.unpack(">I", struct.pack(">i", raw))[0]
-        else:
-            wp_type = 1  # vanilla _line.bin uses 1
-        world_co = world_matrix @ v.co
-        gx, gy, gz = blender_to_game(world_co.x, world_co.y, world_co.z)
-        waypoints.append((wp_type, gx, gy, gz))
+        type_layer = bm.verts.layers.int.get("wp_type")
 
-    bm.free()
-    return waypoints
+        waypoints = []
+        world_matrix = obj.matrix_world
+        for v in bm.verts:
+            if type_layer is not None:
+                raw = v[type_layer]
+                wp_type = struct.unpack(">I", struct.pack(">i", raw))[0]
+            else:
+                wp_type = 1  # vanilla _line.bin uses 1
+            world_co = world_matrix @ v.co
+            gx, gy, gz = blender_to_game(world_co.x, world_co.y, world_co.z)
+            waypoints.append((wp_type, gx, gy, gz))
+
+        bm.free()
+        return waypoints
+    finally:
+        eval_obj.to_mesh_clear()
 
 
 def write_line_bin(path, variants, trailing):
