@@ -316,7 +316,9 @@ dotnet-script tools/hsd/hsd_dump_jobjdescs.csx -- features/cup_page3/files/my_co
 
 ### 1. 永久 retry hang
 
-`FileLoader_LoadBin` がリトライループで戻らない。原因: `GetRoadDatFilenameAltHook` (0x8009c5d0) が collision .bin を返していた (= 古い実装) → HSDArchive header check sizeMismatch。**`GetCollisionBinFilenameHook` という名前は嘘**で、実体は **road .dat 2nd getter** (`PTR_s_test_course_road_dat_8040b920` rodata symbol が証拠)。`round->courseModelFile` を返すこと。
+`FileLoader_LoadBin` がリトライループで戻らない。`GetRoadDatFilenameAltHook` (0x8009c5d0) が collision .bin を返していると HSDArchive header check で sizeMismatch して hang する。`round->courseModelFile` を返すこと。
+
+> このフックの命名の歴史 (旧名 `GetCollisionBinFilenameHook` だった等) は LESSONS.md A 節。
 
 ### 2. レースに入れるが画面真っ黒
 
@@ -358,15 +360,11 @@ MOBJ#0 RenderFlags=CONSTANT, TEX0, ALPHA_MAT (0x2011) TexRef=True
 
 ファイルサイズは vert dedup を捨てる + texture 追加 影響で ~5x (96 KB → 490 KB)。
 
-> **どの要素が決定打かは未切り分け**: 動作する状態を得るまでに `ALPHA_MAT 追加` / `LIGHTING bit 抜き` / `4x4 texture 付与` / `OPA|ROOT_OPA` / `CULLBACK` を同時に導入した。どれか 1 つだけでも崩すと点滅再発する可能性は十分あるので、**上記の組み合わせを 1 セットで保つ**ことを推奨。再発したら逆順に 1 つずつ外して切り分け。
->
-> なお過去のデバッグでは「LIGHTING bit を抜けば消える」「ALPHA_MAT を立てれば消える」など何度か単独原因仮説を立てたが、いずれも build.sh を走らせ忘れていて user 検証では古い描画が見えていただけだった (= 仮説検証になっていなかった)。詳細は pitfall #7。
->
-> なお **4x4 texture は Blender 側で何もしなくても `_promote_vis_to_hsd._make_textured_mobj` の fallback で自動合成される** (BSDF Base Color から RGBA を取って 4x4 RGBA8 を `hsdraw.gx_encode` する; `_promote_vis_to_hsd.py:165-171`)。`_bake_vis_textures.py` を使うのは mesh ごとに per-pixel pattern が必要な場合だけ。
+**運用ルール**: 上記 5 要素 (POBJ attr / POBJ.flags / JObj.flags / MObj.RenderFlags / 4×4 texture) は **1 セットで保つ**。どれか 1 つを崩したときの挙動は単独 validate していないので再発する可能性が高い。崩す必要が出たら逆順に 1 つずつ外して bisect する。
 
-恒久対応は hsdraw 本体に textured mesh preset を追加 (現状 `MObj.alloc_unlit_color` は textureless 向けで不十分):
-- `MObj.alloc_textured(color, image_w, image_h, image_data)` 的な one-shot allocator
-- RenderFlags 強制 0x2011、TObj+Image 自動配線
+**4×4 texture の自動生成**: Blender 側で texture 設定しなくても `_promote_vis_to_hsd._make_textured_mobj` の fallback で自動合成される (BSDF Base Color から RGBA を取って 4×4 RGBA8 を `hsdraw.gx_encode` する; `_promote_vis_to_hsd.py:165-171`)。`_bake_vis_textures.py` を使うのは mesh ごとに per-pixel pattern が必要な場合だけ。
+
+> 5 要素を「同時導入」した経緯と単独切り分け不能な背景は LESSONS.md B 節。
 
 ### 7. asset を編集したのに「変わらない」ように見える
 
@@ -393,22 +391,13 @@ ls -la features/cup_page3/files/my_course.dat \
 # 両方の size と mtime が一致してなかったら build.sh 漏れ
 ```
 
-**過去の事例**: `_promote_vis_to_hsd.py` の MObj/JObj flags を 5 通り試して全部「変わらない」と user に報告された。実は 5 通り全部 build.sh を走らせ忘れていて、Dolphin は 1 番最初の export を見続けていた。最終的に build.sh を入れたら 1 発で点滅が消え、5 ラウンドの仮説検証が全部無駄になった。
+> 過去 5 ラウンドの仮説検証が build.sh 忘却で無駄になった事例と AI 向けルールは LESSONS.md D 節。
 
-**ルール**: user が「ビルドはいるの？」と聞いてきたら **即「いる」と答える**。`features/*/files/` か `*.cpp` か `gen_*_header.py` か `externals.txt` か yaml を 1 つでも触っていたら必ず build。「いらない」と答えていいのは、git diff が完全に空のときだけ。
+### 8. alias root は `<stem>_joint` 1 個で十分
 
-### 8. 「scene_data.RootJoint を直接 repoint しただけで描画されない」
+CourseJointLoadHook が name-based resolve するため、scene_data alone で描画される。
 
-それは **古い解析** (`mkgp2_custom_course_modding.md` 由来)。joint_extend 入れる前の話で、現在は CourseJointLoadHook が name-based resolve するため scene_data 側 alone で描画される。alias root は `<stem>_joint` 1 個でも OK。
-
----
-
-## やらなくていい (= 過去の誤作業)
-
-- ~~base .dat (MR_highway_short_A.dat) を借用して空 alias root 12 個を残す~~  → **不要**。inu パターンは「scene_data.RootJoint repoint だけだと描画されない」古い時代の workaround。今は flags をセットすれば 1 alias root で動く。
-- ~~`course_models.yaml.joints` を埋める~~ → **不要**。joint_extend は別 yaml を見る。
-- ~~`course_joints.yaml` に my_course (cupId=17) を追加~~ → **variant 切替えしない限り不要**。GetJointNameTableHook が cupId=0 にフォールバックして MR_highway 18 alias を引きにくるが、my_course.dat にそれら alias は無いので state[*]=0 で全 skip = no-op で通過する。
-- ~~Blender bundle の `mkgp2_joint_aliases` UI で alias を追加~~ → vis: 経路ではこの UI は通らない。固定 1 alias `<name>_joint` で十分。
+> 旧資料 `mkgp2_custom_course_modding.md` には「scene_data.RootJoint を直接 repoint しただけでは描画されない」とあるが、これは joint_extend 導入前の前提。古い解析を参照する際の注意点は LESSONS.md E 節。やらなくていい誤作業 4 項のリストは LESSONS.md F 節。
 
 ---
 
@@ -430,7 +419,8 @@ ls -la features/cup_page3/files/my_course.dat \
 | `tools/hsd/hsd_dump.csx` | .dat 構造 dump (HSDLib 経由) |
 | `tools/hsd/hsd_dump_jobjdescs.csx` | scene_data.JOBJDescs と RootJoint flags を簡易 dump |
 | `tools/hsd/hsd_compare_root_jobj.csx` | 2 ファイル間の root JObj diff (TRS/flags/DObj/POBJ 詳細) |
-| `~/src/github.com/dolphin-emu/dolphin/mkgp2docs/mkgp2_course_joint_loader.md` | 古い解析 (joint_extend 入れる前の前提)、現状とズレあり (上記「ハマり 6」参照) |
+| `.claude/skills/mkgp2-new-course/LESSONS.md` | 過去の誤作業 / 検証失敗 / 命名の歴史 / 古い解析参照時の注意 (本スキルから退避した教訓集) |
+| `~/src/github.com/dolphin-emu/dolphin/mkgp2docs/mkgp2_course_joint_loader.md` | 古い解析 (joint_extend 入れる前の前提)、現状とズレあり (LESSONS.md E 節参照) |
 | `~/src/github.com/dolphin-emu/dolphin/mkgp2docs/hsd_to_blender_visual_pipeline.md` | HSD -> Blender 視覚参照 pipeline (mkgp2: bundle 経路の解説) |
 | `~/src/github.com/dolphin-emu/dolphin/mkgp2docs/mkgp2_course_layout_system.md` | course filename getter 4 系統 + cupId stride 解析 |
 
