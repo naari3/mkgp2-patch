@@ -2421,6 +2421,12 @@ def _detect_export_target(obj):
 # ---------------------------------------------------------------------------
 
 class MKGP2_PT_CoursePanel(Panel):
+    """Container panel. All actual content lives in the sub-panels below
+    so each section is independently collapsible (Active target / Custom
+    course / Visualization / Vanilla course / Per-asset import / Per-asset
+    export / HSD aliases / Texture format / Reload course modules). The
+    top three are DEFAULT_OPEN (= daily workflow), the rest are
+    DEFAULT_CLOSED."""
     bl_label = "MKGP2 Course"
     bl_idname = "MKGP2_PT_course_panel"
     bl_space_type = 'VIEW_3D'
@@ -2428,25 +2434,49 @@ class MKGP2_PT_CoursePanel(Panel):
     bl_category = 'MKGP2'
 
     def draw(self, context):
-        layout = self.layout
+        # Empty -- everything is in the sub-panels below.
+        pass
 
-        # ---- Active target hint (top of panel for visibility) ----------
+
+class MKGP2_PT_ActiveTargetPanel(Panel):
+    """Context-aware 'Export this' button driven by the active object.
+    Mirrors what selection / active layer collection implies and hands off
+    to the right per-asset exporter so the user doesn't have to think
+    about which sub-panel to open."""
+    bl_label = "Active target"
+    bl_idname = "MKGP2_PT_active_target_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'MKGP2'
+    bl_parent_id = "MKGP2_PT_course_panel"
+
+    def draw(self, context):
+        layout = self.layout
         obj = context.active_object
         hint, op_id, icon = _detect_export_target(obj)
-        box = layout.box()
-        box.label(text="Active target:", icon='RESTRICT_SELECT_OFF')
-        box.label(text=hint, icon=icon)
-        row = box.row()
+        layout.label(text=hint, icon=icon)
+        row = layout.row()
         row.enabled = op_id is not None
         if op_id:
             row.operator(op_id, text="Export this", icon='EXPORT')
         else:
             row.operator("export_mesh.mkgp2_collision_bin", text="Export this", icon='EXPORT')
 
-        # ---- Custom course (1 file-set per course, default workflow) ----
-        box = layout.box()
-        box.label(text="Custom course:", icon='OUTLINER_COLLECTION')
-        col = box.column(align=True)
+
+class MKGP2_PT_CustomCoursePanel(Panel):
+    """Custom course operators -- 1 file-set per course is the default
+    workflow. New / Export selected course are the two daily buttons;
+    the rest cover one-time setup or rare resume-existing-project cases."""
+    bl_label = "Custom course"
+    bl_idname = "MKGP2_PT_custom_course_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'MKGP2'
+    bl_parent_id = "MKGP2_PT_course_panel"
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column(align=True)
         col.operator("scene.mkgp2_new_course", text="New (empty)")
         col.operator("scene.mkgp2_import_course", text="Import file-set")
         col.operator("scene.mkgp2_export_course", text="Export selected course")
@@ -2456,21 +2486,22 @@ class MKGP2_PT_CoursePanel(Panel):
                      icon='EMPTY_AXIS')
         col.operator("scene.mkgp2_attach_hsd", text="Attach HSD bundle",
                      icon='LINK_BLEND')
-        # vis: → .dat used to live behind a dedicated button; M3b folded
-        # it into MKGP2_OT_ExportHSD's dispatcher, so users now activate
-        # the vis: collection and click "HSD bundle (.dat)" below.
 
-        # ---- Vanilla course / Per-asset import / Per-asset export ----
-        # 3 sub-panels (DEFAULT_CLOSED) below; see the dedicated Panel
-        # classes (MKGP2_PT_VanillaCoursePanel / MKGP2_PT_PerAssetImportPanel
-        # / MKGP2_PT_PerAssetExportPanel). Daily workflow stays at the top.
 
-        # ---- Visualization (T1b) -------------------------------------
-        box = layout.box()
-        box.label(text="Visualization:", icon='HIDE_OFF')
+class MKGP2_PT_VisualizationPanel(Panel):
+    """Viewport overlay toggles + line variant isolation + one-shot
+    collision/origin helpers. Used during line / collision editing."""
+    bl_label = "Visualization"
+    bl_idname = "MKGP2_PT_visualization_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'MKGP2'
+    bl_parent_id = "MKGP2_PT_course_panel"
+
+    def draw(self, context):
+        layout = self.layout
         wm = context.window_manager
-        # Overlay toggles
-        row = box.row(align=True)
+        row = layout.row(align=True)
         row.prop(wm, "mkgp2_show_arrows", toggle=True,
                  text="Direction arrows", icon='FORWARD')
         row.prop(wm, "mkgp2_show_waypoint_ids", toggle=True,
@@ -2480,7 +2511,7 @@ class MKGP2_PT_CoursePanel(Panel):
         line_root = _resolve_line_root(context)
         if line_root is not None:
             n = len(_line_variants_under(line_root))
-            sub = box.column(align=True)
+            sub = layout.column(align=True)
             sub.label(text=f"Line variants ({n}) under '{line_root.name}':",
                       icon='TRACKING')
             grid = sub.grid_flow(row_major=True, columns=4, align=True)
@@ -2494,15 +2525,11 @@ class MKGP2_PT_CoursePanel(Panel):
             row.operator("mkgp2.hide_all_variants", text="Hide all",
                          icon='HIDE_ON')
         # One-shot collision color helper + origin marker
-        row = box.row(align=True)
+        row = layout.row(align=True)
         row.operator("mkgp2.show_collision_material",
                      text="Color collision", icon='COLOR')
         row.operator("mkgp2.add_origin_marker",
                      text="Origin marker", icon='EMPTY_AXIS')
-
-        layout.separator()
-        layout.operator("mkgp2.reload_modules", text="Reload course modules", icon='FILE_REFRESH')
-        layout.label(text=f"src: {_resolve_source_path()}", icon='FILE_FOLDER')
 
 
 class MKGP2_PT_VanillaCoursePanel(Panel):
@@ -2682,6 +2709,25 @@ class MKGP2_PT_TextureFormatPanel(Panel):
                 text="Non-aligned images silently fall back to RGBA8.")
         layout.label(text="Default: RGBA8 (lossless, ~8x larger than CMP)",
                      icon='QUESTION')
+
+
+class MKGP2_PT_DevPanel(Panel):
+    """Module hot-reload helper + addon source path indicator. Always
+    last in the sub-panel chain (= sits at the bottom of the MKGP2
+    Sidebar)."""
+    bl_label = "Reload course modules"
+    bl_idname = "MKGP2_PT_dev_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'MKGP2'
+    bl_parent_id = "MKGP2_PT_course_panel"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("mkgp2.reload_modules",
+                        text="Reload course modules",
+                        icon='FILE_REFRESH')
+        layout.label(text=f"src: {_resolve_source_path()}", icon='FILE_FOLDER')
 
 
 # ---------------------------------------------------------------------------
@@ -2950,11 +2996,15 @@ CLASSES = (
     MKGP2_OT_AddCourseRoot,
     MKGP2_OT_ReloadModules,
     MKGP2_PT_CoursePanel,
+    MKGP2_PT_ActiveTargetPanel,
+    MKGP2_PT_CustomCoursePanel,
+    MKGP2_PT_VisualizationPanel,
     MKGP2_PT_VanillaCoursePanel,
     MKGP2_PT_PerAssetImportPanel,
     MKGP2_PT_PerAssetExportPanel,
     MKGP2_PT_HsdAliasPanel,
     MKGP2_PT_TextureFormatPanel,
+    MKGP2_PT_DevPanel,
 )
 
 
