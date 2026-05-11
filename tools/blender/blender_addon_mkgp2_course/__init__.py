@@ -2712,15 +2712,24 @@ class MKGP2_PT_TextureFormatPanel(Panel):
 
 
 class MKGP2_PT_DevPanel(Panel):
-    """Module hot-reload helper + addon source path indicator. Always
-    last in the sub-panel chain (= sits at the bottom of the MKGP2
-    Sidebar)."""
+    """Module hot-reload helper + addon source path indicator. Hidden
+    unless the user enables 'Developer mode' in addon preferences --
+    end users editing courses don't need this; it's only useful when
+    iterating on the standalone tools/blender/blender_*.py scripts
+    without restarting Blender."""
     bl_label = "Reload course modules"
     bl_idname = "MKGP2_PT_dev_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'MKGP2'
     bl_parent_id = "MKGP2_PT_course_panel"
+
+    @classmethod
+    def poll(cls, context):
+        prefs = context.preferences.addons.get(__name__)
+        if prefs is None:
+            return False
+        return getattr(prefs.preferences, "developer_mode", False)
 
     def draw(self, context):
         layout = self.layout
@@ -2774,6 +2783,18 @@ class MKGP2AddonPreferences(AddonPreferences):
         default="",
     )
 
+    developer_mode: BoolProperty(
+        name="Developer mode",
+        description=(
+            "Show developer-only UI in the Sidebar. Currently this just "
+            "exposes 'Reload course modules', a hot-reload helper for "
+            "iterating on the standalone tools/blender/blender_*.py "
+            "scripts without restarting Blender. End users editing "
+            "courses do not need this."
+        ),
+        default=False,
+    )
+
     # (M3b removed `hsd_writer_backend`: there's only one writer path now,
     # the in-process `hsdraw` extension; the CSX/HSDLib detour is gone
     # from the operator's execute path. Subsequent retirement of csx from
@@ -2811,6 +2832,9 @@ class MKGP2AddonPreferences(AddonPreferences):
             col.label(text="  hsdraw vendored: no -- export operator will "
                           "refuse until the wheel is installed",
                       icon='ERROR')
+        col.separator()
+        col.label(text="Developer:")
+        col.prop(self, "developer_mode")
         layout.operator("mkgp2.reload_modules", icon='FILE_REFRESH')
 
 
