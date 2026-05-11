@@ -2057,7 +2057,6 @@ def _draw_arrows_callback():
     import gpu
     from gpu_extras.batch import batch_for_shader
     from mathutils import Vector
-    from bpy_extras.view3d_utils import location_3d_to_region_2d
 
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     shader.bind()
@@ -2070,18 +2069,6 @@ def _draw_arrows_callback():
     HEAD_FRAC = 0.12  # = arrow head occupies ~12% of segment length
     HEAD_MIN = 3.0    # blender units
     HEAD_MAX = 18.0   # blender units
-
-    # Cull arrows whose tip is off-screen (= behind the camera or
-    # outside the viewport rectangle). Keeps a small margin so arrows
-    # that are partially clipped still render fully.
-    region = bpy.context.region
-    rv3d = bpy.context.region_data
-    cull_margin = 16  # px
-    rx_min = -cull_margin
-    rx_max = (region.width if region else 0) + cull_margin
-    ry_min = -cull_margin
-    ry_max = (region.height if region else 0) + cull_margin
-
     coords = []
     for o in _iter_arrow_targets():
         mw = o.matrix_world
@@ -2095,15 +2082,6 @@ def _draw_arrows_callback():
             seg_len = d.length
             if seg_len < 1e-4:
                 continue
-            # Cull off-screen arrows: project tip to screen space,
-            # skip if behind camera (screen=None) or outside region.
-            if region is not None and rv3d is not None:
-                screen = location_3d_to_region_2d(region, rv3d, b)
-                if screen is None:
-                    continue
-                if (screen.x < rx_min or screen.x > rx_max or
-                        screen.y < ry_min or screen.y > ry_max):
-                    continue
             d.normalize()
             # Pick a perpendicular for the arrow head (project away from Z
             # so head sits in the horizontal plane like the path).
