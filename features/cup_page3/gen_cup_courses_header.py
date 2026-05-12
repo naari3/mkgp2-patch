@@ -163,6 +163,33 @@ def normalize_start_positions(field: str, value):
     return out
 
 
+def normalize_start_yaw(field: str, value):
+    """Per-round start_yaw: scalar in **degrees**, applied to all karts.
+    Returns float or None.
+
+    GetCourseStartYawHook (cup_page3.cpp 0x8009c634) が返す yaw 値で、
+    RaceInit -> CarObject_Init -> KartMovement_Init を経て KartMovement+0x1C8
+    に保存され、`DOUBLE_806d96f0 (= π/180) * yaw` でラジアンに変換されて
+    Y 軸回転行列を組む。つまり game 側の保存単位は **度**。
+
+    回転行列 row0 = [cos, *, -sin, *], row2 = [sin, *, cos, *] を kart の
+    local forward (+Z) に適用すると world forward = (-sin, 0, cos):
+        yaw =   0° → +Z (south, minimap で下)
+        yaw =  90° → -X (west)
+        yaw = 180° → -Z (north, minimap で上)
+        yaw = 270° → +X (east)
+    つまり「西向きスタート」(meadow_loop wp0 の -X tangent) は yaw=90°。
+    vanilla test_course は 1000.0 = 280° (= ~ENE) を返す。
+    """
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)):
+        raise SystemExit(
+            f"error: {field} must be a number (degrees), got {value!r}"
+        )
+    return float(value)
+
+
 def normalize_finish_line(field: str, value):
     """Per-round finish_line: 2 points [[x,y,z],[x,y,z]] in HSD world coords.
     Returns ((x1,y1,z1),(x2,y2,z2)) or None if absent.
@@ -357,10 +384,14 @@ def main() -> int:
             finish_line = normalize_finish_line(
                 f"{r_loc}.finish_line", rentry.get("finish_line")
             )
+            start_yaw = normalize_start_yaw(
+                f"{r_loc}.start_yaw", rentry.get("start_yaw")
+            )
 
             norm_rounds.append({
                 "start_positions": start_positions,
                 "finish_line":     finish_line,
+                "start_yaw":       start_yaw,
                 "ident":   r_ident,
                 "course_model_id":   cm_id,
                 "course_model_file": cm["file"],
@@ -586,6 +617,25 @@ def main() -> int:
             L.append("};")
     L.append("")
 
+    # --- Per-round start yaw scalars ---
+    L.append("// Per-round start yaw (DEGREES, single float per round).")
+    L.append("// 全 kart slot 共通の初期向き。KartMovement+0x1C8 raw, *(π/180) で")
+    L.append("// 内部ラジアン化。convention: 0° = +Z (south), 90° = -X (west),")
+    L.append("// 180° = -Z (north), 270° = +X (east).")
+    L.append("// Reverse Challenge では +π (= 180°相当) されて反対向きになる。")
+    L.append("// 省略時は NULL ポインタ = GetCourseStartYawHook が vanilla alias path")
+    L.append("// (cupId=0 = test_course の 1000.0° = 280°) に fallback。コース path の")
+    L.append("// wp 0 tangent と一致させないと cars がコース外を向いて発進する。")
+    for nc in norm_cups:
+        for nr in nc["rounds"]:
+            if nr["start_yaw"] is None:
+                continue
+            base = f"{nc['cup_id']}_{nr['ident']}"
+            L.append(
+                f"static const float kCustomStartYaw_{base} = {nr['start_yaw']!r}f;"
+            )
+    L.append("")
+
     # --- CustomRound struct ---
     L.append("// CustomRound = full per-round resource + setting bundle.")
     L.append("// All getter hooks read these via (cupId, round_index) lookup.")
@@ -602,6 +652,7 @@ def main() -> int:
     L.append("    const struct CupSpeedEntry*  baseSpeed;      // NULL = vanilla; [3]")
     L.append("    const float (*startPositions)[3];            // NULL = vanilla; [8] HSD world (x,y,z)")
     L.append("    const float* finishLine;                     // NULL = vanilla alias; [6] = (p1.xyz, p2.xyz)")
+    L.append("    const float* startYaw;                       // NULL = vanilla alias; single degree scalar (*(π/180) in KartMovement_Init)")
     L.append("};")
     L.append("")
 
@@ -613,13 +664,14 @@ def main() -> int:
             base = f"{nc['cup_id']}_{nr['ident']}"
             sp_sym = f"kCustomStartPos_{base}" if nr["start_positions"] else "0"
             fl_sym = f"kCustomFinishLine_{base}" if nr["finish_line"] else "0"
+            sy_sym = f"&kCustomStartYaw_{base}" if nr["start_yaw"] is not None else "0"
             L.append(
                 f"    {{ kCustomCollision_{base}, kCustomLineBin_{base}, "
                 f"kCustomCourseModel_{base}, "
                 f"{nr['laps']}, {nr['time']!r}f, {nr['bonus']!r}f, "
                 f"{nr['bgm_id']}u, {nr['bgm_id']}u, "
                 f"{nr['ai_rules_sym']}, {nr['base_speed_sym']}, {sp_sym}, "
-                f"{fl_sym} }},  // {nr['ident']}"
+                f"{fl_sym}, {sy_sym} }},  // {nr['ident']}"
             )
         L.append("};")
     L.append("")

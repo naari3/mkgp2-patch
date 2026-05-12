@@ -1582,11 +1582,29 @@ kmBranch(0x8009c4bc, GetCourseObjectTableHook);
 
 // GetCourseStartYaw: base 0x8040b938, reverse yes, variant no. Float return.
 // Fallback is FLOAT_806d4790 (the "missing context" default yaw).
+//
+// 注意: 返り値は **度** (degrees)。consumer の KartMovement_Init @ 0x8019e20c が
+// `DOUBLE_806d96f0 (= π/180) * raw_yaw` でラジアンに変換して Y 軸回転行列を組む。
+// vanilla 0x8040b938 (cupId=0) は 1000.0 = 280° (= ~ENE) で test_course slot は
+// もともと dev leftover の garbage。
+//
+// Custom cup: round->startYaw が設定されていれば度値をそのまま返す。NULL の
+// ときは vanilla alias path (cupId=0 = test_course の 1000.0°) に fallback する。
+// wp 0 tangent との不一致でカートがコース外を向いて発進する事を防ぐため、
+// 独自レイアウトの custom course は必ず yaml に start_yaw を書くこと。
 extern "C" float GetCourseStartYawHook() {
     EnsureDBATWidened();
     int cupId        = (int)*(unsigned int*)0x806cf108u;
     int longRound    = *(int*)0x806d1268u;
     int reverseRound = *(int*)0x806d1270u;
+
+    int roundIdx = (int)g_roundIndex;
+    const struct CustomRound* round =
+        FindCustomRound((unsigned int)cupId, roundIdx);
+    if (round != 0 && round->startYaw != 0) {
+        return *(round->startYaw);
+    }
+
     if (IsCustomCup((unsigned int)cupId)) cupId = 0;
     if (cupId < 0) return *(float*)0x806d4790u;
     if (longRound < 0) return *(float*)0x806d4790u;
