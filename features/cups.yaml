@@ -202,38 +202,56 @@ cups:
           - [1800.0, 0.0, 0.0]   # p2 (X=1800, Z=0)
 
       - id: round4
-        # 8 の字 (中央交差) + ヒル+バレーの草原コース。設計詳細は
-        # tasks/todo_meadow_loop.md。北 loop = hill (Y up to ~80)、
-        # 南 loop = valley (Y down to ~-40)、中央 crossing は Y=0。
-        # 周長 ~4400 unit、3 lap で ~150 sec、150cc 想定で 30〜45 sec/lap。
+        # meadow_loop: vis:meadow_loop を ExportHSD で吐いた完全独立 .dat。
+        # 形状は北 straight → NW/W sweeping curve → SW → 南 chicane (jog) →
+        # SE big ramp (Z=350 peak) → 東 hairpin → NE return の closed loop。
+        # decoration: skybox / 8 perimeter buildings / 4 ramp pillars /
+        # 7 lamp posts / inner island + landmark / 赤 start/finish arch /
+        # GN-driven cloud field (modifier 経由 export 検証)。
+        # collision/line/auto は Blender meadow_loop collection の
+        # Export Course operator で同時 export。
         course_model: meadow_loop
         collision:    meadow_loop.bin
         line_bin:     meadow_loop_line.bin
         laps:  3
-        time:  180.0
-        bonus: 30.0
+        time:  150.0
+        bonus: 20.0
         bgm_l: bgm01_demoL.dsp
         bgm_r: bgm01_demoR.dsp
-        thumb:       images/test_cup_course4_thumb.png
-        thumb_road:  images/test_cup_course4_thumb_road.png
+        # round-select の thumb はとりあえず round 3 (my_course) と共有。
+        # 専用画像が必要なら test_cup_course4_thumb*.png を追加。
+        thumb:       images/test_cup_course3_thumb.png
+        thumb_road:  images/test_cup_course3_thumb_road.png
         ai_lap_bonus_rules: *shared_ai_lap_bonus_rules
         base_speed:         *shared_base_speed
-        # 中央 crossing 南側 (Z=400-700) に 4×2 並べる。lap path wp 0 を
-        # finish_line (Z=300) として、全 8 体を Z>300 の同じ側に揃える
-        # (= position cap pitfall 回避、project_position_cap_finish_line_straddle.md)。
-        # X は road 中心線 X=0 を挟んで ±70 の 2 列。
+        # HSD world coords (X, Y, Z). Blender(x,y,z) → HSD(x, z, -y)。
+        # スタートを 北 straight 中央 (Blender (-37.6, 1904.5, 0) = sample idx 41) に
+        # 配置 = HSD wp0 (-37.6, 5, -1904.5)。tangent=(-1,0,0) で完全直線。
+        # 当初 wp0=(1494,1798) は NE return curve の終わり = 135° 急折で gate
+        # 通過動線が破綻したため移動 (2026-05-12)。走行方向は -X、スタート
+        # grid は 4 列 × 2 並びで finish_line の +X 側 (= 全車 line 未跨ぎ側)。
+        # 路面 Y は約 0.5 (centerline Z=0 + 5 lift = HSD Y=5)。
         start_positions:
-          - [ 70.0, 0.5, 400.0]
-          - [-70.0, 0.5, 400.0]
-          - [ 70.0, 0.5, 500.0]
-          - [-70.0, 0.5, 500.0]
-          - [ 70.0, 0.5, 600.0]
-          - [-70.0, 0.5, 600.0]
-          - [ 70.0, 0.5, 700.0]
-          - [-70.0, 0.5, 700.0]
-        # 中央 crossing の南側 (Z=300) に幅 300 の水平線分。lap path wp 0 は
-        # 中央 crossing 南直後 (= 南 loop に進入する手前) に置くので、
-        # 1 周ごとに wp 63→wp 0 の transition でこの線を XZ で交差する。
+          - [400.0, 5.0, -1859.5]
+          - [400.0, 5.0, -1949.5]
+          - [300.0, 5.0, -1859.5]
+          - [300.0, 5.0, -1949.5]
+          - [200.0, 5.0, -1859.5]
+          - [200.0, 5.0, -1949.5]
+          - [100.0, 5.0, -1859.5]
+          - [100.0, 5.0, -1949.5]
+        # finish_line: wp 0 (-37.6, 5, -1904.5) を通る、走行方向 (-X) に
+        # 垂直な線分 = Z 軸沿い。X=-37.6 固定で Z=[-2054.5, -1754.5] の
+        # 300 unit セグメント (路幅 100 + 余白 100×2)。1 周して wp 63→wp 0
+        # を通過する瞬間に prev→cur 線分がこれを cross して lap 確定。
         finish_line:
-          - [-150.0, 0.0, 300.0]
-          - [ 150.0, 0.0, 300.0]
+          - [-37.6, 0.0, -2054.5]   # p1
+          - [-37.6, 0.0, -1754.5]   # p2
+        # 度。KartMovement_Init で π/180 されてラジアンの Y-rot を作るので
+        # forward(+Z local) = (sin yaw, 0, cos yaw). つまり:
+        #   0° = +Z (south), 90° = +X (east),
+        #   180° = -Z (north), 270° = -X (west)
+        # meadow_loop wp0 (-37.6,5,-1904.5) → wp1 (-300,5,~-1898) tangent は
+        # 概ね -X (west) なので 270°。指定省略すると vanilla cupId=0 の 1000.0°
+        # (= 280°≈ WSW) で発進してしまうので必須。
+        start_yaw: 270.0

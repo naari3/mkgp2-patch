@@ -36,10 +36,12 @@ course_models:
     joints: []
 
   meadow_loop:
-    # 8 の字 (中央交差) コース、草原テーマ、ヒル+バレーの勾配付き。
-    # 中央 crossing は同一 (X,Z) 1 枚 (collision の 2D heightfield 制約
-    # = project_collision_heightmap_obstacle_recipe.md に従う)。
-    # 北 loop が hill (Y up to ~80)、南 loop が valley (Y down to ~-40)、
-    # crossing は Y=0 平面。周長 ~4400 unit、3 lap で ~50 sec/lap (150cc 想定)。
+    # Blender vis:meadow_loop から ExportHSD で吐く self-contained pipeline。
+    # 北 straight → NW/W sweeping curve → SW → 南 chicane (jog) → SE big
+    # ramp (Z=350 peak) → 東 hairpin → NE return の closed loop。
+    # 道路幅 100、HSD 座標で X≈[-2300,2200] / Z≈[-1900,1700] / Y(高さ)≈[0,350]。
+    # decoration は skybox / 8 perimeter buildings / 4 ramp pillars / 7 lamp
+    # posts / inner island + landmark / 赤 start/finish arch / Geometry Nodes
+    # 駆動の cloud field (modifier 経由 export 検証用)。
     file: meadow_loop.dat
     joints: []
