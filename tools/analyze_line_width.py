@@ -116,12 +116,19 @@ def analyze(name, variants):
 
 
 def main():
-    root = Path(r"C:/Users/naari/Documents/Dolphin ROMs/Triforce/mkgp2/files")
+    vanilla_root = Path(r"C:/Users/naari/Documents/Dolphin ROMs/Triforce/mkgp2/files")
+    repo_files = Path(__file__).resolve().parent.parent / "features/cup_page3/files"
     targets = sys.argv[1:] or ["mr_highway_short_line.bin", "mr_highway_long_line.bin"]
     for name in targets:
-        f = root / name
-        if not f.exists():
-            print(f"{name}: NOT FOUND under {root}")
+        # Try repo files first, then vanilla
+        if Path(name).is_file():
+            f = Path(name)
+        elif (repo_files / name).exists():
+            f = repo_files / name
+        elif (vanilla_root / name).exists():
+            f = vanilla_root / name
+        else:
+            print(f"{name}: NOT FOUND under {repo_files} or {vanilla_root}")
             continue
         try:
             analyze(name, parse(f))
