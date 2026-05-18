@@ -25,8 +25,36 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80033fe0 (Object_SetAnimBinding rename 完)
-- 次セッション開始点: 0x80034100
+- 最後に処理した address: 0x80034a6c (DObj_GetNext rename 完)
+- 次セッション開始点: 0x80034b0c (FUN_80034dfc 周辺の Object dtor secondary chain から)
+
+### Session 8 完了分 (2026-05-18、9 件) — animation binding pair + HSD hierarchy getters
+
+Session 7 で Object_SetAnimBinding (AOBJ slot = obj+0x1c) を rename。本セッションはそのペアの
+MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hierarchy getter trio。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80034100 | FUN_80034100 | Object_BindMatrixSource | obj[+0x18] (mtx slot) に bind。Object_SetAnimBinding (aobj slot=+0x1c) と alternate |
+| 0x80034220 | FUN_80034220 | Object_RenderJObjEx | 3-arg JObj render forwarder (vestigial obj param)、FUN_802cf3b0 へ |
+| 0x80034260 | FUN_80034260 | Object_RenderJObjTree | 2-arg wrapper、obj の primary JObj (+0x2c) を auto 取得して render。70+ caller |
+| 0x800342a4 | FUN_800342a4 | Object_DriveAnimMatrix | mtx slot or aobj slot を PSMTXCopy で jobj+0x44 に反映 + metric slot 10 |
+| 0x800346e4 | FUN_800346e4 | Object_DtorWithGXSync | GX_DrawDoneAndWait 経由の dtor (GPU sync barrier + sub-resource release + free) |
+| 0x80034a10 | FUN_80034a10 | Object_ReleaseAnimResource | obj[+0x24] gate で FUN_800350a8 (anim chain release impl) を呼ぶ |
+| 0x80034a3c | FUN_80034a3c | JObj_GetNext | HSD JObj.next (jobj+0x08) getter、NULL-safe |
+| 0x80034a54 | FUN_80034a54 | JObj_GetChild | HSD JObj.child (jobj+0x10) getter、NULL-safe |
+| 0x80034a6c | FUN_80034a6c | DObj_GetNext | HSD DObj.next (dobj+0x04) getter、NULL-safe |
+
+主要発見:
+- **mtx/aobj 二重 slot system**: obj+0x18 (mtx) と obj+0x1c (aobj) は alternate slot
+  (片方 set でもう片方 0)。両方とも 4x3 matrix ptr を保持し、Object_DriveAnimMatrix が
+  priority order (mtx → aobj → default) で読んで PSMTXCopy。
+- **HSD JObj layout 追加 field 確定** (clNormal3D_SetFlags 経由):
+  - +0x08: next (sibling JObj)
+  - +0x10: child (first child JObj)
+- **HSD DObj layout 確定**: +0x04: next (sibling DObj)。JObj.next と offset 違うので注意。
+- **GX_DrawDoneAndWait barrier dtor** pattern: GPU outstanding が壊れないように
+  free 前に必ず sync する Object dtor variant。
 
 ### Session 7 完了分 (2026-05-18、5 件) — animation + skin pipeline
 
@@ -51,9 +79,9 @@
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-6)
+## 累計 (Session 1-8)
 
-合計 **113 件処理** (rename ~107、諦め ~6) / 1500 件 ≒ **7.5%**
+合計 **127 件処理** (rename ~121、諦め ~6) / 1500 件 ≒ **8.5%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
