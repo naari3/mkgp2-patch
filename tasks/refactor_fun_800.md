@@ -25,8 +25,57 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8004b9bc (KartItem_RenderPipelinedWithEffects rename 完)
-- 次セッション開始点: 0x8004baac 以降
+- 最後に処理した address: 0x8004e2b0 (KartItem_Dtor rename 完)
+- 次セッション開始点: 0x8004edd4 以降 (0x8004e618 は CarObject_Init で既 named)
+
+### Session 33 完了分 (2026-05-18、3 件、大型関数のみ) — KartItem master Tick / Step / Dtor
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8004baac | FUN_8004baac | KartItem_Tick | per-frame Update: view-space UV scroll + audio + rumble + saturation-based vol |
+| 0x8004c320 | FUN_8004c320 | KartItem_PerFrameStep | per-frame physics + boost/bonk state + 4-wheel joint export |
+| 0x8004e2b0 | FUN_8004e2b0 | KartItem_Dtor | KartItem teardown (g_carObjectList unlink + 14 sub-object dispose + 2 vtable restore) |
+
+主要発見:
+- **KartItem は 2-vtable class** (multiple inheritance):
+  - primary vtable @ 0x803f75f8
+  - secondary vtable @ 0x803f7608
+  Dtor は両方 restore してから両方の base-class dtor (FUN_800aa888 + FUN_80060024) を呼ぶ。
+- **KartItem は g_carObjectList linked list の要素**: g_carObjectCount を保持、最後の
+  要素が破棄されるとリスト自体を free (vtbl[2] virtual call) する singleton 管理。
+- **KartItem の sub-object slot map** (Dtor reverse order で確証、計 15 slot):
+  - self[0x9] FUN_80058de8 (audio channel dtor)
+  - self[0xa] FUN_8019e1a8 (movement helper)
+  - self[0xb] KartDriver (KartDriver_Dtor — 副次確証!)
+  - self[0xc..0xf] CarObject 系 effect (FUN_8005afe0/56c4c/642b0/56324)
+  - self[0x10] 0x4-byte sub-record w/ +4 nested
+  - self[0x11] FUN_8005c51c, self[0x12] FUN_80064f58 (sound)
+  - self[0x13/0x14] raw buf (MemoryManager_TimedFree 直接)
+  - self[0x15] FUN_800a9414, self[0x16/0x17] FUN_80209180 (HSD scene obj?)
+- **KartItem_Tick / KartItem_PerFrameStep** は同一 self struct を分担:
+  - Tick: 音響 + StrPcb force feedback + Saturate_Double 音量曲線
+  - Step: 物理積分 + boost/bonk state machine + 4 joint Y push + render commit
+  恐らく per-frame で Tick → Step (or Step → Tick) を順次呼ぶ。
+- **rsqrt Newton-Raphson 2-iter idiom** が 3 箇所 (今 session) で再利用、合計 6 関数の
+  共通 idiom。GameCube SDK の標準 fast inv-sqrt + 2 refinement pattern が
+  mkgp2 全体に広く分散。
+- **Bonk / Boost release の item-id switch**: 11 個の specific item ids (0xc..0x11,
+  0x12, 0x17, 0x19..0x1d, 0x21, 0x23, 0x29 系, 0xd5..0xd6, 0xdc, 0xe2, 0xe8, 0xee,
+  0xf4, 0xfa, 0x101, 0x107) が FUN_80058c80 + FUN_8005a638 + FUN_80091b9c (+ 一部
+  FUN_80091f0c) の trio dispatch を受ける。これらは "stunning" な item ID のセット
+  (banana, shell, mushroom 派生品?)。
+
+副次 rename 候補:
+  FUN_80052508 → linked-list remove
+  FUN_8019cc2c → KartMovement_PhysicsStep idle/AI variant
+  FUN_8019a850 → CarObject wheel-Y read
+  FUN_80057a00 → CarObject steering Euler-Z read
+  FUN_80057a08 / FUN_80057a8c → CarObject world-mtx export
+  FUN_80058c80 / FUN_8005a638 / FUN_80091b9c / FUN_80091f0c → stun-item dispatch trio
+  FUN_800913f8 → KartCarPhysics hit-position write
+  FUN_80091e40 / FUN_80091e78 → KartCarPhysics flag manip (0x40 / 0x30000000 系)
+  FUN_8005623c → boost-release condition probe
+  FUN_8005967c / FUN_800595b4 / FUN_80059644 → engine SE family
 
 ### Session 32 完了分 (2026-05-18、9 件) — KartItem core collision + apply-effect + render pipeline
 
@@ -971,9 +1020,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-32)
+## 累計 (Session 1-33)
 
-合計 **327 件処理** (rename ~318、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **21.8%**
+合計 **330 件処理** (rename ~321、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **22.0%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
