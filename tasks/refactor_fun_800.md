@@ -25,8 +25,42 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8003a608 (MJObj_SetColorRGBA rename 完)
-- 次セッション開始点: 0x8003a71c 以降
+- 最後に処理した address: 0x8003aa58 (SceneRender_Dtor rename 完)
+- 次セタッション開始点: 0x8003ac84 (FUN_8003ac84、Session 9 で半解析済の clRom path-keyed table walker)
+
+### Session 19 完了分 (2026-05-18、6 件) — SceneRender per-object pipeline
+
+HSD Scene + dynamic light culling + per-object render pipeline の cluster。CObj 系
+(Session 3 で確定) と連携。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8003a71c | FUN_8003a71c | SceneRender_BaseDtor | trivial base class vtable downgrade dtor (PTR_803f58e0) |
+| 0x8003a764 | FUN_8003a764 | SceneRender_SetViewportRect | 6 float (position vec3 + size vec3) setter at +0x14..+0x28 |
+| 0x8003a780 | FUN_8003a780 | SceneRender_DrawObjectWithLights | camera setup + dynamic light cull + per-obj draw + metric 0x12 |
+| 0x8003a9e8 | FUN_8003a9e8 | SceneRender_CmdA_8a9e8 | gate付き FUN_802dbf20 forward |
+| 0x8003aa20 | FUN_8003aa20 | SceneRender_CmdB_8aa20 | gate付き FUN_802dbe74 forward (CmdA とペア) |
+| 0x8003aa58 | FUN_8003aa58 | SceneRender_Dtor | 派生 dtor: vtable + scene release + base chain |
+
+主要発見:
+- **per-object render pipeline 構造**: viewport apply (CObj_ApplyViewport) → matrices →
+  light culling (distance gated) → ambient apply → draw chain
+- **distance-gated light culling**: FLOAT_806d24ac 閾値で scene→root から light walker
+- MetricsTable slot 0x12 を SceneRender_DrawObjectWithLights が消費 (memory_alloc と
+  当初推定したが、object draw 計測の可能性)
+- 6-float viewport rect layout (+0x14..+0x28) は (origin xyz, size xyz)
+
+副次 rename 候補 (HSD scene helpers、大量):
+  FUN_802dbb84 — HSD scene draw step
+  FUN_802dc2c0 — light frustum setup
+  FUN_802dc550 — add light contribution
+  FUN_802dc4d4 — light ambient computed query
+  FUN_802dc0f4 — ambient color apply
+  FUN_802d6948 — JObj mtx → world position
+  FUN_802d4748 / 47e8 — GX state save/restore
+  FUN_802db570 / 740 / 9ec — HSD scene draw chain
+  FUN_802dbf20 / be74 — scene state cmd pair
+  FUN_802db468 — scene resource release
 
 ### Session 18 完了分 (2026-05-18、7 件) — my_class_library MObj/MJObj 派生クラス群
 
@@ -415,9 +449,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-18)
+## 累計 (Session 1-19)
 
-合計 **209 件処理** (rename ~201、諦め ~8) / 1500 件 ≒ **13.9%**
+合計 **215 件処理** (rename ~207、諦め ~8) / 1500 件 ≒ **14.3%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
