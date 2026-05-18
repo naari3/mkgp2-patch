@@ -25,8 +25,99 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80063f08 (ShadowBillboard_BeginBoostScale rename 完)
-- 次セッション開始点: 0x80060024 周辺 (clItemBoxResponder ctor/dtor wrapper) + 0x80061a88 以降の残り
+- 最後に処理した address: 0x8006f608 (CardRW_TestTopMenu_Page rename 完)
+- 次セッション開始点: 0x8006f700 以降 / 0x80064cd4 等の命名保留 follow-up
+
+### Session 59 完了分 (2026-05-18、50 件) — 4 並列 background agent E/F/G/H
+
+**Agent E cluster (8 件、0x80060004..0x800604bc)** — clItemBoxResponder ctor/dtor + ItemSelect roulette/dropAll:
+- 0x80060004 clItemBoxResponder_CmdSlotCountdown (per-frame `if (cmdSlot > 0) cmdSlot--`)
+- 0x8006001c clItemBoxResponder_GetBoundPosVec3 (kart world-pos vec3* getter)
+- 0x80060024 clItemBoxResponder_Dtor (vtable re-stamp + UnregisterResponder + optional free)
+- 0x800600b0 clItemBoxResponder_Ctor (vtable set + RegisterResponder)
+- 0x8006012c ItemSelect_OnDropAllCancel (spin state wipe + 30-frame respawn lockout)
+- 0x800601c0 ItemSelect_GiveItemOrQueueDrop (force-drop coin-item queue logic、0x7a/0xef 特別扱い)
+- 0x800602d0 ItemSelect_StartRouletteSpin (3-way random pick + 0x78-frame display timer + SE 0x4d + UI spin start)
+- 0x800604bc ItemSelect_DrawUIHelperIfActive (per-frame UI render dispatcher)
+
+ItemSelect struct skeleton 判明 (0x88 byte heap object @ g_itemSelects、KartItem+0x104 経由 bind):
++0x1c pendingItemId、+0x20 active flag、+0x54 spinResult、+0x58 prevSpinResult、+0x5c queueHead、+0x60/+0x61 flags、+0x64 stockCount、+0x6c spinPhase、+0x70 reservedItemId、+0x78 ItemRouletteUI*、+0x80 cancelHoldFrames。
+
+**Agent F cluster (21 件、0x800642b0..0x80065fd8)** — PlayCamera + EffectSpeedAction + TransparentDraw + sinf/cosf LUT:
+
+PlayCamera (0xD4 byte、CarObject->field_38、**user 仮説「steering controller」は誤り**):
+- 0x8006430c PlayCamera_Init (0xD4 ctor、+0x5C mtx sub-buf、per-cup tuning DAT_803f9f30 scan)
+- 0x800642b0 PlayCamera_Dtor (+0x5C mtx free + self free)
+- 0x80064920 Mtx34_Orthonormalize (汎用 math: cross + Newton-Raphson 1/sqrt、4+ caller)
+
+EffectSpeedAction サブクラス (ef_speed.cpp、CarObject->field_48):
+- 0x80065028 EffectSpeedAction_SpeedScale_Dtor
+- 0x80065084 EffectSpeedAction_MueScale_Dtor
+- 0x8006520c EffectSpeedAction_MueScale_Reset (KartMovement muE=1.0 復帰)
+- 0x8006524c EffectSpeedAction_SpeedScale_Reset (KartMovement+0x2D8 speedScale=1.0 復帰)
+- 0x8006528c EffectSpeedAction_Base_Dtor
+- 0x8006533c EffectSpeed_TickTimer (per-frame ramp + Process call + 期限切れで Reset)
+
+TransparentDraw pool (DAT_805987e0 = 32 entry × 0x14 byte sort pool):
+- 0x800656b8 TransparentDraw_FreeHandle_A (byte-identical sibling)
+- 0x80065748 TransparentDraw_FreeHandle_B
+- 0x800657d8 Cosf_LUT_Wrap (sin LUT + 0x4000 phase shift、60+ caller)
+- 0x8006584c Sinf_LUT_Wrap (sin LUT 直 lookup、60+ caller)
+- 0x80065990 TransparentDraw_InitEntry (JObj → 32-slot pool entry + RenderTarget_Create)
+- 0x80065b74 TransparentDraw_DestroyEntry (handle refcount-- + vtable[+0x30/0x34] dispatch)
+- 0x80065c5c TransparentDraw_ResetEntry (zero clear、DMAChannelManager_Init から)
+- 0x80065c9c TransparentDraw_SortAndDispatch (view-space depth sort → renderer submit)
+- 0x80065fd8 TransparentDraw_RemoveByOwner (owner id 一致 entry を全消去)
+
+命名保留 3 件:
+- 0x80064cd4 FUN_80064cd4_OrphanFreeStub_Pending (xref 0、dead code 疑い)
+- 0x80064d28 FUN_80064d28_NoopRenderHook_Pending (empty body、4 caller、release で nopped した debug hook 仮説)
+- 0x80064f58 FUN_80064f58_TwoSubDtor_Pending (KartItem_Dtor 経由、所属 class 不明)
+
+**Agent G cluster (10 件、0x8006609c..0x8006aa84)** — SceneDrawList + GameTestMenu page handlers:
+
+SceneDrawList サブシステム (32-slot 描画キュー):
+- 0x8006609c SceneDrawList_RegisterArchive (archive scene_data 走査 → OPA/XLU MObj を 32-slot pool に登録)
+- 0x80066220 SceneDrawList_Reset (pool 全 slot 解放)
+
+GameTestMenu page handlers (UI_PageDispatcher case ID 順):
+- 0x80066b74 BootInfo_Page (case 0x0a)
+- 0x80066e10 BackupMemoryInitialize_Page (case 0x09、HI_SCORE/BOOKKEEPING/BACKUP_MEMORY 3 段確認消去)
+- 0x8006830c NetDiag_CounterDetailPage (case 0x1d)
+- 0x80069720 NetDiag_PacketDetailPage (case 0x1b、6 bucket 詳細)
+- 0x80069ab0 NetDiag_PacketRatioPage (case 0x1a、10 種 packet 比率)
+- 0x8006a160 OperationTime_Page (case 0x08、稼働時間 hh:mm:ss + 5 counter)
+- 0x8006a500 ClockSetting_Page (case 0x07、7 曜日 schedule editor)
+- 0x8006aa84 CabinetSetting_Page (case 0x06、"GREEN" 2 u8 toggle)
+
+**Agent H cluster (11 件、0x8006b32c..0x8006f608)** — CardRW Test cluster (test-menu cases 0x05, 0x0F..0x18):
+全 11 件 `CardRW_<Op>_Page` 形式、`(int pageCtx, int phase)` 3-phase page (init/update/draw):
+- 0x8006b32c CardRW_Renew_Page (0x18)
+- 0x8006bb04 CardRW_HardwareInit_Page (0x17)
+- 0x8006c0f4 CardRW_Reprint_Page (0x16)
+- 0x8006c810 CardRW_DataRepair_Page (0x15、cabinet backup から復元)
+- 0x8006d308 CardRW_DataMigrate_Page (0x14、2 card 間 data 移行 + CAUTION banner)
+- 0x8006db90 CardRW_CheckCard_Page (0x13、card 種類判定: game/special/no-longer-valid)
+- 0x8006e308 CardRW_PrintTest_Page (0x12、test pattern 印刷)
+- 0x8006e7d0 CardRW_DispenseTest_Page (0x11、card 排出)
+- 0x8006ec24 CardRW_ReadWriteTest_Page (0x10、read+write 検査 + state save/restore)
+- 0x8006f200 CardRW_CleaningTest_Page (0x0F、cleaning cycle)
+- 0x8006f608 CardRW_TestTopMenu_Page (0x05、hub page)
+
+主要発見 (Session 59):
+- **PlayCamera が 0xD4 byte の実体**: 過去 plate (CarObject_Init) の「steering (0xD4)」記述は誤り。
+  実 steering は clEffectSteering (0x4c) で CarObject->field_44。CarObject_Init plate は要訂正
+  (このセッション scope 外で deferred)。
+- **EffectSpeed action サブクラス階層** 解明: Base / MueScale (muE 摩擦係数) / SpeedScale (速度倍率)
+  の 3 派生、vtable[+0xC] = Reset hook (期限切れ復帰)、vtable[+0xD] = Process hook (Tick 中の発火)。
+- **TransparentDraw pool** = HSD XLU pass の per-frame sort pool。DAT_805987e0 が 32 slot × 0x14 byte
+  の固定 pool、JObj base + owner id で identify、view depth で sort、RenderTarget_Create handle 経由
+  で実描画。RaceScene_RenderPass 等多数の caller。
+- **Cosf_LUT_Wrap / Sinf_LUT_Wrap** が "汎用" 三角関数 (math LUT @ DAT_802ee580)。FUN_8027e480 等
+  の標準 math は別だが、PlayCamera 系は LUT 版を多用 (perf critical path)。
+- **NetDiag / BootInfo / CabinetSetting / ClockSetting / OperationTime / BackupMemoryInitialize** は
+  すべて Game Test mode (operator 側 maintenance 機能) の page handlers。`UI_PageDispatcher @ 0x800668fc`
+  の switch case ID で dispatch。同 dispatcher が CardRW pages も dispatch する。
 
 ### Session 58 完了分 (2026-05-18、17 件) — 2 並列 subagent (Agent C clMiyoshiCardCreate + ShadowBillboard early、Agent D ShadowBillboard step 系)
 
@@ -2122,10 +2213,10 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-58)
+## 累計 (Session 1-59)
 
-合計 **607 件処理** (rename ~592、諦め ~9、プレースホルダ rename 6 + 4 = 10) / 1500 件 ≒ **40.5%**
-(Session 56 = 16 件、Session 57 = 16 件、Session 58 = 17 件 (Agent C 12 + Agent D 5、命名保留 2 含む)、合計 +49 件)
+合計 **657 件処理** (rename ~639、諦め ~9、プレースホルダ rename 6 + 7 = 13) / 1500 件 ≒ **43.8%**
+(Session 56-58 = +49 件、Session 59 = +50 件 (Agent E 8 + F 21 + G 10 + H 11、命名保留 5 含む)、合計 +99 件)
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
