@@ -25,8 +25,46 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8003df8c (KartHand_TickItemAnim rename 完)
-- 次セッション開始点: 0x8003e2e0 以降の関数
+- 最後に処理した address: 0x8003ef20 (KartItem_TickTrailingFx rename 完)
+- 次セッション開始点: 0x8003f000 以降 (要確認)
+
+### Session 24 完了分 (2026-05-18、5 件) — KartItem state machine cluster
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8003e41c | FUN_8003e41c | KartItem_BeginQueuedState | 次の item state を queue する setup (sound trigger 0x68/0x69) |
+| 0x8003e694 | FUN_8003e694 | KartItem_TickEffectStage_a | per-frame tick (char* offset 版、+0x2a0/+0x290 駆動) |
+| 0x8003eb20 | FUN_8003eb20 | KartItem_TickEffectStage_b | 同 logic の int* indexing 版、SE 0xc0 trigger |
+| 0x8003ed8c | FUN_8003ed8c | KartItem_TickStunStateMachine | 3-stage (0→1→2) stun state、threshold 25a0/25a4/2560 |
+| 0x8003ef20 | FUN_8003ef20 | KartItem_TickTrailingFx | trailing fx 用 cleanup tick、per-player tagged SE |
+
+主要発見:
+- **KartItem state machine の共通構造**:
+  - +0x290 (= [0xa4]): remaining unit count (decreasing)
+  - +0x294 (= [0xa5]): duration float
+  - +0x298 (= [0xa6]): "in 1 unit" flag (byte)
+  - +0x2a0 (= [0xa8]): phase progress (float, 0..threshold)
+  - +0x2b3 (= [0xac+3]): is active flag (byte)
+  - +0x2b4 (= [0xad]): stage within state (0/1/2)
+  - +0x2c8 (= [0xb2]): item slot index (-1 = no item)
+  - +0x2c0 (= [0xb0]): item type id
+  - +0x2dc..: ISE slot ptr table (item-indexed)
+  - +0x32c (= [0xcb]): ISE state object ptr
+  - +0x29c (= [0xa7]): item-tracker object
+  - +0x174 (= [0x5d]): "持っている" flag
+  - +0x205 (= [0x81]): aux byte
+  - +0x1cc (= [0x73]): per-frame phase increment
+  - +0x1e0 (= [0x78]): damage progress (stun のみ)
+- **per-player tagged SE**: ((self.player_idx & 0xf) << 0x1b) | 0xb3 で kart 番号別 channel
+- 各 variant が異なる threshold / SE / cleanup chain を持つ
+
+副次 rename 候補:
+  FUN_8016c2d0 / 288 → SoundMgr_Play3DSound / Update3DPosition
+  FUN_8016c360 / 394 → SoundMgr_IsSEPlaying / StopSE
+  FUN_8007b44c / 468 → ISE state helpers
+  FUN_80173b68 / be8 → KartItem state reset trio (recurring)
+  FUN_80049cc4 / 9a90 → ISE finalize / delta apply
+  ISESlot_Deactivate / StopEffect / StartCleanup (vanilla?)
 
 ### Session 23 完了分 (2026-05-18、3 件) — angular check + expression switcher + hand item anim
 
@@ -549,9 +587,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-23)
+## 累計 (Session 1-24)
 
-合計 **230 件処理** (rename ~222、諦め ~8) / 1500 件 ≒ **15.3%**
+合計 **235 件処理** (rename ~227、諦め ~8) / 1500 件 ≒ **15.7%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
