@@ -25,8 +25,33 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8003d304 (Object_RenderJObjIfWithinRange rename 完)
-- 次セッション開始点: 0x8003dcd4 以降
+- 最後に処理した address: 0x8003df8c (KartHand_TickItemAnim rename 完)
+- 次セッション開始点: 0x8003e2e0 以降の関数
+
+### Session 23 完了分 (2026-05-18、3 件) — angular check + expression switcher + hand item anim
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8003dcd4 | FUN_8003dcd4 | JObj_IsForwardDotBelowThreshold | JObj forward vec と target dir の dot < 閾値 (line-of-sight angular check) |
+| 0x8003ddac | FUN_8003ddac | JObj_SetExpressionByIndex | 4-slot JObj (+0x140..+0x14c) 排他 show/hide (-1..3) |
+| 0x8003df8c | FUN_8003df8c | KartHand_TickItemAnim | kart hand bone 上で item を swing → launch (countdown + spawn) |
+
+主要発見:
+- **kart hand item launch sequence**: angle swing (phase 0-10 で増、27-40 で減) + countdown
+  (self+0x178 = 30 frame で spawn) のフレーム駆動 state machine
+- **item alias map**: 0x6c → 0x35 (banana?)、0x6d → 0x36 (mushroom?)、0x6e → 0x49、0x6f → 0x70
+- **4-slot expression switcher**: kart driver の表情 / wheel face / 状態 model 用
+- AI 「視界外」判定: forward dot product と FLOAT_806d2544 cosθ 閾値で 2D angular check
+
+副次 rename 候補 (大量):
+  ISESlot_Deactivate
+  FUN_8025d1b8 → PSMTXCopy
+  FUN_8025d770 → PSMTXRotRad
+  FUN_800dd8d8 / 904 / 8ac → ItemObject_SetPosition / Direction / Owner
+  FUN_800dd89c → ItemObject_AttachSound
+  FUN_80173b68 / 80173be8 → KartItem state reset trio
+  FUN_802d1e34 → JObj eval/update
+  ItemObject_SpawnWithAlias (vanilla?)
 
 ### Session 22 完了分 (2026-05-18、4 件) — Race progress comparator + Path participant array
 
@@ -524,9 +549,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-22)
+## 累計 (Session 1-23)
 
-合計 **227 件処理** (rename ~219、諦め ~8) / 1500 件 ≒ **15.1%**
+合計 **230 件処理** (rename ~222、諦め ~8) / 1500 件 ≒ **15.3%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
