@@ -25,8 +25,111 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8008ce58 (PlayStats_AccumulateFinishByRank rename 完)
-- 次セッション開始点: 0x8008d000 以降
+- 最後に処理した address: 0x80091fd4 (Sci2Card_PollAndAdvanceState rename 完)
+- 次セッション開始点: 0x80092xxx 以降
+
+### Session 63 完了分 (2026-05-18、77 件) — 4 並列 background agent U/V/W/X
+
+**Agent U cluster (25 件、0x8008d1b0..0x8008de60)** — PlayStats lifetime telemetry counters:
+
+PlayStats lifetime counter (620 byte block @ DAT_805ac2e0、shadow @ DAT_80598cd4):
+- 0x8008d1b0 IncTaBestRecord (per-cup×variant TA new-record counter)
+- 0x8008d3b0 IncTaPlay / 0x8008d5b0 IncVsPlay / 0x8008d7b0 IncVsPeerCount (2/3/4 peer buckets)
+- 0x8008d87c OnAllItemsUnlocked_Stub (空)
+- 0x8008d888 IncAllCupsClearedFinalMilestone / 0x8008d968 IncAllCupsCleared3rdMilestone
+  (per-ccClass 全 8 cup 達成カウンタ、命名保留: precise label 未確認)
+- 0x8008da48..0x8008da90: 4 stub (OnMissionResult/SceneInit/Race1stPlace/RaceSceneInit、未実装の bookkeeping hook)
+- 0x8008daa8 IncVs3PlusJoin / 0x8008dae0 IncVs4PJoin / 0x8008db18 IncVs2PlusJoin
+- 0x8008db50 IncVs2PJoin / 0x8008db90 IncSinglePlayJoin
+- 0x8008dbd4 IncCreditAdded / 0x8008dc0c IncCoinInserted
+- 0x8008dc44 AddTotalPlaySeconds(int delta) / 0x8008dc70 TickActiveSessionSeconds
+- 0x8008dcec EndPlaySession / 0x8008dd74 BeginPlaySession
+- 0x8008dde4 PublishCoinCreditShadow / 0x8008de24 PublishStatsBlockShadow
+- 0x8008de60 CopyStatsBlock(int *dst, int *src) (620 byte unrolled word memcpy)
+
+**Agent V cluster (17 件、0x8008e33c..0x8008ef5c)** — OSAlloc heap allocator + texPalette + PlayStats 続き:
+
+OSAlloc.c (GameCube SDK、byte-identical with upstream):
+- 0x8008e9fc OSCheckHeap (heap integrity validator)
+- 0x8008ed50 OSDestroyHeap / 0x8008ed74 OSCreateHeap / 0x8008ede0 OSInitAlloc
+- 0x8008ee50 OSSetCurrentHeap / 0x8008ee60 OSFreeToHeap (coalesce 経由) / 0x8008ef5c OSAllocFromHeap (best-fit + split)
+
+struct HeapDescriptor (12B) + HeapCell (32B) 適用済。
+
+texPalette.cpp (TPL loader):
+- 0x8008e3e0 TEXBindPaletteEntry_CI / 0x8008e4e8 TEXBindPaletteEntry_RGB
+- 0x8008e5bc TEXReleasePalette / 0x8008e62c TEXGetPaletteEntry
+- 0x8008e63c TEXLoadPalette / 0x8008e940 TEXLoadPalette_Retry
+- 0x8008e9a0 TEXPalette_GetTotalLoadedSize ("spr size is %d" diagnostic 用)
+
+PlayStats 続き:
+- 0x8008e33c PlayStats_Clear (memset 0)
+- 0x8008e36c PlayStats_ShutdownStub
+- 0x8008e370 PlayStats_LoadOrInitForBoot (template 復元 + OperationClockState 結線)
+
+**Agent W cluster (20 件、0x8008f07c..0x80090c88)** — CardPrinterChecker 後段 + card_unpack + Items + CardData_InitDefaults + TexMgr:
+
+CardPrinterChecker 後段 (8):
+- 0x8008f07c State_CardEjectWait / 0x8008f154 State_CleaningWait / 0x8008f264 State_CardResetWait
+- 0x8008f328 DrawErrorOverlay / 0x8008f6e0 DrawStatusErrorLabel
+- 0x8008f874 DrawResponseStatusBytes (SR0/SR1/SR2 hex)
+- 0x8008f540 StartCleaningJob / 0x8008f5a4 CardTaskPrintJob_InitStateVector
+
+CardTaskPrintJob 副:
+- 0x8008f4cc IsRunning_Thunk / 0x8008f4f4 IsSuccess
+- 0x8008f504 MemoryManager_TimedFreeIfActive
+
+Sci2Card status helper:
+- 0x8008f7bc Sci2Card_ClassifyStatusToCode (Sci2Card singleton 状態 → 0..5 コンパクトコード)
+
+TexMgr text drawer (2、byte-identical with Variant2):
+- 0x8008f5d4 Variant3 / 0x8008f920 Variant4
+
+card_unpack pipeline (3、player card 形式解読):
+- 0x8008fa2c card_unpack_v2 (APP_CODE_803ff0e0、0x40 field 新形式)
+- 0x80090174 card_unpack_v1 (APP_CODE_803fed70、0x37 field 旧形式 + pack 昇格)
+- 0x8009060c card_unpack_legacy_dispatch (0x45 byte blob を verify → v1/v2 router)
+
+Items + CardData:
+- 0x80090848 Items_ResolveOwnedAlias (slot index → 所持アップグレード適用後 item id)
+- 0x800909c4 Items_PlayerOwnsAnyAlias (全 slot 走査で query item の有無 strict/fuzzy)
+- 0x80090c88 CardData_InitDefaults (新規プレイヤー用 zero-init + default)
+
+**Agent X cluster (15 件、0x8009107c..0x80091fd4)** — ItemEffectBus API + Sci2Card poll:
+
+ItemEffectBus (KartDriver→auxStruct、Alloc 0x58 byte、24-field struct 適用済):
+- 0x8009107c Commit (central flag-diff + KartDriver_TickAction_78xxx audio dispatch)
+- 0x80091284 FreeIfOwned / 0x800912c0 Init
+- 0x80091300 ClearByTable8 (8-bit groupMask → mask-table)
+- 0x800913f8 RegisterBonkPosition / 0x80091438 ApplyItemEventClear (200+ case switch)
+- 0x8009185c ApplyItemEventSet / 0x80091ac4 ArmTornadoAndQuery
+- 0x80091b9c ApplyItemConfirm (nested binary-search switch)
+- 0x80091e40 ClearMask (19 callers) / 0x80091e78 OrMask (18 callers)
+- 0x80091ea8 TickTornadoCooldown / 0x80091f0c SnapshotAndClearSpawnFlags
+- 0x80091f58 SnapshotAndFullReset
+
+Sci2Card:
+- 0x80091fd4 Sci2Card_PollAndAdvanceState (MainGameLoop tick、2-step state machine)
+
+主要発見 (Session 63):
+- **PlayStats モジュール完全解明**: 620 byte block @ DAT_805ac2e0 が arcade operator 向け
+  lifetime telemetry。13 種別 counter (TA play/best record × cup×variant、VS play × cup×variant、
+  peer count buckets、coin/credit、play seconds、cup 8 全クリア milestone 等)、3 stub (未実装 hook)。
+  Publish (live → shadow) 2 段階で memory card に persist。
+- **OSAlloc が GameCube SDK upstream と byte-identical**: 7 関数 (Check/Create/Destroy/InitAlloc/
+  SetCurrentHeap/AllocFromHeap/FreeToHeap)、HeapDescriptor (12B) + HeapCell (32B) 構造同定。
+  best-fit + cell-split (remainder >= MINOBJSIZE 0x40)、bidirectional coalesce on free。
+- **TEXPalette TPL loader**: .tpl 形式は magic 0x20af30、entries stride 8、optional 圧縮対応
+  (DAT_806d2fb0 gate)。CI vs RGB の bind は別 entry 経路。
+- **card_unpack v1/v2 dispatch**: 0x45 byte gamecard blob を verify code (0/1) で v1 (APP_CODE
+  _803fed70 旧 0x37 field) または v2 (APP_CODE_803ff0e0 新 0x40 field) に router、v1 は pack 昇格付き。
+- **ItemEffectBus 完全解明**: 88-byte struct (24 field)、KartDriver の per-frame item-effect flag
+  集約 + audio dispatch hub。200+ case switch で itemId → flag/clear 対応表、Commit が central
+  flag-diff で発火制御。
+
+命名保留 (Session 63、合計 2 件):
+- Agent U: IncAllCupsCleared3rdMilestone / IncAllCupsClearedFinalMilestone (precise in-game label 未確認、stamp 表セマンティクスから推定)
+- Agent V/W/X: 命名保留なし
 
 ### Session 62 完了分 (2026-05-18、87 件) — 4 並列 background agent Q/R/S/T
 
@@ -2522,12 +2625,12 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-62)
+## 累計 (Session 1-63)
 
-合計 **951 件処理** (rename ~913、諦め ~9、プレースホルダ rename 6 + 32 = 38) / 1500 件 ≒ **63.4%**
-(Session 56-58 = +49 件、Session 59 = +50 件、Session 60 = +127 件、Session 61 = +80 件、Session 62 = +87 件 (Agent Q 36 + R 19 + S 13 + T 19、命名保留 7 含む)、合計 +393 件)
+合計 **1028 件処理** (rename ~988、諦め ~9、プレースホルダ rename 6 + 34 = 40) / 1500 件 ≒ **68.5%**
+(Session 56-58 = +49 件、Session 59 = +50 件、Session 60 = +127 件、Session 61 = +80 件、Session 62 = +87 件、Session 63 = +77 件 (Agent U 25 + V 17 + W 20 + X 15、命名保留 2 含む)、合計 +470 件)
 
-**マイルストーン到達: 50% 通過 (Session 60)、60% 通過 (Session 62)**
+**マイルストーン到達: 50% 通過 (Session 60)、60% 通過 (Session 62)、2/3 まで残り 22 件**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
