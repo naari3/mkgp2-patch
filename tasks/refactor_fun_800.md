@@ -25,8 +25,53 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x800525d4 (StlList_EraseRange rename 完)
-- 次セッション開始点: 0x80052684 以降
+- 最後に処理した address: 0x80052d40 (Wrapper_DestroyViaFUN_80058de8 rename 完)
+- 次セッション開始点: 0x80052dbc 以降
+
+### Session 39 完了分 (2026-05-18、16 件) — StlList primitives + 13 Wrapper dtors (KartItem sub-object holders)
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80052684 | FUN_80052684 | StlList_InsertBefore | list::insert(it, value) 4-arg ABI |
+| 0x8005272c | FUN_8005272c | StlList_InitEmpty | empty list ctor with sentinel self-loop |
+| 0x80052744 | FUN_80052744 | CarObjectManagerBase_Dtor | base vtbl restore (0x803f7690) + free |
+| 0x8005278c | FUN_8005278c | Wrapper_FreeViaFUN_800a9414 | FUN_800a9414 で owned object destroy |
+| 0x80052808 | FUN_80052808 | Wrapper_FreeOwnedHandleAndSelf | raw buffer free + self free |
+| 0x8005285c | FUN_8005285c | Wrapper_FreeOwnedHandleAndSelf_dup1 | 0x80052808 と identical bytes (duplicate symbol) |
+| 0x800528b0 | FUN_800528b0 | Wrapper_DestroyViaFUN_80064f58 | sound sub-system dtor wrapper |
+| 0x8005292c | FUN_8005292c | Wrapper_DestroyViaFUN_8005c51c | sub-system 2 dtor wrapper |
+| 0x800529a8 | FUN_800529a8 | Wrapper_DtorWithNestedSubObject | self[0] non-NULL → FUN_80054660(+4, 1) + free both |
+| 0x80052a58 | FUN_80052a58 | Wrapper_DestroyViaFUN_80056324 | CarObject effect dtor wrapper |
+| 0x80052ad4 | FUN_80052ad4 | Wrapper_DestroyViaFUN_800642b0 | sub-system dtor wrapper |
+| 0x80052b50 | FUN_80052b50 | Wrapper_DestroyViaFUN_80056c4c | sub-system dtor wrapper |
+| 0x80052bcc | FUN_80052bcc | Wrapper_DestroyViaFUN_8005afe0 | sub-system dtor wrapper |
+| 0x80052c48 | FUN_80052c48 | Wrapper_DestroyKartDriver | KartDriver_Dtor wrapper (slot 0xb in KartItem) |
+| 0x80052cc4 | FUN_80052cc4 | Wrapper_DestroyViaFUN_8019e1a8 | movement helper dtor (slot 0xa) |
+| 0x80052d40 | FUN_80052d40 | Wrapper_DestroyViaFUN_80058de8 | audio channel dtor (slot 0x9) |
+
+主要発見:
+- **STL list complete primitive set** (Session 38 + 39 で全 4): InitEmpty / InsertBefore /
+  RemoveByValueField / EraseRange。MetroTRK MSL の `std::list<T>` 実装の痕跡が
+  完全に出揃った (node 12B = prev/next/value)。
+- **KartItem sub-object holder cluster** (0x80052744..0x80052d3f 範囲): 13 個の
+  Wrapper dtor が KartItem_Dtor (Session 33) の sub-object slot 0x9..0x17 と
+  対応する。各 wrapper は `(self->[0] != NULL) ? specialized_dtor : free` のみの
+  軽量 holder class で、`std::unique_ptr` 的な role を担う (蓋し RAII smart-pointer
+  の inline 展開)。Wrapper_DestroyKartDriver の slot 0xb 同定で KartItem の sub-object
+  対応が確定。
+- **CarObjectManagerBase_Dtor (0x80052744)** が base vtbl (0x803f7690) の dtor、
+  CarObjectManager_Dtor (0x80052158) の派生 dtor とペア。
+- **CW compiler は inline-instantiated holder dtor を多数 emit する** ことが判明
+  (FUN_80064f58/8005c51c/80056324/800642b0/80056c4c/8005afe0/8019e1a8/80058de8 等の
+  各 sub-system dtor が個別 holder wrapper を持つ)。これは std::unique_ptr<T, D>
+  の dtor template instantiation の典型痕跡。
+
+副次 rename 候補:
+  FUN_80064f58 → SoundChannel_Dtor (Wrapper の callee)
+  FUN_8005c51c → ??Sub2_Dtor
+  FUN_80054660 → NestedSubObject_Dtor (Wrapper_DtorWithNestedSubObject の inner dtor)
+  FUN_80056324 / 800642b0 / 80056c4c / 8005afe0 / 8019e1a8 / 80058de8 → 各 sub-system
+    の dedicated dtor
 
 ### Session 38 完了分 (2026-05-18、9 件) — CarObjectManager dtor + Bitset / StlList primitives
 
@@ -1229,9 +1274,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-38)
+## 累計 (Session 1-39)
 
-合計 **382 件処理** (rename ~373、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **25.5%**
+合計 **398 件処理** (rename ~389、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **26.5%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
