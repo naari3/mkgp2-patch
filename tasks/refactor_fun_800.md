@@ -25,8 +25,51 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80051304 (ItemEffect_TryStartByCategory rename 完)
-- 次セッション開始点: 0x80051648 以降
+- 最後に処理した address: 0x80051dec (CarObjectManager_RunKartKartCollisionSweep rename 完)
+- 次セッション開始点: 0x80052158 以降
+
+### Session 37 完了分 (2026-05-18、10 件) — ItemEffect category starters + table-search helpers + kart-kart collision sweep
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80051648 | FUN_80051648 | ItemEffect_StartCategoryC | 9-entry DAT_802ed8c4 (12B/entry) で billboard mode 3 + full velocity freeze |
+| 0x80051834 | FUN_80051834 | ItemEffect_StartCategoryB | 11-entry DAT_802ed7bc (24B/entry) で 前/後の impact 角度別 damp |
+| 0x80051a70 | FUN_80051a70 | ItemEffect_StartCategoryA | 26-entry DAT_802ed5b4 (20B/entry) で 直線 velocity bounce |
+| 0x80051cb8 | FUN_80051cb8 | ItemTable_FindEntryByIdStride16 | 16B-stride linear search |
+| 0x80051cf0 | FUN_80051cf0 | ItemTable_FindEntryByIdStride12_v1 | 12B-stride (cat D) |
+| 0x80051d28 | FUN_80051d28 | ItemTable_FindEntryByIdStride12_v2 | 12B-stride (cat C) |
+| 0x80051d60 | FUN_80051d60 | ItemTable_FindEntryByIdStride24 | 24B-stride (cat B) |
+| 0x80051d98 | FUN_80051d98 | ItemTable_FindEntryByIdStride20 | 20B-stride (cat A) |
+| 0x80051dd0 | FUN_80051dd0 | CarObject_GetField304Vec3 | CarObject+0x304..+0x30c (3-float) → outVec3 |
+| 0x80051dec | FUN_80051dec | CarObjectManager_RunKartKartCollisionSweep | g_carObjectList 上の O(N²) kart-kart 衝突検出 (周期実行) |
+
+主要発見:
+- **ItemEffect 5-category system 全体像** が確定:
+  - Category A (DAT_802ed5b4, 26 entries × 20B): 直線 velocity bounce — banana / shell 直撃系
+  - Category B (DAT_802ed7bc, 11 entries × 24B): 前/後 impact 別 damp — 衝突 lateral
+  - Category C (DAT_802ed8c4, 9 entries × 12B): full freeze + billboard mode 3 — heavy stun
+  - Category D (DAT_802ed930, 1 entry × 12B): inline category — quake-like full freeze
+    (DAT_802ed934/938 effect ids)
+  - Category E (DAT_802ed93c, 1 entry × 16B): inline category — billboard mode 4 +
+    FUN_80052fb0 specialized (DAT_802ed940/944/948 effect ids)
+  Each category writes to KartItem 2-lane keys (self[3]/self[4]) which feed
+  KartItem_TickActiveEffectsTwoLane next frame.
+- **CarObjectManager_RunKartKartCollisionSweep** が kart-on-kart 衝突の amortized
+  sweep (毎フレーム N サイクル後に 1 回 full pass)。OBB bbox を CarObject mtx +
+  FUN_802d6618 ext で構築 + g_objCollChecker (CollisionTest_CalcPenetration) で
+  ペア判定 + vtbl[+0x3c] coupling callback。
+- **table-search idiom** 5 variant: 同一アルゴリズム (linear search for entry[0] == id)
+  が stride 別に 5 つの inline copy で展開 = CW template instantiation の典型痕跡。
+- **rsqrt NR 2-iter idiom** が ItemEffect Start * (A/C) でも使われ、累計 8 関数で
+  確認済み。
+
+副次 rename 候補:
+  FUN_80053290 / FUN_80053ae0 / FUN_80053d80 / FUN_80053e8c / FUN_80052fb0 →
+    各 category の effect-bus push helpers
+  FUN_80052288 / FUN_8005225c / FUN_800522d0 → bitset bit set / get / alloc
+  FUN_802090f0 / FUN_802091bc / FUN_80209180 → CollisionProxy ctor / init / dtor
+  FUN_802d6618 → CarObject bbox half-extent reader
+  CollisionTest_CalcPenetration は既存名 (既 named)
 
 ### Session 36 完了分 (2026-05-18、8 件) — ItemEffect tick lanes + status flags + per-effect callbacks + category dispatcher
 
@@ -1149,9 +1192,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-36)
+## 累計 (Session 1-37)
 
-合計 **363 件処理** (rename ~354、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **24.2%**
+合計 **373 件処理** (rename ~364、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **24.9%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
