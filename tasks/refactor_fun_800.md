@@ -25,8 +25,43 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80038288 (StrPcb_Init rename 完)
-- 次セッション開始点: 0x80038574 (ApplicationRunFlag_Get 周辺、もう既に session 2 で deferred 確定)
+- 最後に処理した address: 0x80038824 (ClStrPcb_Dtor rename 完)
+- 次セッション開始点: 0x80038e30 (ClStrPcb_Inner_Dtor 系から)
+
+### Session 13 完了分 (2026-05-18、8 件) — strpcb singleton lifecycle + clamp util
+
+strpcb の singleton boot/shutdown 系と汎用 saturate/clamp util。Session 2 で deferred
+名 `ApplicationRunFlag_Get` を採用した DAT_806d1010 getter は実は **strpcb singleton ptr
+getter** だったので訂正。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80038574 | ApplicationRunFlag_Get | StrPcb_GetInstance | strpcb singleton (DAT_806d1010) getter — Session 2 deferred の名前を訂正 |
+| 0x8003857c | FUN_8003857c | StrPcb_Shutdown | state 1 待ち block 後の singleton dispose (motor 暴走防止) |
+| 0x800386d0 | FUN_800386d0 | StrPcb_EnsureInstance | singleton lazy init (sizeof 0x70、初期 pos 0x1ff) |
+| 0x8003871c | FUN_8003871c | ObjectDtor_FreeField0_871c | dead code、no callers / no xrefs |
+| 0x80038778 | FUN_80038778 | Saturate_Double | double clamp 汎用 util (引数順 val/low/high) |
+| 0x80038798 | FUN_80038798 | Clamp_Int | int clamp 汎用 util (100+ caller 想定) |
+| 0x800387d8 | FUN_800387d8 | StrPcb_RegisterAtExitCleanup | g_strPcbOutBuf cluster の 2 区画分の atexit cleanup 登録 |
+| 0x80038824 | FUN_80038824 | ClStrPcb_Dtor | CW C++ ABI 3-level vtable downgrade dtor (派生→中間→基底) |
+
+主要発見:
+- **Session 2 訂正**: DAT_806d1010 は strpcb singleton ptr (= g_strPcbInstance)、
+  ApplicationRunFlag ではない。StrPcb_Shutdown が +0x8/+0x20/+0x24/+0x4c/+0x68 を
+  strpcb state struct として読み書きすることで確定
+- **strpcb struct size = 0x70**: StrPcb_EnsureInstance の Alloc(0x70) で確定
+- **初期 position 0x1ff = 中央**: 10-bit range 0..0x3ff の中点 (steering wheel home)
+- **shutdown sequence**: motor 動作中 (state != 1 && != 4) は state 1 (= init/ready) 達成まで
+  最大 0xe10 (3600) frames block してから free (force feedback 暴走防止)
+- **CW C++ 3-vtable downgrade**: ClStrPcb_Dtor で vtable を 803f56f0 → 803f5700 → 803f5710
+  順に「降ろす」破棄手順を観察 (CW ABI の典型)
+- **Saturate_Double / Clamp_Int** は汎用 util、副次調査で 100+ caller 確認予定
+
+副次 rename 候補:
+  DAT_806d1010 → g_strPcbInstance
+  FUN_80038e30 → ClStrPcb_Inner_Dtor (ClStrPcb_Dtor からの sub-object dispose)
+  FUN_80270c30 → AtExit_Register or Singleton_RegisterCleanup
+  PTR_803f56f0 / 803f5700 / 803f5710 → ClStrPcb 3-level vtable
 
 ### Session 12 完了分 (2026-05-18、16 件) — strpcb low-level setter/getter + ctor
 
@@ -243,9 +278,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-12)
+## 累計 (Session 1-13)
 
-合計 **169 件処理** (rename ~162、諦め ~7) / 1500 件 ≒ **11.3%**
+合計 **177 件処理** (rename ~169、諦め ~8) / 1500 件 ≒ **11.8%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
