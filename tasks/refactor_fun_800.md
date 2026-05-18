@@ -25,8 +25,42 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8003a0c4 (VolumeCalibration_Ctor rename 完)
-- 次セッション開始点: 0x8003a154 以降
+- 最後に処理した address: 0x8003a608 (MJObj_SetColorRGBA rename 完)
+- 次セッション開始点: 0x8003a71c 以降
+
+### Session 18 完了分 (2026-05-18、7 件) — my_class_library MObj/MJObj 派生クラス群
+
+format string "my_class_library" + "model.mobj.1" / "model.mobj" / assert "model.c" で
+mkgp2 独自の HSD MObj / JObj 派生クラス cluster を確認。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8003a154 | FUN_8003a154 | MJObj_SetColorRGBA_Float | 4 float RGBA → 255 scale + alpha clamp + byte 化 + MJObj_SetColorRGBA |
+| 0x8003a30c | FUN_8003a30c | MObj1_ClassInit | "model.mobj.1" の class init (parent = MObj、TEV stage 拡張版) |
+| 0x8003a368 | FUN_8003a368 | MObj1_TEVStateInit | MObj.1 instance の TEV stage / Z-mode 構成 build |
+| 0x8003a49c | FUN_8003a49c | MObj_ClassInit | "model.mobj" の base class init (parent = HSD MObj) |
+| 0x8003a4f8 | FUN_8003a4f8 | MObj_InitMember | MObj instance の per-class init (self+0x20 = default TObj) |
+| 0x8003a5a8 | FUN_8003a5a8 | MJObj_InitMember_RGBA | MJObj instance の per-class init (+0x88..+0x8b = 0xff RGBA default) |
+| 0x8003a608 | FUN_8003a608 | MJObj_SetColorRGBA | byte RGBA setter (各成分 [0, 0xff] clamp、assert で derived check) |
+
+主要発見:
+- **my_class_library** という mkgp2 独自の HSD 派生 class library 存在を確認
+  (format string "my_class_library" @ 0x802e9cc8)
+- **MObj 階層**: base "model.mobj" → 派生 "model.mobj.1" (TEV stage 拡張)
+- **MJObj layout**: 親 HSD JObj + +0x88..+0x8b RGBA byte field
+- **HSD_ClassInit** 6 引数 sig: (self vtable, parent vtable, library name, class name,
+  instance_size 0x54, ?)
+- assert source file "model.c" 確認 (mkgp2 model.h 系の class hierarchy)
+
+副次 rename 候補:
+  FUN_802df044 → TObj_BindToTEVStage (推測)
+  FUN_802def84 → MObj_BuildGXState
+  FUN_802dfef4 → MObj_SetZMode
+  FUN_802df164/8ec/24c/dec → MObj TEV combiner setters
+  DAT_803f5878 → MObj1 GX default constant
+  DAT_804fc200 / 804fc9d4 → HSD MObj.init / JObj.init member pointers
+  DAT_806d1038 → MObj default TObj data
+  PTR_FUN_803f5888 / 5834 / 5874 / 58cc → my_class_library class vtables
 
 ### Session 17 完了分 (2026-05-18、3 件) — VolumeCalibration scene tick/ctor/dtor
 
@@ -381,9 +415,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-17)
+## 累計 (Session 1-18)
 
-合計 **202 件処理** (rename ~194、諦め ~8) / 1500 件 ≒ **13.5%**
+合計 **209 件処理** (rename ~201、諦め ~8) / 1500 件 ≒ **13.9%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
