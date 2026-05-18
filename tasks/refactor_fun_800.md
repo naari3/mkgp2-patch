@@ -25,8 +25,64 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80037fb4 (StrPcb_ForceRun_Neutral rename 完)
-- 次セッション開始点: 0x80038050
+- 最後に処理した address: 0x80038288 (StrPcb_Init rename 完)
+- 次セッション開始点: 0x80038574 (ApplicationRunFlag_Get 周辺、もう既に session 2 で deferred 確定)
+
+### Session 12 完了分 (2026-05-18、16 件) — strpcb low-level setter/getter + ctor
+
+strpcb の field-level setter/getter 群と ctor。状態構造を field 単位で読み書きする
+内部 API。マニアックな field 直叩き helper が多いが、StrPcb_Init で全体構造が露呈。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80038050 | FUN_80038050 | StrPcb_ClearStatusBits | +0x24 status byte の bit clear |
+| 0x80038060 | FUN_80038060 | StrPcb_SetStatusBits | +0x24 bit set、JVS debounce gate 経路あり |
+| 0x800380c8 | FUN_800380c8 | StrPcb_SetTimer3c40 | timer B (intensity-scaled、modulo なし) を arm |
+| 0x800380f0 | FUN_800380f0 | StrPcb_SetTimer3034_38 | timer A (intensity-scaled、modulo 付き sign-flipping) を arm |
+| 0x8003811c | FUN_8003811c | StrPcb_SetCmdByte2f | cmd byte +0x2f setter |
+| 0x8003812c | FUN_8003812c | StrPcb_SetCmdByte2e | cmd byte +0x2e setter |
+| 0x8003813c | FUN_8003813c | StrPcb_SetCmdByte2d | cmd byte +0x2d setter |
+| 0x8003814c | FUN_8003814c | StrPcb_SetCounterField14 | +0x14 (counter offset) setter |
+| 0x8003815c | FUN_8003815c | StrPcb_GetReceivedPosData | +0x44 (H-prefix 16-bit pos) getter |
+| 0x80038164 | FUN_80038164 | StrPcb_SetPositionTarget | +0xc を 10-bit mask して set |
+| 0x80038178 | FUN_80038178 | StrPcb_IsInErrorState | +0x60 (countdown phase) == 4 判定 |
+| 0x8003818c | FUN_8003818c | StrPcb_GetIntensityScale | +0x4 master intensity scale getter |
+| 0x80038194 | FUN_80038194 | StrPcb_SetIntensityMode | mode 0..2 で DAT_802e9848 から intensity scale 適用 |
+| 0x800381e4 | FUN_800381e4 | StrPcb_BeginEffect | effect id で +0x6c (completion mask) + countdown 開始 |
+| 0x80038204 | FUN_80038204 | StrPcb_DrainInputBuffer | ring buffer 残留 byte を 20 cycle で全 drain |
+| 0x80038288 | FUN_80038288 | StrPcb_Init | strpcb ctor、boot で 1 回 (serial open + 2ms wait + drain) |
+
+主要発見:
+- **StrPcb state struct** layout が StrPcb_Init で大半確定:
+  - +0x04: master intensity scale (float, from DAT_802e9848[mode])
+  - +0x08: intensity mode (0..2)
+  - +0x0c: target position (10-bit)
+  - +0x10..+0x13, +0x28..+0x2b, +0x44..+0x47: RGBA 4-byte fields (0,0,1,255 = ?)
+  - +0x18: dirty flag (cmd 変更 → 次フレーム送信)
+  - +0x24..+0x27: status byte + flags
+  - +0x20: state (0=idle, 1=init, 3=running, 4=error)
+  - +0x2d/+0x2e/+0x2f: 3-byte command preset (neutral = 0x2d/0x14/0)
+  - +0x30..+0x43: timer A/B state (sign-flipping vibration)
+  - +0x44: H-prefix received 16-bit pos
+  - +0x48: intensity (0..1)
+  - +0x4c: intensity delta
+  - +0x58..+0x5a: last error code 3 char
+  - +0x5c: sticky error flag
+  - +0x60: countdown phase (1/2/3/4)
+  - +0x64: countdown value
+  - +0x68: alloc'd handle (4 byte)
+  - +0x6c: effect completion mask byte
+- **JVS との関連**: StrPcb_SetStatusBits の bit 4/8 で g_jvsDebounceEnable check
+  → status byte には JVS 由来の input も統合される
+- **timer 2 種類**: SetTimer3c40 (B、固定 duration) / SetTimer3034_38 (A、sign-flipping vibration)
+- **state machine が二重**: +0x20 (overall state、StrPcb_HasError) と +0x60 (countdown phase、
+  StrPcb_IsInErrorState) が独立
+
+副次 rename 候補:
+  DAT_802e9848 (3-float intensity mode table)
+  DAT_802e9838 (4-byte effect completion mask table)
+  FUN_802939f0 → SerialPort_Open (推測)
+  FUN_802554dc / FUN_802e5380 (boot/comm setup helpers)
 
 ### Session 11 完了分 (2026-05-18、11 件) — strpcb (Steering PCB) public API
 
@@ -187,9 +243,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-11)
+## 累計 (Session 1-12)
 
-合計 **153 件処理** (rename ~146、諦め ~7) / 1500 件 ≒ **10.2%**
+合計 **169 件処理** (rename ~162、諦め ~7) / 1500 件 ≒ **11.3%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
