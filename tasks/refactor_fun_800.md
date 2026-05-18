@@ -25,8 +25,42 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x800374f8 (StrPcb_OutputTick rename 完)
-- 次セッション開始点: 0x80037874 (FUN_80037874 以降)
+- 最後に処理した address: 0x80037fb4 (StrPcb_ForceRun_Neutral rename 完)
+- 次セッション開始点: 0x80038050
+
+### Session 11 完了分 (2026-05-18、11 件) — strpcb (Steering PCB) public API
+
+Session 10 で確定した strpcb subsystem の public-facing API 群。state machine 上で
+session 開始/停止、エラー検査、コマンドリセット、blocking sync wait を提供する。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80037874 | FUN_80037874 | StrPcb_TimerTick | timer +0x54 駆動の 60 frame 周期 neutral 再送、phase +0x50 で動作分岐 |
+| 0x80037ab0 | FUN_80037ab0 | StrPcb_BeginTimedNeutral | timer 0xe10 + state 3 + neutral 0x2d/0x14 で session 開始 |
+| 0x80037b68 | FUN_80037b68 | StrPcb_HasError | E?? (non-E00) or sticky error +0x5c を集約した bool |
+| 0x80037b9c | FUN_80037b9c | StrPcb_GetCommErrorFlag | byte +0x26 (10-retry 失敗 flag) getter |
+| 0x80037ba4 | FUN_80037ba4 | StrPcb_GetErrorCodeString | 最後の error 3-char code or fallback string |
+| 0x80037bd0 | FUN_80037bd0 | StrPcb_ResetCommands_Zero | command bytes を 0/0/0 にリセット (中立コマンド + 任意 intensity reset) |
+| 0x80037c44 | FUN_80037c44 | StrPcb_ResetCommands_Neutral | command bytes を 0x2d/0x14/0 にリセット (neutral preset + 任意 intensity reset) |
+| 0x80037cc0 | FUN_80037cc0 | StrPcb_WaitForState1 | state == 1 (= init/ready) になるまで block (0xe10 frames timeout) |
+| 0x80037e08 | FUN_80037e08 | StrPcb_RunAndWaitIdle | state 3 強制 + state == 0 (idle) になるまで block (1-shot 完了待ち) |
+| 0x80037f64 | FUN_80037f64 | StrPcb_ResetCommands_NeutralDefault | neutral preset、param 無し、intensity 維持 |
+| 0x80037fb4 | FUN_80037fb4 | StrPcb_ForceRun_Neutral | state 3 強制 + neutral (timer/wait なし) |
+
+主要発見:
+- **state machine values 集約**:
+  - 0 = idle (動作完了)
+  - 1 = init/ready (BeginTimedNeutral で達する目標)
+  - 3 = running (Begin 系で強制設定)
+  - 4 = error (timeout / retry 限界)
+- **command byte preset 2 種類**:
+  - Zero (0/0/0): 完全停止
+  - Neutral (0x2d/0x14/0): 「中立位置で待機」 (steering wheel の home position)
+- **reset variant 3 種類** (param 有無 + intensity reset 有無 で organize)
+- **sync wait pattern**: Frame_PostDrawOverlay + Frame_UpdatePerFrameState を毎フレーム
+  呼んで GUI を更新しつつ state 変化を待つ (0xe10 = 3600 frames = 60 秒 @60fps timeout)
+- **3 つの reset 系 (Zero / Neutral / NeutralDefault)** は CW テンプレートか overload の
+  ような系譜だが、param なし / intensity reset 有無で組分けされている
 
 ### Session 10 完了分 (2026-05-18、9 件) — strpcb (Steering PCB 通信) subsystem
 
@@ -153,9 +187,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-10)
+## 累計 (Session 1-11)
 
-合計 **142 件処理** (rename ~135、諦め ~7) / 1500 件 ≒ **9.5%**
+合計 **153 件処理** (rename ~146、諦め ~7) / 1500 件 ≒ **10.2%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
