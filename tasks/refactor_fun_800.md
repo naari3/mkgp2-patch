@@ -25,8 +25,47 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8004f2e8 (KartItem_SetStrPcbCmd2dFromFloat rename 完)
-- 次セッション開始点: 0x8004f340 以降
+- 最後に処理した address: 0x80050030 (ItemEffect_SelectAndDispatch rename 完)
+- 次セッション開始点: 0x800501b0 以降
+
+### Session 35 完了分 (2026-05-18、12 件) — KartItem cancel paths + velocity I/O + ItemEffect dispatcher
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8004f340 | FUN_8004f340 | KartItem_CancelActiveEffect | 2-lane teardown + 全 phys flag clear + SE 0x64 |
+| 0x8004f50c | FUN_8004f50c | KartItem_GetCarVelocityVec3 | CarObject+0x17c..0x184 → outVec3 |
+| 0x8004f540 | FUN_8004f540 | KartItem_SetCarVelocityVec3 | inVec3 → CarObject+0x17c..0x184 |
+| 0x8004f560 | FUN_8004f560 | KartItem_StopCarObjectSE | FUN_800579d8 wrapper |
+| 0x8004f584 | FUN_8004f584 | KartItem_TryArmBoostOnLanding | FUN_8019a8a4 probe + SE 0x56 + state 0x18 family begin |
+| 0x8004f628 | FUN_8004f628 | KartItem_SetCarObjectField2d4Float | CarObject+0x2d4 float setter |
+| 0x8004f634 | FUN_8004f634 | KartItem_SetCarObjectField1c8Float | CarObject+0x1c8 float setter |
+| 0x8004f668 | FUN_8004f668 | KartItem_ForwardToCarMovement_8019a4e0 | 1-line forwarder (callee 未確証) |
+| 0x8004f68c | FUN_8004f68c | KartItem_ForwardToCarMovement_8019a6a4 | 同 |
+| 0x8004f6b0 | FUN_8004f6b0 | KartItem_OnFallOffOrDeath | full cancel + 0xfc=1 flag + StrPcb idle (CancelActiveEffect の上位版) |
+| 0x80050010 | FUN_80050010 | ItemEffect_SelectAndDispatch_Wrap | argless trampoline |
+| 0x80050030 | FUN_80050030 | ItemEffect_SelectAndDispatch | 7-entry テーブル @ DAT_802ebe64 から effect id 解決 + dispatch |
+
+主要発見:
+- **KartItem cancel hierarchy** (3 段階):
+  1. KartItem_TryCancelIfDropAllowed — 通常 cancel (drop-handler 確認付き)
+  2. KartItem_CancelActiveEffect — 2-lane teardown + flag clear (アクティブ effect 中断)
+  3. KartItem_OnFallOffOrDeath — 完全 reset + StrPcb idle + +0xfc flag (落下/死亡)
+- **ItemEffect_SelectAndDispatch** が item effect 解決の central dispatcher。
+  DAT_802ebe64 の 7-entry テーブル (6-int stride、24 byte/entry) を逆順に検索、
+  type tag (1 = sourceCtx index, -1 = FUN_802dca5c index, 0 = fixed) で sub-id 選択。
+  result が FLOAT_806d26e4 の単一 sentinel と一致したら self vtbl[0x34] 直接呼び出し、
+  そうでなければ FUN_800501b0 (generic handler) に forward。
+- **CarObject velocity I/O accessors**: GetVec3 / SetVec3 で +0x17c..0x184 vector を
+  word-stride で raw copy する API が個別公開されている (= AI scripting で
+  cart 物理を直接書き換える経路の存在を示唆)。
+
+副次 rename 候補:
+  FUN_800579d8 → CarObject_StopAllSE
+  FUN_8019a8a4 → CarObject_IsBoostEligibleLanding
+  FUN_8019a4e0 / FUN_8019a6a4 → KartMovement の op (内容未確証)
+  FUN_800dd840 → ItemObject_GetVariantSlot? (返り値 byte が ItemEffect dispatch index)
+  FUN_802dca5c → KartCharacter_GetEffectIndex?
+  FUN_800501b0 → ItemEffect_GenericHandler (forward 先)
 
 ### Session 34 完了分 (2026-05-18、13 件) — KartItem shadow update + accessors + StrPcb command setters
 
@@ -1059,9 +1098,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-34)
+## 累計 (Session 1-35)
 
-合計 **343 件処理** (rename ~334、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **22.9%**
+合計 **355 件処理** (rename ~346、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **23.7%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
