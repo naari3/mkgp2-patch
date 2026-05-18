@@ -25,8 +25,45 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80041fe0 (KartDriver_TriggerSlotC3Action rename 完)
-- 次セッション開始点: 0x80042000 以降
+- 最後に処理した address: 0x80042610 (KartDriver_RenderTimed rename 完)
+- 次セッション開始点: 0x80042620 以降
+
+### Session 28 完了分 (2026-05-18、10 件) — KartDriver TickAction variants + Render dispatcher
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80042030 | FUN_80042030 | KartDriver_TickAction_79234 | slot 0xc3 ガード付き FUN_80079234 forwarder |
+| 0x80042080 | FUN_80042080 | KartDriver_TickAction_79244 | 同 FUN_80079244 forwarder |
+| 0x800420d0 | FUN_800420d0 | KartDriver_TickAction_79260 | 同 FUN_80079260 forwarder |
+| 0x80042120 | FUN_80042120 | KartDriver_TickAction_79268_AndSetSlot5aEulerZ | FUN_80079268 forwarder + slot 0x5a JObj Euler Z setter |
+| 0x80042238 | FUN_80042238 | KartDriver_TickAction_78778 | slot 0xc3 ガード付き FUN_80078778 forwarder |
+| 0x80042288 | FUN_80042288 | KartDriver_TickAction_78a3c | 同 FUN_80078a3c forwarder |
+| 0x800422d8 | FUN_800422d8 | KartDriver_TickAction_78d00 | 同 FUN_80078d00 forwarder |
+| 0x80042328 | FUN_80042328 | KartDriver_GetJObjRootIfReady | (self[0]!=0 && self[3]!=0) ? self[0] : 0 |
+| 0x80042350 | FUN_80042350 | KartDriver_Render | per-pass renderer: frustum cull + LOD + helper JObj + secondary draws |
+| 0x80042610 | FUN_80042610 | KartDriver_RenderTimed | KartDriver_Render + MetricsTable slot 0x17 |
+
+主要発見:
+- **TickAction forwarder family**: 7 個の near-identical 関数 (0x80042030/80/d0/120/238/288/2d8) が
+  すべて `if (loaded) { if (self[0xc3] != 0) FUN_80079xxx(); return 1; } else return 0;` の
+  パターン。各々が異なる FUN_80079xxx 系 action (item slot 系処理?) に dispatch。
+  特に 0x80042120 だけ slot 0x5a の JObj Euler Z を `self[0x5c] + deltaZ` で更新する
+  side-effect 付き (dirty-mark idiom も含む)。
+- **KartDriver_Render** (0x80042350) は per-pass renderer dispatcher:
+  - passMask bit semantic: <2 || ==4 で 不透明系 LOD mesh、<2 || ==3 で helper、
+    pre-race 中は LOD なし。
+  - LOD distance gate: FLOAT_806d25d0 (cull dist) → 25d4 (LOD0/1) → 25d8 (LOD1/2) → 25dc。
+  - JObj slot map: [0]=primary, [1]=LOD1, [2]=LOD2, [3]=helper(必須), [7]=optional helper
+    (self[0x5d] gate), [8]=second optional (self[0x54] gate)。
+  - 副次 dispatch: self[0xd7] → FUN_80231d4c、self[0xd8] → FUN_80245700。
+- **KartDriver_RenderTimed** (0x80042610) は MetricsTable slot 0x17 = "per-render ms" 計測。
+  これで KartDriver の per-frame profiling 経路の一端が見える。
+
+副次 rename 候補:
+  FUN_80079234/244/260/268 / FUN_80078778/8a3c/8d00 → ISE action handlers (slot 0xc3 系)
+  FUN_8025e3c4 → frustum cull テスト
+  FUN_801375d8 → 距離ベース vis test
+  FUN_80231d4c / FUN_80245700 → KartDriver helper renderer (d7/d8 系)
 
 ### Session 27 完了分 (2026-05-18、8 件) — KartDriver root accessor + per-slot transform setters
 
@@ -683,9 +720,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-27)
+## 累計 (Session 1-28)
 
-合計 **263 件処理** (rename ~255、諦め ~8) / 1500 件 ≒ **17.5%**
+合計 **273 件処理** (rename ~265、諦め ~8) / 1500 件 ≒ **18.2%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
