@@ -25,8 +25,25 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80030d48 (JObjTree_TranslateAndMul rename 完)
-- 次セッション開始点: 0x80031408
+- 最後に処理した address: 0x80031c50 (Object_SetJObjField40 rename 完)
+- 次セッション開始点: 0x80031cf8
+
+### Session 4 完了分 (2026-05-18、12 件) — JObj forwarding setters
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80031408 | FUN_80031408 | Object_SetColorRGBA | RGBA + dirty (obj[0x4c..0x58]) |
+| 0x80031488 | FUN_80031488 | Object_SetColorAlphaOnly | RGB 固定 + A 引数 |
+| 0x8003151c | FUN_8003151c | JObj_SetPosition | 直接 JObj 3 float setter |
+| 0x80031718 | FUN_80031718 | Object_JObjUpdate_be4 | JObj non-NULL で FUN_802d0be4 |
+| 0x80031744 | FUN_80031744 | Object_JObjUpdate_870 | JObj non-NULL で FUN_802d0870 |
+| 0x80031770 | FUN_80031770 | JObj_SetRotationQuat | jobj+0x1c..0x28 quat 候補 |
+| 0x8003185c | FUN_8003185c | Object_SetJObjRotationZ | jobj+0x24 Euler Z |
+| 0x80031924 | FUN_80031924 | Object_SetJObjRotationY | jobj+0x20 Euler Y |
+| 0x800319ec | FUN_800319ec | Object_SetJObjRotationX | jobj+0x1c Euler X |
+| 0x80031ab4 | FUN_80031ab4 | Object_SetJObjPositionXYZ | jobj+0x2c..0x34 scalar 3 |
+| 0x80031b7c | FUN_80031b7c | Object_SetJObjScaleVec | 同 offset、assert "scale" |
+| 0x80031c50 | FUN_80031c50 | Object_SetJObjField40 | jobj+0x40 1 float |
 
 ### Session 3 完了分 (2026-05-18、19 件)
 
