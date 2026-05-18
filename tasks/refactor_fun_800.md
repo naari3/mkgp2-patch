@@ -25,8 +25,38 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x800320d8 (Object_SetByte48 rename 完)
-- 次セッション開始点: 0x800320e0
+- 最後に処理した address: 0x8003267c (Object_CopyFieldsRotPosScale rename 完)
+- 次セッション開始点: 0x800326d0
+
+### Session 6 完了分 (2026-05-18、8 件) — JObj getters + pose blend tree
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x800320e0 | FUN_800320e0 | Object_GetJObjPositionVec | translate getter (assert "translate") |
+| 0x80032188 | FUN_80032188 | Object_GetJObjLocalMatrix | jobj+0x44 ptr (dirty recalc) |
+| 0x80032234 | FUN_80032234 | Object_SetField14_IfValid | obj+0x14 float setter (用途未特定) |
+| 0x8003227c | FUN_8003227c | Object_SetField8_AndDirty | obj+0x8 float setter + dirty marker |
+| 0x800322cc | FUN_800322cc | Object_GetField8 | obj+0x8 float getter |
+| 0x800322f8 | FUN_800322f8 | ObjectTree_BlendOrCopy | pose blend/copy 再帰 walker |
+| 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
+| 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
+
+## 累計 (Session 1-6)
+
+合計 **113 件処理** (rename ~107、諦め ~6) / 1500 件 ≒ **7.5%**
+
+主要発見:
+- mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
+- **FlowDispatcher** (singleton @ DAT_806d0f80、0x38 byte struct) で scene state machine を管理。Flow_TransitionTo / FlowDispatcher_Create / FlowDispatcher_Dtor の trio。
+- **MainGameLoop** の per-frame: Frame_Begin → Scene_Draw → Frame_PostDraw_BackupBuffer → Frame_PostDrawOverlay → Vtable_CallSlot2 → Flow_TransitionTo の cycle。
+- **Service / VBlank latch** system (Enable + Value 2 byte ペア × 2)、boot で init、ServiceButton_Handler / PCBComm が consume。
+- **HSD JObj** struct layout 確定 (assert "scale" / "translate" 経由):
+  - +0x1c..0x24: rotation Euler XYZ
+  - +0x2c..0x34: scale XYZ
+  - +0x38..0x40: position/translate XYZ
+- **CObj** (Camera Object、cobj.c) の projection / matrix cache / line buffer / render pass dispatcher。
+- **ScopedTimer + MetricsTable** (g_metricsTable[0..0x2f]) で per-feature timing 計測 (draw=slot 2、run=slot 6、frame=slot 0、backup buffer=slot 0x15、pose blend=slot 9)。
+- "Dead instrumentation" cluster (DAT_806d0fb8 / DAT_805940ec / DAT_806ced48): write-only globals、release build で消された debug counter の残骸。
 
 ### Session 5 完了分 (2026-05-18、8 件 + 訂正 2 件) — JObj position/rotation getters/setters
 
