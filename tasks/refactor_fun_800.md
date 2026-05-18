@@ -25,8 +25,18 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8003267c (Object_CopyFieldsRotPosScale rename 完)
-- 次セッション開始点: 0x800326d0
+- 最後に処理した address: 0x80033fe0 (Object_SetAnimBinding rename 完)
+- 次セッション開始点: 0x80034100
+
+### Session 7 完了分 (2026-05-18、5 件) — animation + skin pipeline
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x800326d0 | FUN_800326d0 | ObjectTree_BlendQuatLerp | 2 JObj pose を blend (linear pos/scale + quat slerp rot) |
+| 0x80032a70 | FUN_80032a70 | Object_SetField8_10_14 | obj+0x8/+0x10/+0x14 一括 setter |
+| 0x800331e0 | FUN_800331e0 | Object_DriveAnimAndSkin | animation drive + skinning pipeline core (metric 8/0xb/7) |
+| 0x80033f10 | FUN_80033f10 | Object_ClearAnimBinding | anim binding clear (obj+0x3c) |
+| 0x80033fe0 | FUN_80033fe0 | Object_SetAnimBinding | anim binding set (obj+0x3c) |
 
 ### Session 6 完了分 (2026-05-18、8 件) — JObj getters + pose blend tree
 
