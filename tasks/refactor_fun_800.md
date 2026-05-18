@@ -25,8 +25,44 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8005a140 (KartItemAudio_StopSEByItemId rename 完)
-- 次セッション開始点: 0x8005a314 以降
+- 最後に処理した address: 0x8005b104 (InputCmd_SetGlobalConfig rename 完)
+- 次セッション開始点: 0x8005b118 以降
+
+### Session 49 完了分 (2026-05-18、12 件) — KartItemAudio Throw/HitConfirm + InputCmd gesture detector
+
+| Address | 新名 | 用途 |
+|---|---|---|
+| 0x8005a314 | KartItemAudio_PlayHitConfirmSE | itemId 別 victim hit SE pair (0x63 + 0x8a 等) |
+| 0x8005a638 | KartItemAudio_PlayThrowConfirmSE | itemId 別 throw SE (0x64/0xa1/0xc6/0xc7/0xa4) |
+| 0x8005aa04 | InputCmd_DetectGesturePattern | ring buffer + 3-type pattern FSM (steering wheel cmd 検知) |
+| 0x8005ae74 | InputCmd_TickAndDetectAndClear | 毎フレーム detect + cooldown + buffer clear |
+| 0x8005af4c | InputCmd_PushSample | head に 4-float sample push (full なら tail++) |
+| 0x8005afe0 | InputCmd_Dtor | buffer free (-0x10 offset = alloc header) + self free |
+| 0x8005b040 | InputCmd_Init | capacity 渡しの ctor (60-entry buffer alloc + 5-arg placement-new) |
+| 0x8005b0ec | InputCmd_SetCooldown | +0x2c cooldown setter |
+| 0x8005b0f4 | InputCmd_GetDetectedFlag | +0x28 byte (detected this frame) getter |
+| 0x8005b0fc | InputCmd_GetGlobalConfig | DAT_806cee50 (global config) getter |
+| 0x8005b104 | InputCmd_SetGlobalConfig | DAT_806cee50 setter |
+
+主要発見:
+- **InputCmd (= ステアリングホイール gesture detector)**:
+  - 60-entry × 0x14 byte ring buffer (head+0x24 / tail+0x20)
+  - 各 entry: float[4] sample + valid byte
+  - 3 pattern type (state[+0x14] = 0/1/2) で異なる "左→右" gesture を検知
+  - Detect 成功で +0x28 = 1 frame flag set、buffer flush、cooldown +0x2c 設定
+  - `s_cmd_cpp_806d2968` = "cmd.cpp" debug label で StrPcb 系である可能性大
+- **KartItemAudio 4 dispatcher family が完成**:
+  - PlaySEByItemId (0x8005982c, Session 48) — initial play
+  - StopSEByItemId (0x8005a140, Session 48) — stop matching SE
+  - PlayHitConfirmSE (0x8005a314) — victim hit confirm (0x63+0x8a 等)
+  - PlayThrowConfirmSE (0x8005a638) — thrower throw confirm (0x64/a1/c6/c7/a4)
+  全 4 つが ItemAlias_DestToSource canonicalization 経由で itemId を解決。
+- **DAT_806cee50 global** は InputCmd 共有の config / state pointer。複数インスタンスが
+  共有する設計。
+
+副次 rename 候補:
+  DAT_806cee50 → g_InputCmdGlobalConfig
+  FUN_80270f20 → ArrayPlacementNew (5-arg = (ptr, ctor, ?, stride, count))
 
 ### Session 48 完了分 (2026-05-18、8 件) — KartAudioChannel SE 制御 + KartItemAudio dispatcher
 
@@ -1700,9 +1736,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-48)
+## 累計 (Session 1-49)
 
-合計 **491 件処理** (rename ~478、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **32.7%**
+合計 **503 件処理** (rename ~490、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **33.5%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
