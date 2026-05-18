@@ -25,8 +25,56 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80047118 (CourseEnvironment_RenderObjects_Timed rename 完)
-- 次セッション開始点: 0x800471b0 以降
+- 最後に処理した address: 0x80049718 (NamCam_End rename 完)
+- 次セッション開始点: 0x80049860 以降
+
+### Session 30 完了分 (2026-05-18、14 件) — CourseEnvironment update/dtor + JObj eval helpers + NamCam shutdown
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x800471b0 | FUN_800471b0 | CourseEnvironment_UpdateAndCullZones | env per-frame update + zone-based jobj Show/Hide |
+| 0x80047608 | FUN_80047608 | CourseEnvironment_UpdateAndCullZones_Timed | timed wrapper、metrics slot 0x1f |
+| 0x800476a0 | FUN_800476a0 | CourseEnvironment_ResolveJointInSlot0 | scene+0x50 (primary clN) で joint name lookup |
+| 0x80048378 | FUN_80048378 | CourseEnvironment_ZeroInit | scene root の zero-init (4 × 0x28-word block loop 含む) |
+| 0x800484c0 | FUN_800484c0 | CourseEnvironment_Dtor | scene tear-down (8 anim-jobj + 6 singleton subsystem + 0x20-slot table 全 free) |
+| 0x80048798 | FUN_80048798 | JObj_EvalIfDirtyAndGetMtxPtr | assert + cond FUN_802d1e34 + return jobj+0x44 (local mtx) |
+| 0x80048820 | FUN_80048820 | JObj_EvalIfDirty | side-effect only variant |
+| 0x80048890 | FUN_80048890 | JObj_NeedsEval | predicate `(flags & 0x800000)==0 && (flags & 0x40)!=0` |
+| 0x800488f4 | FUN_800488f4 | Class803f7494_Dtor | vtable @ 0x803f7494 の class virtual dtor (class identity unconfirmed) |
+| 0x8004893c | FUN_8004893c | FUN_8004893c_TrampolineTo_801ba110 | FUN_801ba110 への 1-line forwarder (placeholder 名) |
+| 0x8004895c | FUN_8004895c | AcError_LogIfError | acGetLastError 経由のエラーコード分岐 DebugPrintf |
+| 0x80048c34 | FUN_80048c34 | Asset_LoadAndDecompressByType | path + decoderType(0..3) dispatch で asset load+decompress |
+| 0x80049628 | FUN_80049628 | NamCam_TickShutdownCountdown | 120-frame countdown による NamCam 段階的 free |
+| 0x80049718 | FUN_80049718 | NamCam_End | namcam_end 文字列、2-phase 120fr spin + 同期 free |
+
+主要発見:
+- **CourseEnvironment system** の lifecycle 4 関数確定:
+  - ZeroInit → CourseScene_Load (既 named) → UpdateAndCullZones (毎フレーム) → Dtor
+  - scene root の field map:
+    +0x14/+0x1c = primary/alt jobj、+0x4c = clN driver table、+0x50..+0x6c = 8 anim jobj、
+    +0x74 = view mtx scratch、+0xb0/+0xb4/+0xb8 = decal/billboard/clRom、
+    +0xbc = zone-mask table、+0xc0..+0x340 = 0x20-slot × 0x14 visibility counter、
+    +0x340..+0x35c = 8-slot env-zone、+0x360..+0x374 = 6 singleton subsystems
+- **JObj eval helper triplet** が ObjectChain_RenderInZRange / KartDriver_TickAction で
+  使われている idiom の primitive。`(flags & 0x800000)==0 && (flags & 0x40)!=0` で
+  "needs eval" 判定、FUN_802d1e34 で評価 cascade。
+- **NamCam system** (DAT_806d1070): namcam-end 文字列確認、120-frame countdown 付き
+  shutdown sequence。同期版 NamCam_End と tick 版 NamCam_TickShutdownCountdown のペア。
+- **Class803f7494_Dtor**: 0x803f7494 の vtable を持つ小型 class の virtual dtor。
+  xref tool 復活後に class identity を pin して proper name に置き換えるべき。
+
+副次 rename 候補:
+  FUN_802d1e34 → JObj_EvalIfDirtyAndUpdate (recurring caller from 3 helpers above)
+  FUN_8025d1b8 → store view mtx into ctx scratch
+  FUN_80174c30 / FUN_80174090 / FUN_8017a614 / FUN_8017acf4 → env effect dtors
+  FUN_802406a4 → HUD-light dtor
+  acGetLastError は既存名 → acIPC error layer
+  FUN_8029ab64 / aeec / af5c / b3e4 / b54c / ba2c / bcf0 → asset decompressor backend (4 types)
+
+deferred:
+  0x8004893c は raw forwarder; FUN_801ba110 の意味 (callee の文脈) に依存する。
+  xref tool 復活後に決定。プレースホルダ名で残す。
+  0x800488f4 (Class803f7494_Dtor) も同様、xref で class identity を pin する必要あり。
 
 ### Session 29 完了分 (2026-05-18、14 件 + 1 deferred) — KartDriver new/dtor chain + course env renderer
 
@@ -765,9 +813,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-29)
+## 累計 (Session 1-30)
 
-合計 **288 件処理** (rename ~279、諦め ~9) / 1500 件 ≒ **19.2%**
+合計 **302 件処理** (rename ~293、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **20.1%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
