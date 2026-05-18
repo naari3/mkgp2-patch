@@ -25,8 +25,52 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8005d504 (ActionLock_Step rename 完)
-- 次セッション開始点: 0x8005d564 以降
+- 最後に処理した address: 0x8005e46c (clItemBoxResponder_SpawnDebris rename 完)
+- 次セッション開始点: 0x8005e7e4 以降
+
+### Session 55 完了分 (2026-05-18、15 件) — clItemBoxResponder debris subsystem cluster
+
+`/item_box.dat` / `item_box_hahen_null1_joint` / `clItemBox::setup` / `clItemBoxManager` /
+`clItemBoxResponder` の rodata neighbor から推定した item-box の **shatter debris**
+(箱壊れエフェクト) サブシステム。0x2c-byte particle × 15 の array に gate byte が前置された
+0x298 byte buffer を Alloc → seed → 毎フレーム Tick + Draw → 全 particle 死亡で gate=0 で
+auto cleanup。
+
+| Address | 新名 | 用途 |
+|---|---|---|
+| 0x8005d564 | OrphanDtorWrapper_8005d564 | CW deleting-dtor wrapper、vtbl[2] indirection (= +0x8) |
+| 0x8005d5f4 | OrphanDtorWrapper_8005d5f4 | (同上) byte-identical sibling |
+| 0x8005d684 | OrphanDtorWrapper_8005d684 | (同上) |
+| 0x8005d714 | OrphanDtorWrapper_8005d714 | (同上) |
+| 0x8005d7a4 | OrphanDtorWrapper_8005d7a4 | (同上) |
+| 0x8005d834 | OrphanDtorWrapper_8005d834 | (同上) |
+| 0x8005d8c4 | OrphanDtorWrapper_8005d8c4 | (同上) |
+| 0x8005d954 | clItemBoxResponder_DebrisArray_Dtor | 15 × 0x2c particle を FUN_80270cf4 で per-element 破棄、buf+self free |
+| 0x8005d9d4 | clItemBoxResponder_DebrisParticle_Dtor | particle+0x1c (alpha) を 0.0 にリセットして optional free |
+| 0x8005da18 | clItemBoxResponder_Rebind | DAT_806ceea0 (state) + DAT_806d10b0/b4/b8 (3 GX channel handle) の bind/unbind |
+| 0x8005db3c | clItemBoxResponder_DrawDebris | 15-iter foreach、gate (elem[0]==0) で early return、DrawDebrisParticle dispatch |
+| 0x8005dba0 | clItemBoxResponder_DrawDebrisParticle | (rotA ⋅ rotB ⋅ scale) 4x4 + translation 構築 → 4x3 transpose → FUN_8007d11c(DAT_806d10b8) で GX 送信 |
+| 0x8005e330 | clItemBoxResponder_TickDebris | per-frame: lifetime decay (+0x20)、alpha decay+clamp (+0x1c)、pos += vel、vel damping、spin increment。全 dead で gate=0 |
+| 0x8005e46c | clItemBoxResponder_SpawnDebris | Alloc(0x298)、各 slot に pos=spawnPos / vel=1.5·dir + 6·rand outward-biased / alpha=0.75 / scale ∈ [0.2, 3.0] / spinA/B = 360°·rand / lifetime = 0.3s |
+
+主要発見:
+- **clItemBoxResponder** クラス所属は rodata string 隣接 (0x802edef8..0x802ee010) からの推定、xref で
+  vtable 直接確認は未 (今 session で xref tool group がロード済みでも個別 tool schema が表面化
+  せず使えなかった)。caller-confirmed ではないので class 名は要再確認。
+- **debris particle (0x2c byte) layout**:
+  - +0x00..+0x0b: position (3 floats)
+  - +0x0c..+0x17: velocity (3 floats)
+  - +0x1c: alpha
+  - +0x20: lifetime
+  - +0x24/+0x28: rotation angles (spinA/B)
+  - +0x2c: **次 elem の byte_0 (= gate alias)**。各 particle の spinB write が elem[N+1] の最初 byte
+    を踏むという CW emission の罠。gate は elem[0] のみ使われる前提なので harmless だが、要注意。
+- **tuning constants** (FLOAT_806d29a8..FLOAT_806d29e4 cluster):
+  frame dt 1/60、alpha decay 0.11、velocity damping 0.999、spin step 0.105 rad/frame、
+  init alpha 0.75、scale 0.2..3.0、spin range 360°、init lifetime 0.3s。
+- **7 OrphanDtorWrapper の caller-class 未確定**: 全 byte-identical で `(**(code **)(*self + 8))(self, 1)` のみ。
+  vtbl[2] indirection なので T の class 7 種類が存在するはずだが、xref tool 未使用で特定できず。
+  address-suffix で衝突回避命名済。
 
 ### Session 54 完了分 (2026-05-18、12 件 + 17 質改善 rename) — RTTI 解析で 8 sub-state class 完全特定 + Reset/Step 全 method 同定
 
@@ -1917,9 +1961,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-54)
+## 累計 (Session 1-55)
 
-合計 **543 件処理** (rename ~530、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **36.2%**
+合計 **558 件処理** (rename ~545、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **37.2%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
