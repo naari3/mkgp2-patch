@@ -25,8 +25,117 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80088d08 (cLNormal3DWrap_Mgr_AcquireSlot rename 完)
-- 次セッション開始点: 0x80089xxx 以降
+- 最後に処理した address: 0x8008ce58 (PlayStats_AccumulateFinishByRank rename 完)
+- 次セッション開始点: 0x8008d000 以降
+
+### Session 62 完了分 (2026-05-18、87 件) — 4 並列 background agent Q/R/S/T
+
+**Agent Q cluster (36 件、0x8008909c..0x80089fa4)** — cLNormal3DWrap_Mgr + ModelHandle + AssocTree + CardTaskManager:
+
+cLNormal3DWrap_Mgr (singleton @ DAT_806d14a8、course-object 3D wrap registry、0x200-slot pool):
+- 0x8008909c Dtor / 0x800891cc Ctor (0x99 ModelHandle + 0x88×0x200 slot pool + 8-way batch table)
+- 0x800893b8 Slot_Dtor / 0x80089424 Slot_ResolveJoint
+- 0x8008946c..0x80089640 帯: Slot setter cluster
+  (SetAnimSpeed/SetAnimFrame/ClearMatrixSource/SetMatrixSource/SetRotationQuat/AdvanceUVScrollWrapped/
+   SetRenderFlags/SetRotationZ/SetRotationXYZ/SetScaleVec3/SetPositionXYZ/GetOrLoadJointTransform/
+   AdvanceAnimFrame/Render)
+- 0x800897b8 MgrBase_Dtor
+
+ModelHandle (0xc byte registry entry):
+- 0x80089760 GetArchive / 0x80089768 GetInstance / 0x80089770 IncRefcount
+- 0x80089780 DecRefcountToZero / 0x8008979c Init / 0x800897b0 SetInstance
+
+AssocTree (std::map-style binary tree + std::allocator stubs):
+- 0x80089834 FreeAll (2-level postorder walk)
+- 0x80089bfc/c04/c08/c28/c2c/c30/c54 GetHeaderField4 / Allocator_*_Noop (5 件、std::allocator interface)
+- 0x80089c08 AssocTree_Init / 0x80089c54 Allocator_Deallocate
+
+CardTaskManager (singleton @ DAT_806d0f90、BootDispatcher 駆動の boot-time card task pipeline):
+- 0x80089c58 RenderOverlay (per-frame status table) / 0x80089e78 Tick / 0x80089fa4 Dtor
+
+命名保留 (Agent Q): Allocator_*_Noop 5 件は std::allocator hook 推測、具体 class 名未確定。AssocTree も同様。
+Slot+0x2c..+0x38 の 4-float block の用途断定保留 ("位置から quat っぽい" 止まり)。
+
+**Agent R cluster (19 件、0x8008a058..0x8008af20)** — card-task framework: 3 task class (Welcome / WaitInput / PrintJob):
+
+Welcome task (vtable 0x803fe898、status banner + comm-error UI):
+- 0x8008a058 Dtor / 0x8008a2a0 New (Alloc 0x1c) / 0x8008a310 StepStatus
+- 0x8008a404 StepCommCheck (error gate) / 0x8008a49c StepInputCheck (stub return 3)
+- 0x8008a4c8 DrawStatus (locale-indexed banner、MainGameLoop から呼ばれる)
+- 0x8008a6d4 StateInit / 0x8008a72c TickCounter / 0x8008a764 DrawByPhase
+
+WaitInput task (vtable 0x803fe86c、JVS AUX96/extra btn 0x2400 を 0x3c-tick debounce):
+- 0x8008aa20 New (Alloc 0x10) / 0x8008aa6c Dtor / 0x8008aac8 StateInit
+- 0x8008aae8 StepPoll (mask 0x2000+0x400) / 0x8008ac00 DrawByButtons
+
+PrintJob task (vtable 0x803fe840、Sci2Card font-transfer flow):
+- 0x8008ad28 New (Alloc 0x3c + aux 0x14) / 0x8008ae00 StepStart (Sci2Card probe + FUN_800948d4 kick)
+- 0x8008aef0 StepNoCardPrinter (terminal log + return 4)
+- 0x8008af20 StepWaitFontTransfer (measure time + remain cards check)
+
+そして共通 base:
+- 0x8008a654 CardTaskBase_Dtor (generic two-level vtable unwind)
+
+**Agent S cluster (13 件、0x8008b0a4..0x8008bfa8)** — nsWakeup::clCardPrinterChecker + clCameraChecker:
+
+CARD task clCardPrinterChecker (11、vtable 0x803fe840、boot 時 card-printer 状態確認 state machine):
+- 0x8008b744 dtor / 0x8008b7e8 State_InitPrinter (entry、Sci2Card_SendCmdRetry 発火)
+- 0x8008b0a4 State_WaitStatus (get_status コマンド送出後)
+- 0x8008b130 State_SetupCleaning (printer-ready 後 dispatcher、isJapanese gate)
+- 0x8008b2d4 State_RemainCardJobEnd (排出後 job 完了確認)
+- 0x8008b45c State_CleaningSelectInput (pad 0x2000/0x400 で キャンセル/exec)
+- 0x8008b5b0 State_ExecCleaning (job poll、成功 2 / 失敗 エラー)
+- 0x8008b670 State_WaitHandle (ハンドル「スタート」0x1000 待ち)
+- 0x8008b6f4 ReadCleaningChoice (pad button 読み helper)
+- 0x8008b8a0 PostFrame (vtable +0x18 thunk、命名保留: 役割未確定)
+- 0x8008b8c8 Draw (sub-state 別 text/icon)
+
+CAMERA task clCameraChecker (2、vtable 0x803fe7e0):
+- 0x8008bf30 Alloc (Alloc 0x24 + ctor) / 0x8008bfa8 State_Entry (StrPcb 監視 + namcam_check VBlank gate)
+
+**Agent T cluster (19 件、0x8008c03c..0x8008ce58)** — CameraChecker 続き + TexMgr_DrawText_Format + DailyClock + OperationClockState + PlayStats:
+
+CameraChecker 続き (6):
+- 0x8008c03c State_DownloadWait (image-fetch 待ち)
+- 0x8008c1a8 State_WaitButton1000 / 0x8008c230 State_WaitButton2400
+- 0x8008c2c0 State_ShutdownTick (NamCam shutdown 待ち)
+- 0x8008c328 Dtor / 0x8008c398 State_WaitVBlank / 0x8008c508 Draw (JP/EN テキスト 2-3 行)
+
+CardTask dispatch helpers (2):
+- 0x8008c420 CardTaskDispatch_WithFrameBudget (FUN_80271318 + OSTick budget + StrPcb input drain)
+- 0x8008c4e8 CardTask_NamCamEndTrampoline (NamCam_End trampoline table @ 0x803fe830)
+
+TexMgr text drawer (2):
+- 0x8008c6fc TexMgr_DrawText_Format (va_list header 0x06020000)
+- 0x8008c824 TexMgr_DrawText_Format_Variant2 (va_list header 0x02020000)
+
+DailyClock + OperationClockState (5):
+- 0x8008c930 DailyClock_GetCurrentSeconds (OSGetTime → 秒/日)
+- 0x8008c974 OperationClockState_CommitDelta (state 2→3 で delta 確定)
+- 0x8008ca14 RefreshCurrent / 0x8008caac StartTick (state 1→2)
+- 0x8008cb20 Reset (4 int zero + state=1)
+
+PlayStats (3):
+- 0x8008cb3c PlayStats_AccumulatePlayTime (total + gameMode 別 frame counter)
+- 0x8008cc6c AccumulateCcClassPlay ((gameMode × ccClass) play counter、8 slots)
+- 0x8008ce58 AccumulateFinishByRank ((characterId × rank) finish counter + rank==1 total wins)
+
+主要発見 (Session 62):
+- **cLNormal3DWrap_Mgr 全貌**: course object の 3D wrap registry、0x99 ModelHandle + 0x200 slot pool。
+  AcquireSlot (0x80088d08、Session 61 で命名) と ReleaseSlot (0x80088c84) を含む完全 API。
+- **CardTask 3 段階 framework**:
+  - 上位: CardTaskManager (singleton @ DAT_806d0f90、Boot 時 Tick driver、Session 62 Agent Q)
+  - 中位: clCardPrinterChecker / clCameraChecker (state machines、Agent S/T)
+  - 下位: Welcome / WaitInput / PrintJob (汎用 task class、Agent R)
+  - vtable group: 0x803fe898 / 0x803fe86c / 0x803fe840 / 0x803fe7e0
+- **PlayStats** が character-id × rank、cc-class × game-mode 等の cross-tabulated counter を保持。
+  arcade operator がメンテで参照する統計データ。
+- **OperationClockState** = 4-int state machine、稼働時間の delta 確定用。state 1 (idle) → 2 (ticking) → 3 (delta committed) → 1 (reset)。
+
+命名保留 (Session 62、合計 7 件):
+- Agent Q: Allocator_*_Noop 5 件 (std::allocator hook、具体 class 名未確定)
+- Agent S: 0x8008b8a0 CardPrinterChecker_PostFrame (vtable +0x18 thunk の役割未確定)
+- Agent Q: cLNormal3DWrap_Slot_SetRotationQuat (+0x2c..+0x38 用途断定保留)
 
 ### Session 61 完了分 (2026-05-18、80 件) — 4 並列 background agent M/N/O/P
 
@@ -2413,12 +2522,12 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-61)
+## 累計 (Session 1-62)
 
-合計 **864 件処理** (rename ~833、諦め ~9、プレースホルダ rename 6 + 25 = 31) / 1500 件 ≒ **57.6%**
-(Session 56-58 = +49 件、Session 59 = +50 件、Session 60 = +127 件、Session 61 = +80 件 (Agent M 34 + N 25 + O 11 + P 10、命名保留 11 含む)、合計 +306 件)
+合計 **951 件処理** (rename ~913、諦め ~9、プレースホルダ rename 6 + 32 = 38) / 1500 件 ≒ **63.4%**
+(Session 56-58 = +49 件、Session 59 = +50 件、Session 60 = +127 件、Session 61 = +80 件、Session 62 = +87 件 (Agent Q 36 + R 19 + S 13 + T 19、命名保留 7 含む)、合計 +393 件)
 
-**マイルストーン到達: 50% 通過 (Session 60)、57% 通過 (Session 61)**
+**マイルストーン到達: 50% 通過 (Session 60)、60% 通過 (Session 62)**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
