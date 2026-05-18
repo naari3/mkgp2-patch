@@ -25,8 +25,30 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80039e10 (VolumeCalibration_DrawOverlay rename 完)
-- 次セッション開始点: 0x80039edc 以降
+- 最後に処理した address: 0x8003a0c4 (VolumeCalibration_Ctor rename 完)
+- 次セッション開始点: 0x8003a154 以降
+
+### Session 17 完了分 (2026-05-18、3 件) — VolumeCalibration scene tick/ctor/dtor
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80039edc | FUN_80039edc | VolumeCalibration_Tick | per-frame JVS raw input min/max tracking + strpcb pos read + 入力分岐 |
+| 0x8003a00c | FUN_8003a00c | VolumeCalibration_Dtor | commit calibration to DAT_80598a94..a0 + strpcb pos + NVRAM persist |
+| 0x8003a0c4 | FUN_8003a0c4 | VolumeCalibration_Ctor | Alloc(0x28) + 初期値 (steering 0x7a40/+0x1ff、accel/brake は jvs raw) |
+
+主要発見:
+- VolumeCalibration scene struct (0x28 byte) layout: +0x4 current steering, +0x8 strpcb pos,
+  +0x10/+0x14/+0x18/+0x1c/+0x20/+0x24 で steering/accel/brake の min/max
+- 入力 button code: 0x401 = exit、0x40 = confirm/ack (cabinet ack feedback)
+- DAT_80598a94..a0 = saved calibration globals (steering/center/accel/brake)
+- 0x1ff = 中央 position (10-bit center)、再認
+
+副次 rename 候補:
+  DAT_80598a94..a0 → g_savedCalibration cluster
+  FUN_8003959c / 955c / 951c → per-axis clamp/commit (3 axis ともに)
+  FUN_80075470 → CalibrationData_SaveToNVRAM (推測)
+  GameMode_BaseInit (FUN_???)
+  PlayerInput vtable[8] → IsButtonPressed
 
 ### Session 16 完了分 (2026-05-18、4 件) — metrics init/shutdown + volume calibration overlay
 
@@ -359,9 +381,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-16)
+## 累計 (Session 1-17)
 
-合計 **199 件処理** (rename ~191、諦め ~8) / 1500 件 ≒ **13.3%**
+合計 **202 件処理** (rename ~194、諦め ~8) / 1500 件 ≒ **13.5%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
