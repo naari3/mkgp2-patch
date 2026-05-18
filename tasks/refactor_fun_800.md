@@ -25,8 +25,94 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8007fe0c (DrawCarRouletteAndQuad rename 完)
-- 次セッション開始点: 0x8008xxxx 以降
+- 最後に処理した address: 0x80088d08 (cLNormal3DWrap_Mgr_AcquireSlot rename 完)
+- 次セッション開始点: 0x80089xxx 以降
+
+### Session 61 完了分 (2026-05-18、80 件) — 4 並列 background agent M/N/O/P
+
+**Agent M cluster (34 件、0x800801f8..0x80082960)** — vtable dtor + Lakitu (jyugemu) flag + CreditMgr + ShadowBillboard:
+
+ShadowBillboard 続き (1):
+- 0x800801f8 ShadowBillboard_SetEffectParams (mode-5 で 4 float を effect payload に書く)
+
+Vtable destructor cluster (11、命名保留 8 含む):
+- 0x80080a14 Jyugemu_Flag_Dtor
+- 0x80080fac Jyugemu_ReverseFlag_Dtor
+- 残 9 件: FUN_80080330..0x80080a14 et al の byte-identical leaves、命名保留 (class 未確定)
+
+Lakitu (jyugemu) flag (9): `jyugemu_flag.dat` / `jyugemu_reverse.dat` ベースの HSD wrapper:
+- 0x800806d4 Jyugemu_Flag_Ctor / 0x800806f4 ReverseFlag_Ctor 等
+- Jyugemu_Flag_{Tick, Render, SetKartDriver, NullifyAndFree_Dtor}
+- Jyugemu_ReverseFlag_{Tick, Render, SetState, SetEnable}
+- Tick で kart root mtx の translation を JObj+0x38..+0x40、Y-rotation を JObj+0x20 に書き込み + FUN_802d20ac mark-dirty
+
+CreditMgr (11、arcade coin/credit accounting):
+- 0x80081184 CreditMgr_GetCoinCount / GetCoinsPerCredit / GetCreditCount
+- SetActiveSlot / PollAcceptor / AcceptorIsAbsent / GetPlayState / TryConfirmPlay
+- DrawCoinCreditBanner (bilingual UI、ResCtrl glyph 0x1b4e..0x1b54 EN / 0x3b5..0x3ba JA)
+- PollInsertAndPlay / ResetState
+- FUN_80288cc8 (acceptor) / FUN_80289b04+0x7c (slot block) / FUN_80288f6c (consumer) を delegate
+- DAT_80598ab0/ab2 service-switch bit で free-play override
+
+**Agent N cluster (25 件、0x800848c4..0x80085e3c)** — PCBComm helper + sync table + broadcast scratch:
+
+CommBroadcast (64×0xDC scratch table):
+- 0x800848c4 CommBroadcast_GetKartLap / 0x800848fc SetKartLap
+- 0x80084934 CommBroadcast_GetKartRankNibble (packed 4 nibble) / 0x800849b8 SetKartRankNibble
+- 0x80084a48 CommBroadcast_ScanForMySyncMatch (命名保留: probe loop、返値解釈未確定)
+- 0x80084d98 BootNotice_CheckEnterCondition (deferred entry gate)
+- 0x80084e88 SetPcbScratchFlag_806d11a4 (命名保留: writer 4 件、reader 未追跡)
+- 0x80085154 CommBroadcast_ClearTable
+
+PcbSlot (4 × 0xA3C byte) + PcbSyncTable (g_pcbSyncTable @ 0x805a6118):
+- 0x800850b0 PcbSyncTable_Ptr / 0x800851bc PcbSlot_ResetScratchAreas
+- 0x80085368 PcbSlot_GetByIndex (20+ callers) / 0x80085394 GetCharIdByte / 0x800853c4 IsReadyByIndex
+- 0x8008542c PcbSyncTable_LookupValueByState / 0x80085478 GetMyValue / 0x80085494 MyFlagIsSet (命名保留)
+
+PcbSync predicates (PCB 間 sync 判定):
+- 0x80085648 AnyPeerAtState5 / 0x800856f4 CountPeersAtSyncTargetPair_0_or_1
+- 0x800857b0 CountPeersAtSyncTargetPair_1_or_2 / 0x80085964 AnyJoinedPcbHasReadyFlagBit1
+- 0x80085a68 CountJoinedPcbsAdvancedKarts / 0x80085bf8 CountJoinedPcbs
+- 0x80085cac AllKartsInValidSelectState
+- 0x80085dd0 AlwaysZero_Stub / 0x80085e3c DebugOverlay_DumpPcbState
+
+**Agent O cluster (11 件、0x8008604c..0x80087c58)** — PCBComm TCP + Link error overlay:
+
+- 0x8008604c DrawLinkErrorOverlay ("Please call an attendant / Link error occurred"、DAT_806d1191 gate)
+- 0x80086610 PcbComm_Shutdown (4 peer slot 走査 + listener close)
+- 0x800869d0 FreeIfCountPositive (汎用 conditional free、caller 0)
+- 0x80086a0c PcbConn_GetStateName / 0x80087c34 PcbListener_GetStateName (debug overlay 用)
+- 0x80086ccc PcbConn_TryReceiveAck (acPollResponse 2049 回 spin → acReadResponse)
+- 0x80087144 PcbConn_RecycleIfOver (state==10 → 2、slot 再利用)
+- 0x80087760 PcbConn_Close / 0x80087880 PcbConn_MarkDisabled
+- 0x800878c8 PcbConnStateIdToName (0..10 の 11 entries、CUTTING/CLOSE/OPEN/BIND/LISTEN/ACCEPT/ACTIVE/CONNECT/C->WAIT/WAIT/OVER)
+- 0x80087c58 PcbListener_TakeAcceptedSocket (state==6 ACTIVE で accepted-fd 返し、TCPConn_Init に渡す)
+
+**Agent P cluster (10 件、0x80088110..0x80088d08)** — PcbListener Dtor/Init + LapBannerScene + bitpack reader + cLNormal3DWrap manager:
+
+- 0x80088110 PcbListener_Dtor (TCP listener Alloc(0x40) teardown、port 5000..5008 rotate、retry close)
+- 0x800881f8 PcbListener_Init (DAT_80598a64 で stashed fd 復帰 → zero-downtime restart 可能)
+- 0x800882b8 LapBannerScene_TriggerBannerAnim (lap-change banner overlay arm)
+- 0x80088304 LapBannerScene_RenderIfActive
+- 0x80088358 LapBannerScene_UpdateAndDriveAnim (kart TRS を banner JObj に copy、atan2 yaw → +0x20)
+- 0x800886a0 LapBannerScene_Dtor
+- 0x80088880 bitpack_read_field_by_name (descriptor list scan + bit-array record extract、companion to bitpack_write_field)
+- 0x80088c7c cLNormal3DWrap_Mgr_GetPeakActiveCount (DAT_806d11dc getter)
+- 0x80088c84 Mgr_ReleaseSlot (free stack push、cap 0x200)
+- 0x80088d08 Mgr_AcquireSlot (modelId 0..0x97 check、free stack pop、lazy Alloc(0x5c) + clNormal3D_Construct)
+
+主要発見 (Session 61):
+- **CreditMgr** = arcade coin/credit accounting 全 11 関数、bilingual coin/credit banner UI、free-play override DAT_80598ab0/ab2。
+- **PcbComm 3 層構造**: Listener (port 5000..5008 で待機) → Conn (state machine 0..10) → TCPConn (上位)。state name table at PTR_s_CUTTING_803fe400。
+- **PcbSync** = 4 PCB 間の race coordination、joined PCB / sync-state / readiness の各種 predicate (count/any/all)。BATTLE / VS mode で kart 一覧の準備完了判定。
+- **CommBroadcast 64×0xDC scratch** = non-host PCB が受信した broadcast 表 (kart lap / rank nibble 等)。
+- **Lakitu (jyugemu) flag** = レース中の旗振り表示、kart TRS 相対位置 + yaw atan2 で配置。
+- **cLNormal3DWrap manager** = clNormal3D の slot pool (cap 0x200)、modelId 0..0x97 で acquire/release。
+
+命名保留 (Session 61): 12 件
+- Agent M: 8 byte-identical vtable dtor leaves (class 未確定)
+- Agent N: 3 件 (CommBroadcast_ScanForMySyncMatch、SetPcbScratchFlag_806d11a4、PcbSyncTable_MyFlagIsSet)
+- Agent O / P: 0 件 (全 caller-confirmed)
 
 ### Session 60 完了分 (2026-05-18、127 件) — 4 並列 background agent I/J/K/L
 
@@ -2327,12 +2413,12 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-60)
+## 累計 (Session 1-61)
 
-合計 **784 件処理** (rename ~762、諦め ~9、プレースホルダ rename 6 + 13 = 19) / 1500 件 ≒ **52.3%**
-(Session 56-58 = +49 件、Session 59 = +50 件、Session 60 = +127 件 (Agent I 28 + J 32 + K 26 + L 41、命名保留 9 含む)、合計 +226 件)
+合計 **864 件処理** (rename ~833、諦め ~9、プレースホルダ rename 6 + 25 = 31) / 1500 件 ≒ **57.6%**
+(Session 56-58 = +49 件、Session 59 = +50 件、Session 60 = +127 件、Session 61 = +80 件 (Agent M 34 + N 25 + O 11 + P 10、命名保留 11 含む)、合計 +306 件)
 
-**マイルストーン到達: 50% 通過**
+**マイルストーン到達: 50% 通過 (Session 60)、57% 通過 (Session 61)**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
