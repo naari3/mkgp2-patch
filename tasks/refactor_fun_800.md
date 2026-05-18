@@ -25,8 +25,40 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80058ef4 (KartAudioChannel_ResetSEsAndSetFlag rename 完)
-- 次セッション開始点: 0x800595b4 以降
+- 最後に処理した address: 0x8005a140 (KartItemAudio_StopSEByItemId rename 完)
+- 次セッション開始点: 0x8005a314 以降
+
+### Session 48 完了分 (2026-05-18、8 件) — KartAudioChannel SE 制御 + KartItemAudio dispatcher
+
+| Address | 新名 | 用途 |
+|---|---|---|
+| 0x800595b4 | KartAudioChannel_Set24WithSeStop | +0x24 state 変更時の SE 0x51/0x52 stop |
+| 0x80059644 | KartAudioChannel_SetIntensity | +0x10 を [0, 0.1] (= 806d2940/2954) にサチュレート |
+| 0x8005967c | KartAudioChannel_PlayColorMatchSE | 2-color key で 13-entry SE 表を検索 + 3D pan |
+| 0x8005982c | KartItemAudio_PlaySEByItemId | itemId 巨大 dispatcher (+0x3/0xc/0xd/0xe/0xf/0x10 offset で SE 選択) |
+| 0x80059f70 | KartAudioChannel_StopSE8a | SE 0x8a 停止 + 任意 slot clear |
+| 0x80059fd4 | KartAudioChannel_PlayJumpSE | jumpType 0/1/2 → SE 0x8b/0x8c/0x8a |
+| 0x8005a0bc | IsAudioMutedItem | 6 muted item ID predicate (DAT_802edca4..edcb8) |
+| 0x8005a140 | KartItemAudio_StopSEByItemId | itemId dispatcher for SE stop (counterpart of 0x8005982c) |
+
+主要発見:
+- **KartAudioChannel の SE 階層** (channel = (+0x8 & 0xf) << 0x1b):
+  - SE 0x50/0x51/0x52: base SEs (idle/state0/state1)、Dtor で stop
+  - SE 0x8a/0x8b/0x8c: jump/landing SEs (SetJump で trigger)、+0x30 で tracking
+  - SE 0xa2: itemId 0x19 専用 (PlaySEByItemId / StopSEByItemId で別経路 = "interrupt with different SE")
+  - SE 0xc5, 0xcf: player only (StopSEByItemId で itemId 0x21/0x98)
+  - 13-entry color-match SE table at DAT_802edcc0..edd34 (PlayColorMatchSE で dispatched)
+- **KartItemAudio の per-itemId SE offset system**: each kart variant has a base SE id
+  at DAT_802edc70[charId * 4]、itemId category で +0x3/0xc..0x10 offset を加算して具体 SE
+  を選択。Play (0x8005982c) と Stop (0x8005a140) が対称構造。
+- **ItemAlias_DestToSource(itemId & 0xff, scratchBuf)** で別名 itemId を canonical に
+  解決 (< 0x115 の itemId のみ)。alias 経由でも同じ SE 選択を保証する設計。
+
+副次 rename 候補:
+  FUN_8016c4cc / FUN_8016c488 → AudioSystem_StopAllSE / SuppressGlobalSE
+  FUN_8016c288 → AudioSystem_Set3DPan
+  DAT_802edcbc / edcc0 + 13-entry → KartColorMatchSE_Table
+  DAT_802edc70 + 4-stride → KartBaseSE_PerCharIdTable
 
 ### Session 47 完了分 (2026-05-18、8 件) — TornadoEffect itemId dispatcher 3 個 + KartAudioChannel
 
@@ -1668,9 +1700,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-47)
+## 累計 (Session 1-48)
 
-合計 **483 件処理** (rename ~470、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **32.2%**
+合計 **491 件処理** (rename ~478、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **32.7%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
