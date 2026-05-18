@@ -25,8 +25,53 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80056fc0 (TornadoEffect_Tick rename 完)
-- 次セッション開始点: 0x800576d8 以降
+- 最後に処理した address: 0x80057a8c (TornadoEffect_ComposeRenderMatrix rename 完)
+- 次セッション開始点: 0x800584fc 以降 (TornadoEffect 系の後)
+
+### Session 46 完了分 (2026-05-18、15 件) — TornadoEffect 系 small mutator + 1 matrix composer
+
+| Address | 新名 | 用途 |
+|---|---|---|
+| 0x800576d8 | TornadoEffect_TriggerFlagD2WithTimer | +0xd2=1, +0x13c=15 timer |
+| 0x80057738 | TornadoEffect_SetColorPairC8CC | +0xc8/+0xcc を FUN_800a525c で convert |
+| 0x8005778c | TornadoEffect_ClearFlagC0AndSetC4 | +0xc0==1 なら +0xc4=value、+0xc0=0 |
+| 0x800577a8 | TornadoEffect_SetField11c | 単純 float setter |
+| 0x800577b0 | TornadoEffect_SetFlagB4 | +0xb4 flag + value==0 で +0x11c clear |
+| 0x800577c8 | TornadoEffect_SetFlagC0 | +0xc0=1 + FUN_800b53ec disable |
+| 0x800577fc | TornadoEffect_SetScalePairB0BC | +0xb0/+0xbc を [0,1] にクランプ |
+| 0x800578c4 | TornadoEffect_SetMatrixRow0_5c | 3 float to +0x5c..+0x64 |
+| 0x800578d4 | TornadoEffect_SetFieldAc | extent factor setter |
+| 0x800578dc | TornadoEffect_SetMatrix1c | 16 float bulk copy to +0x1c..+0x58 |
+| 0x800579d8 | TornadoEffect_SetColorY | mode 1 + 6 float (RGB×2) で X/Z=1, Y=value |
+| 0x80057a00 | TornadoEffect_GetField114 | +0x114 getter (cos/sin angle) |
+| 0x80057a08 | TornadoEffect_SetField114 | +0x118=prev, +0x114=new |
+| 0x80057a18 | TornadoEffect_TriggerWheelScaleAnim | mode 1 wheel scale lerp trigger |
+| 0x80057a4c | TornadoEffect_SetColorRGBLerp | mode 3 (sync lerp) or immediate |
+| 0x80057a8c | TornadoEffect_ComposeRenderMatrix | 4x4 matrix compose + drift offset bake |
+
+主要発見:
+- **TornadoEffect の external API 表面が判明**: Tick (0x80056fc0) は内部状態を読むだけ
+  で、外部からの mutation は 14 つの small setter (+ 1 trigger + 1 getter) で制御される。
+  ResourceHolder (+0x10) への副作用は SetColorPairC8CC, TriggerFlagD2WithTimer,
+  SetFlagC0 のような状態切替系のみ。
+- **3 つの sub-FSM が同居**:
+  - wheel scale FSM (state[+0x104] mode 0/1/2、TriggerWheelScaleAnim で mode 1 起動)
+  - color FSM (state[+0xd4] mode 0/1/2/3、SetColorY で mode 1、SetColorRGBLerp で mode 3)
+  - pulse FSM (state[+0xc0]/[+0xd2]、SetFlagC0/ClearFlagC0AndSetC4/TriggerFlagD2WithTimer)
+- **TornadoEffect_ComposeRenderMatrix** (0x80057a8c) は per-frame render の前段で:
+  outMatrix = scale_matrix × baseMatrix × roll_matrix(drift_angle)
+  + KartCarPhysics+0x30/0x34/0x38 (drift offset を XYZ translation 列に加算)。
+  saturate(+0x120, FLOAT_806d2908, FLOAT_806d290c) × DOUBLE_806d2918 が drift roll angle。
+- **+0x114/+0x118** は cos/sin angle の差分追跡 pair: 前 frame の値を +0x118 に snapshot、
+  新値を +0x114 に書く。ComposeRenderMatrix で sin(+0x114) を見て roll boost を modulate。
+
+副次 rename 候補:
+  FUN_800a525c / FUN_800a51f8 → ColorConverter_Set / ColorConverter_Get (RGBA encoding helper pair)
+  FUN_800b53cc → KartResourceHolder_SetPulseFlag
+  FUN_800b53dc → KartResourceHolder_SetFlag300
+  FUN_800b53ec → KartResourceHolder_SetColorPair
+  FUN_800b53bc → KartResourceHolder_Pulse
+  FUN_800b5400 → KartResourceHolder_SetScalePair
 
 ### Session 45 完了分 (2026-05-18、6 件) — VisualEffectHolder_Dtor + TornadoEffect 系完結
 
@@ -1505,9 +1550,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-45)
+## 累計 (Session 1-46)
 
-合計 **459 件処理** (rename ~446、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **30.6%**
+合計 **475 件処理** (rename ~462、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **31.7%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
