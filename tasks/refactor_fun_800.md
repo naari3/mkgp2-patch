@@ -25,8 +25,54 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80053290 (ItemStateSlotC_TryArm rename 完)
-- 次セッション開始点: 0x800532d4 以降
+- 最後に処理した address: 0x80055558 (ItemEffectQuake_Tick rename 完)
+- 次セッション開始点: 0x80055640 以降 (ItemEffectQuake_TickWorker 候補)
+
+### Session 41 完了分 (2026-05-18、15 件 + 過去 plate 訂正 1 件) — ItemEffectComposite sub-class 大量 rename (4 サブクラス)
+
+ItemEffectComposite (CarObject_Init で FUN_800549a4 が allocate する 5 sub-object container) の構造を一気に解明。各 sub-effect は独自 vtbl + CW MI 2-vtable パターン、TryArm/Init/Tick/Dtor の 4 関数組。本 session で 4 サブクラスを命名。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x800532d4 | FUN_800532d4 | ItemStateSlotC_Init | Rodrigues 軸回転設定 (cross product axis + sin/cos rotation matrix) |
+| 0x8005399c | FUN_8005399c | ItemEffectJump_Init | 0xe4 byte、3 identity 4x4 + 0x22-frame timer (trick/jump air-spin) |
+| 0x80055148 | FUN_80055148 | ItemEffectJump_Tick | 4x4 matrix accumulation + gravity step + landing boost arm |
+| 0x80054890 | FUN_80054890 | ItemEffectJump_Dtor | CW MI dtor |
+| 0x80053ae0 | FUN_80053ae0 | ItemEffectQuake_TryArm | Category D (1-entry DAT_802ed930) full-freeze TryArm |
+| 0x80053c70 | FUN_80053c70 | ItemEffectQuake_Init | 0xa8 byte、2 identity 4x4 + phase counter |
+| 0x80055558 | FUN_80055558 | ItemEffectQuake_Tick | phase FSM (0-2 setup / 3-6 hold 14.0 / 7+ landing check) |
+| 0x80054834 | FUN_80054834 | ItemEffectQuake_Dtor | CW MI dtor |
+| 0x80053d80 | FUN_80053d80 | ItemEffectDamp_TryArm | Category B (11-entry DAT_802ed7bc) damping TryArm with velocity + damp params |
+| 0x80053e68 | FUN_80053e68 | ItemEffectDamp_Init | 0x20 byte minimal init (zero 6 fields) |
+| 0x800550d0 | FUN_800550d0 | ItemEffectDamp_Tick | timer countdown + damp ramp + velocity push |
+| 0x800548ec | FUN_800548ec | ItemEffectDamp_Dtor | CW MI dtor |
+| 0x80054b74 | FUN_80054b74 | ItemEffectSpin_Tick | 0xa4 byte sub-class vtbl[3] wrapper (calls TickWorker) |
+| 0x80054c00 | FUN_80054c00 | ItemEffectSpin_TickWorker | damp accumulator + per-frame Y-axis cos/sin rotation matrix mult |
+| 0x80054948 | FUN_80054948 | ItemEffectSpin_Dtor | CW MI dtor |
+
+過去 plate 訂正:
+- 0x80053290 (ItemStateSlotC_TryArm) — Session 40 plate「no-arg variant」は誤り。実は r4-r6 を vestigial pass-through で 0x800532d4 (Init) に転送する。outer caller (ItemEffect_StartCategoryC) が r3-r6 すべてを設定。本 session で訂正済。
+- 0x80053168 (ItemState_InitKeyframeBufferAndArm) — Session 40 plate「4 channel × 8 keyframe buffer」は実は ItemEffectSpin の 2 4x4 identity matrices (5-stride staggered diagonals)。名前は残置、Dtor plate に訂正注記。
+
+主要発見:
+- **ItemEffectComposite の 5 sub-object 構造確定**:
+  | slot | size | vtbl base | 命名 | 役割 |
+  |---|---|---|---|---|
+  | param_1[1] | 0xec | 803f7758 | (未命名) | 最大 — 未調査 |
+  | param_1[2] | 0xa8 | 803f7724 | ItemEffectQuake | Cat D 全凍結 |
+  | param_1[3] | 0xe4 | 803f7704 | ItemEffectJump | Cat C? trick/jump spin |
+  | param_1[4] | 0x20 | 803f76e4 | ItemEffectDamp | Cat B damping |
+  | param_1[5] | 0xa4 | 803f76c4 | ItemEffectSpin | Y軸固定 spin (ItemState_InitKeyframeBufferAndArm = Init) |
+- **CW MI 2-vtable layout 確証**: 各 sub-object は heap alloc 後に primary vtbl (`PTR_PTR_803f7738` = ItemEffectBase) + 派生 vtbl の 2 つを連続 store。vtbl base + 8 = vtbl[2] (Init)、+0xc = vtbl[3] (Tick)、+0x10 = vtbl[4] (Dtor)。dtor は 2 vtbl を base に巻き戻して TimedFree。
+- **vestigial argument pass-through** (重要): ItemStateSlotC_TryArm (0x80053290) と ItemEffectQuake_TryArm (0x80053ae0) は r3 のみ explicit に使い r4-r6 を素通しで Init に渡す。caller 側 (StartCategoryC / StartCategoryB) で r4-r6 が完全に setup されているため動作する。decompile では 1-arg に見えるが実は 4-arg。
+- **Rodrigues' rotation formula** が ItemStateSlotC_Init (0x800532d4) で完全展開: cross product → 正規化 → sin/cos*K で 3x3 rotation matrix を生成 (axis-angle by FLOAT_806d2818)。
+- **boost intensity 階層** FLOAT_806d2800 (35.0, init) → 806d2838 (5.0) → 806d2820 (10.0) → 806d2830 (14.0) → 806d2834 (17.0) → 806d283c (25.0)。Init/Hold/Land の異なる段階に対応。
+
+副次 rename 候補:
+  FUN_80055640 → ItemEffectQuake_TickWorker (Quake_Tick の inner worker、未調査)
+  FUN_80061954 → CarObject_SetBillboardMode (0x801ad7a0 系の visual mode setter)
+  FUN_80061938 → CarObject_SetBillboardPosition
+  KartItem_SetCarObjectField1c8Float, KartItem_ForwardToCarMovement_8019a4e0 — 既存命名再確認
 
 ### Session 40 完了分 (2026-05-18、6 件) — KartMovement boost visual blend + ItemStateGuard / TryArm 系
 
@@ -1307,9 +1353,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-40)
+## 累計 (Session 1-41)
 
-合計 **404 件処理** (rename ~395、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **26.9%**
+合計 **419 件処理** (rename ~410、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **27.9%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
