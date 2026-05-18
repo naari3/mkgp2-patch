@@ -25,8 +25,40 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80055558 (ItemEffectQuake_Tick rename 完)
-- 次セッション開始点: 0x80055640 以降 (ItemEffectQuake_TickWorker 候補)
+- 最後に処理した address: 0x80055c08 (ItemEffectImpact_Tick rename 完)
+- 次セッション開始点: 0x80055ce0 以降 (ItemEffectImpact_Tick の後続)
+
+### Session 42 完了分 (2026-05-18、6 件) — ItemEffectComposite 完結 (5番目の sub-class Impact + Category A 経路 + Quake TickWorker)
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80055640 | FUN_80055640 | ItemEffectQuake_TickWorker | inner per-frame worker (位置 LERP + cos/sin 振動 + 4x4 mult + 衝突 snap) |
+| 0x8005453c | FUN_8005453c | ItemEffectImpact_Init | 0xec sub-class vtbl[2] (3 identity 4x4 + scalars) |
+| 0x80055c08 | FUN_80055c08 | ItemEffectImpact_Tick | 0xec class Tick (25 frame sub-counter + 4x4 mult + position += velocity) |
+| 0x800547d8 | FUN_800547d8 | ItemEffectImpact_Dtor | CW MI dtor |
+| 0x80053e8c | FUN_80053e8c | ItemEffectImpact_TryArm | Category A (26-entry DAT_802ed5b4) — vestigial r4-r6 pass-through |
+| 0x80053ed0 | FUN_80053ed0 | ItemEffectImpact_TryArmInit | Rodrigues axis-angle 設定 (ItemStateSlotC_Init の Category A 版) |
+
+主要発見 (ItemEffectComposite 全体構造の確定):
+- **ItemEffectComposite (0x1c byte, 7 ptr)**: CarObject_Init 内の Alloc(0x1c) → FUN_800549a4 で 5 sub-effect を保持する。
+  - composite[0] = CarObject ptr
+  - composite[1] = ItemEffectImpact (0xec, Category A、26 アイテム = 大半のアイテム)
+  - composite[2] = ItemEffectQuake (0xa8, Category D、1 アイテム full freeze)
+  - composite[3] = ItemEffectJump (0xe4, Category C、9 アイテム heavy stun launch)
+  - composite[4] = ItemEffectDamp (0x20, Category B、11 アイテム damping)
+  - composite[5] = ItemEffectSpin (0xa4, Category E、1 アイテム mode 4)
+  - composite[6] = active_effect_ptr (= +0x18、TryArm が promote する slot、null=idle)
+- **TryArm dispatch slot pattern**: 各 Category の TryArm は `composite+0x18 = composite+N` で対応 sub-effect の ptr を active slot に copy。それぞれの N:
+  - A (+4 = composite[1]) / B (+0x10 = composite[4]) / C (+0xc = composite[3]) / D (+0x8 = composite[2]) / E (+0x14 = composite[5])
+- **Outer state (0x14 byte)**: CarObject_Init で別途 alloc される [CarObject, composite, itemId, ...] のラッパー。これが ItemEffect_TryStartByCategory の self。self[1] = composite。
+- **Rodrigues setup の 2 経路** (Category A 用 ItemEffectImpact_TryArmInit と Category C 用 ItemStateSlotC_Init) が異なる angle (FLOAT_806d2828 vs 806d2818) で同じ axis-angle 計算を実行。state offset の違い:
+  - C: state[0x25..0x2f] rot + [0x35..0x37] axis、[0x14..0x50] matrix copy
+  - A: state[0x25..0x2f] rot + [0x36..0x38] axis、[0x35] = param、[0x39] = 0、velocity scaled by 60.0 at end
+
+副次 rename 候補:
+  FUN_80055ce0 → 次セッション開始点 (= ItemEffectImpact_Tick の後続)
+  ItemEffectImpact_TryArmInit を ItemStateSlotA_Init に揃える case 検討 (slot 命名統一)
+  KartItem_ForwardToCarMovement_8019a4e0 / 8019a6a4 の差異 — 8019a4e0 は Jump/Spin、8019a6a4 は Impact が使用
 
 ### Session 41 完了分 (2026-05-18、15 件 + 過去 plate 訂正 1 件) — ItemEffectComposite sub-class 大量 rename (4 サブクラス)
 
@@ -1353,9 +1385,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-41)
+## 累計 (Session 1-42)
 
-合計 **419 件処理** (rename ~410、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **27.9%**
+合計 **425 件処理** (rename ~416、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **28.3%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
