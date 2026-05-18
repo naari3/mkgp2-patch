@@ -25,8 +25,51 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80055c08 (ItemEffectImpact_Tick rename 完)
-- 次セッション開始点: 0x80055ce0 以降 (ItemEffectImpact_Tick の後続)
+- 最後に処理した address: 0x800564e4 (KartItem_DispatchEffectRenderByState rename 完)
+- 次セッション開始点: 0x800566d4 以降 (mode 7 render callback pair)
+
+### Session 43 完了分 (2026-05-18、14 件) — Orphan dtors + KartEffectFadeTransit family + 描画 callback dispatcher
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80055f10 | FUN_80055f10 | OrphanDtorWrapper_dup1 | 未参照 std::unique_ptr<T,D>::~unique_ptr() instantiation (byte 等価 4 件) |
+| 0x80055fa0 | FUN_80055fa0 | OrphanDtorWrapper_dup2 | 同上 dup |
+| 0x80056030 | FUN_80056030 | OrphanDtorWrapper_dup3 | 同上 dup |
+| 0x800560c0 | FUN_800560c0 | OrphanDtorWrapper_dup4 | 同上 dup |
+| 0x80056150 | FUN_80056150 | KartEffectFadeTransit_Tick | warp-transit fade 完了 handler |
+| 0x8005623c | FUN_8005623c | KartItem_Stub_Returns0 | 空 stub (vtbl[2] placeholder か) |
+| 0x80056308 | FUN_80056308 | KartEffectFadeTransit_GetActiveValue | self+0x18 raw value accessor |
+| 0x80056310 | FUN_80056310 | KartEffectFadeTransit_IsActive | branchless `(-x \| x) >> 31` predicate |
+| 0x80056324 | FUN_80056324 | KartEffectFadeTransit_Dtor | simple TimedFree dtor (no vtable) |
+| 0x80056360 | FUN_80056360 | KartEffectFadeTransit_Init | 0x1c byte struct ctor (5-arg) |
+| 0x80056388 | FUN_80056388 | KartItem_FlushPendingRender | render mode 9/10 を見て FUN_8007dc38 flush |
+| 0x80056424 | FUN_80056424 | KartItem_FlushRenderIfReady | gated dispatcher (`DispatchEffectRenderByState` を condition 付きで呼ぶ) |
+| 0x80056464 | FUN_80056464 | KartItem_FlushPendingRender_v2 | v1 と微妙に違う gating の variant |
+| 0x800564e4 | FUN_800564e4 | KartItem_DispatchEffectRenderByState | 7-mode dispatch で render callback pair を `FUN_8007dc8c` に register |
+
+主要発見:
+- **KartEffectFadeTransit struct (0x1c byte)** 確定: CarObject_Init で alloc される warp-transit
+  fade 用 state object。`+0x00 isPlayer / +0x04 kartMovement / +0x08 physState / +0x0c
+  linkController / +0x10 currIntensity / +0x14 targetIntensity / +0x18 active`。
+  vtable なし、Dtor は単純 TimedFree。
+- **CW std::unique_ptr<T,D> 未参照 instantiation**: 0x80055f10/fa0/56030/560c0 の 4 件は
+  byte-identical で参照ゼロ。template T が異なる別 instantiation だが dtor codegen は
+  identical (= vtbl[4] dispatch のみ T 非依存)。linker が DCE しなかった残骸。
+  4 件以外にも今後同パターンが多数現れる可能性。
+- **KartItem effect render callback registry** (FUN_8007dc8c): pre/post 2 段 callback
+  + ctx を register する render API。mode 1-7 にそれぞれ 2 つの callback pair が割当て
+  られており、KartItem_DispatchEffectRenderByState で state[+0x124] を見て dispatch。
+  mode 7 への escalation path (state[+0x140] > 0 で 0 → 7) があり、boost charge /
+  collision / heavy hit 等の visual effect 切替を司る。
+
+副次 rename 候補:
+  FUN_800566d4/f8 → KartItem_RenderCb_Mode7Escalated_Pre/Post
+  FUN_80056794/b8 → KartItem_RenderCb_DefaultCyclePulse_Pre/Post (mod-6 cycle)
+  FUN_80056838/5c → KartItem_RenderCb_Mode3_Pre/Post (banana/oil)
+  FUN_800568dc/900 → KartItem_RenderCb_Mode5_Pre/Post (collision)
+  FUN_80056980/9a4 → KartItem_RenderCb_Mode6_Pre/Post (heavy hit)
+  FUN_80056a24/48 → KartItem_RenderCb_Mode2or4_Pre/Post (common visual)
+  FUN_80056ac8/b20 → KartItem_RenderCb_Mode1_Pre/Post (boost charge)
 
 ### Session 42 完了分 (2026-05-18、6 件) — ItemEffectComposite 完結 (5番目の sub-class Impact + Category A 経路 + Quake TickWorker)
 
@@ -1385,9 +1428,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-42)
+## 累計 (Session 1-43)
 
-合計 **425 件処理** (rename ~416、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **28.3%**
+合計 **439 件処理** (rename ~426、諦め ~9、プレースホルダ rename 6 [orphan 4 + stub 1 + dup1 旧]) / 1500 件 ≒ **29.3%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
