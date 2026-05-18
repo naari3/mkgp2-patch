@@ -25,8 +25,59 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80050030 (ItemEffect_SelectAndDispatch rename 完)
-- 次セッション開始点: 0x800501b0 以降
+- 最後に処理した address: 0x80051304 (ItemEffect_TryStartByCategory rename 完)
+- 次セッション開始点: 0x80051648 以降
+
+### Session 36 完了分 (2026-05-18、8 件) — ItemEffect tick lanes + status flags + per-effect callbacks + category dispatcher
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x800501b0 | FUN_800501b0 | ItemEffect_GenericHandler | 58-entry table @ DAT_802ebf0c から item id 解決 + ItemEffect_OnHit forward |
+| 0x8005094c | FUN_8005094c | KartItem_TickActiveEffectsTwoLane | 2-lane × 9-way effect dispatch per frame + camera/sound/SE commit |
+| 0x80050cf0 | FUN_80050cf0 | KartItem_TickStatusEffectsByFlag | KartCarPhysics flag 0x200000/0x8/0x1000/0x20000/0x20000000/0x10000000 駆動の passive effect tick |
+| 0x80051100 | FUN_80051100 | ItemEffectDesc_OnApply_BoostLandingSE | desc+0x50 callback: SE 0x56 + RankLog (boost landing) |
+| 0x80051184 | FUN_80051184 | ItemEffectDesc_OnApply_FreezeKartOrSlowdown | gate flag に応じて vel zero+impulse or 単に SE stop+slowdown |
+| 0x8005125c | FUN_8005125c | ItemEffectDesc_OnApply_MushroomBoost | desc 経由の mushroom boost (item 0x17 と同等処理) |
+| 0x800512e4 | FUN_800512e4 | ItemEffect_TryStartByCategory_Wrap | argless trampoline |
+| 0x80051304 | FUN_80051304 | ItemEffect_TryStartByCategory | 5-category linear search で itemId を effect 開始経路に dispatch |
+
+主要発見:
+- **ItemEffect dispatcher hierarchy** が階層的に確定:
+  - ItemEffect_Dispatch (既 named, 0x80050410) — top-level item-use entry
+  - ItemEffect_SelectAndDispatch (0x80050030) — descriptor-table 経由解決 (7-entry, 24B/entry)
+  - ItemEffect_GenericHandler (0x800501b0) — 58-entry generic table (100B/entry)
+  - ItemEffect_TryStartByCategory (0x80051304) — 5-category linear search 経路
+- **KartItem effect 2-lane システム**:
+  - lane = 6-word stride、3 × 2 = 18 word per KartItem
+  - 各 lane: [effectId, timer, descPtr, callbackArg, _, strength]
+  - 9-way effect-type dispatch (desc+0x18 = 1..9 で FUN_8005b288..c338 のどれかを呼ぶ)
+  - speed-effect (desc+0x34: 0/1/2) + camera-effect (desc+0x40: 0/1/2/3) + optional
+    vtbl callback (desc+0x50) が独立 channel
+- **ItemEffectDesc callback の引数規約** (FUN_8005xxxx で見える共通 signature):
+  `(int desc, int self, _, _, int source, _, char gateFlag)` — 4 個目以降は型未確定だが
+  desc/self/source/gateFlag は確実。callback 内で gateFlag=0 だと no-op + return desc+4
+  を返す convention。
+- **item 0x17 = mushroom** が確定 (FUN_800501b0 の特殊ケース + descriptor callback の
+  両方で同じ SE 5/0x55 + SpeedBoost_Apply + +0xdc/+0x10c set パターン)。
+- **KartCarPhysics passive flag effect** (0x80050cf0):
+  - 0x14&8 = 21-frame random pitch dither
+  - 0x10&0x1000 = sin oscillation pitch-bend (FUN_8027e9e8 = cos の高速変換)
+  - 0x10&0x20000 = boost-landable waiter (FUN_8019a8a4 probe + SE 0x56)
+  - 0x10&0x20000000 = decaying effect (FUN_8005c0fc)
+  - 0x10&0x10000000 = passive camera shake (CameraEffect_Apply)
+  - 0x14&0x200000 + 0x10&0x40000000 = default effect dispatch
+
+副次 rename 候補:
+  FUN_8005b288 / FUN_8005b490 / FUN_8005b628 / FUN_8005b8cc / FUN_8005bb0c /
+    FUN_8005bd04 / FUN_8005bec4 / FUN_8005c0fc / FUN_8005c338 → 9 effect type handlers
+  FUN_8027e9e8 → sin/cos lookup
+  FUN_802dca04 → random (small range)
+  FUN_8005bb00 → sound pitch dither
+  FUN_80057a18 / FUN_80057a4c → engine SE adjust
+  FUN_80058994 → CarObject SE commit
+  FUN_80052f9c → ItemState_IsBlocked / ItemEffectGuard_IsActive
+  FUN_80051d28 / FUN_80051d60 / FUN_80051d98 / FUN_80051cb8 / FUN_80051cf0 → 5
+    category-specific table-scan helpers
 
 ### Session 35 完了分 (2026-05-18、12 件) — KartItem cancel paths + velocity I/O + ItemEffect dispatcher
 
@@ -1098,9 +1149,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-35)
+## 累計 (Session 1-36)
 
-合計 **355 件処理** (rename ~346、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **23.7%**
+合計 **363 件処理** (rename ~354、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **24.2%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
