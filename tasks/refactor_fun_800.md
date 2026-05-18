@@ -25,8 +25,30 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8003aee8 (MemoryManager_Free rename 完)
-- 次セッション開始点: 0x8003b120 (MemoryManager_Alloc、副次 rename 候補で既出) 経由 0x8003b200 範囲
+- 最後に処理した address: 0x8003b30c (SceneFlow_SetFlag1048 rename 完)
+- 次セッション開始点: 0x8003b400 範囲 (要確認)
+
+### Session 21 完了分 (2026-05-18、5 件) — MemoryManager_Alloc + SceneFlow state setters
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8003b120 | FUN_8003b120 | MemoryManager_Alloc | HeapAlloc wrapper (size=0 → 1 補正、init check、150+ caller) |
+| 0x8003b2d8 | FUN_8003b2d8 | SceneFlow_DefaultGetZero | constant 0 return、Flow_TransitionTo 内 callback |
+| 0x8003b2e0 | FUN_8003b2e0 | SceneFlow_SetCleanupTag | DAT_806d1040 setter (BootDispatcher / Flow_TransitionTo) |
+| 0x8003b2e8 | FUN_8003b2e8 | SceneFlow_InitCleanupList | DAT_805987b8..d0 doubly-linked list head reset |
+| 0x8003b30c | FUN_8003b30c | SceneFlow_SetFlag1048 | DAT_806d1048 byte setter (race/timer 系 caller 2 件) |
+
+主要発見:
+- **Session 2 deferred の SceneTransitionCounter_*** 系を正式 rename (3 件)
+- DAT_805987b8..d0 が sentinel-bookended doubly-linked list (空状態で head/tail cell が円環)
+- BootDispatcher と Flow_TransitionTo が cleanup list を共有 (boot / scene change で flush)
+- MemoryManager_Alloc (FUN_8003b120) を正式 rename
+
+副次 rename 候補:
+  DAT_806d1040 → g_sceneCleanupTag
+  DAT_805987b8 → g_sceneCleanupListHead
+  DAT_805987cc → g_sceneCleanupListTail
+  DAT_806d1048 → g_sceneFlowFlag1048
 
 ### Session 20 完了分 (2026-05-18、3 件) — clRom table sweep + memory manager pair
 
@@ -478,9 +500,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-20)
+## 累計 (Session 1-21)
 
-合計 **218 件処理** (rename ~210、諦め ~8) / 1500 件 ≒ **14.5%**
+合計 **223 件処理** (rename ~215、諦め ~8) / 1500 件 ≒ **14.9%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
