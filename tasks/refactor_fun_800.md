@@ -25,8 +25,53 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80049718 (NamCam_End rename 完)
-- 次セッション開始点: 0x80049860 以降
+- 最後に処理した address: 0x8004a074 (DebugOverlay_KartPhysicsForLocalPlayer rename 完)
+- 次セッション開始点: 0x8004a0a4 以降
+
+### Session 31 完了分 (2026-05-18、12 件 + 4 副次) — NamCam_Init + ISESlot lifecycle + CoinEvent SE family
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80049860 | FUN_80049860 | NamCam_Init | g_namCamSystem alloc + IP/port (HTTP 80) 設定 |
+| 0x80049940 | FUN_80049940 | ItemSpawner_TimedRemapAndSpawn | timer + 13-way id remap → ItemObject_SpawnWithAlias |
+| 0x80049a90 | FUN_80049a90 | ISESlot_TickIfActiveNotBattle6 | BATTLE mode 6 を除外したスロット tick |
+| 0x80049cc4 | FUN_80049cc4 | ISESlot_SetByte18c | armed/item gate 付きで ItemObject+0x18c に書き込み |
+| 0x80049e40 | FUN_80049e40 | ISESlot_Dtor | KartDriver 10-slot を tear-down する destructor |
+| 0x80049ec4 | FUN_80049ec4 | ISESlot_Construct | 0x24 byte ISESlot の zero-init |
+| 0x80049edc | FUN_80049edc | CoinJumpFlasher_Toggle | self+0x20 が armed の間 +0xff を toggle、g_finalLapCoinJumpEnabled に伝搬 |
+| 0x80049f34 | FUN_80049f34 | CoinJumpFlasher_SetArmed | self+0x20 armed gate setter |
+| 0x80049f60 | FUN_80049f60 | CoinEvent_PlayResultSE | character 0xc (Mametch) で SE 4、その他 0xf or 0x13 を分岐再生 |
+| 0x80049fdc | FUN_80049fdc | CoinEvent_PlayAlternatingSE | SE 7/8 を ping-pong 再生 |
+| 0x8004a04c | FUN_8004a04c | CoinEvent_PlaySE_0x13 | SE 0x13 単発再生 |
+| 0x8004a074 | FUN_8004a074 | DebugOverlay_KartPhysicsForLocalPlayer | g_playerCarObject 非 NULL なら DebugOverlay_KartPhysics(+0x28) |
+
+副次 renames (FUN_80049xxx が依存していて意味判明したもの):
+| 0x800dd89c | FUN_800dd89c | ItemObject_SetField168 | item+0x168 u32 setter |
+| 0x800dd8ac | FUN_800dd8ac | ItemObject_SetPair180 | item+0x180/+0x184 pair setter |
+| 0x800dd930 | FUN_800dd930 | ItemObject_SetByte18c | item+0x18c byte setter |
+| 0x80061804 | FUN_80061804 | FinalLapCoinJump_SetEnable | coinSys+0x18 enable + g_finalLapCoinJumpEnabled mirror |
+
+主要発見:
+- **ISESlot lifecycle 確定** — KartDriver は driver[0xb7..0xc0] (= driver+0x2dc..+0x300) で
+  10 個の ISESlot を所有。各 ISESlot は 0x24 byte で:
+    +0x04 byte = armed flag
+    +0x10/+0x1c = scratch
+    +0x14 = effect type id (0x51 だけ Dtor で end-signal を skip)
+    +0x18 = bound ItemObject handle
+  Construct → Tick (variants) → SetByte18c → Dtor の cycle。
+- **NamCam = network camera client** が確定: HTTP (port 80) で acInetAddr 経由の
+  IP に接続。Triforce arcade のオンライン写真サービス互換の挙動。
+  FUN_8007413c(0) が NamCam サーバの hostname/IP 文字列を返す getter。
+- **CoinJumpFlasher**: g_finalLapCoinJumpEnabled を per-frame で 0/1 toggle する
+  blink subsystem。CoinSystem (FinalLapCoinJump_SetEnable) と連動。
+- **CoinEvent SE family** (4 関数): 13 / 7 / 8 / 4 / 0xf の SE を変則的に再生する 4 つの
+  trigger。character (Mametch=0xc) で SE 4 への分岐あり、ping-pong (7↔8)、固定 0x13
+  の 3 variant。
+
+副次 rename 候補:
+  FUN_8007413c → NamCam_GetServerHost / NamCam_GetServerAddress?
+  WrapInRange は既存名 → ping-pong index helper
+  SoundObj_PlaySE は既存名
 
 ### Session 30 完了分 (2026-05-18、14 件) — CourseEnvironment update/dtor + JObj eval helpers + NamCam shutdown
 
@@ -813,9 +858,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-30)
+## 累計 (Session 1-31)
 
-合計 **302 件処理** (rename ~293、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **20.1%**
+合計 **318 件処理** (rename ~309、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **21.2%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
