@@ -25,8 +25,169 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8005e46c (clItemBoxResponder_SpawnDebris rename 完)
-- 次セッション開始点: 0x8005e7e4 以降
+- 最後に処理した address: 0x80063f08 (ShadowBillboard_BeginBoostScale rename 完)
+- 次セッション開始点: 0x80060024 周辺 (clItemBoxResponder ctor/dtor wrapper) + 0x80061a88 以降の残り
+
+### Session 58 完了分 (2026-05-18、17 件) — 2 並列 subagent (Agent C clMiyoshiCardCreate + ShadowBillboard early、Agent D ShadowBillboard step 系)
+
+**Agent C cluster (12 件、0x80061054..0x80061a88)** — 事前推定の「保存データ debug menu」とは別に
+**2 系統** が並走していた:
+
+clMiyoshiCardCreate (4 件):
+- 0x80061054 clMiyoshiCardCreate_Draw (DrawText 10 行 + EXEC + 点滅 cursor、TextRenderer @ DAT_806d1880)
+- 0x80061394 clMiyoshiCardCreate_Tick (input + state 0..3 machine、EXEC で PlayerData_Construct + card_save_trigger)
+- 0x80061668 clMiyoshiCardCreate_Dtor (vtable rewrite + TimedFree state + TextRenderer_Dtor + ObjectBase_Dtor)
+- 0x800616f8 clMiyoshiCardCreate_Ctor (4 byte ObjectBase header + Alloc 0x2c の CardCreateData @ DAT_806d10d8、vtable 0x803f9eec)
+
+ShadowBillboard 系 (6 件、KartItem 影/ビルボード):
+- 0x8006181c ShadowBillboard_LerpMtx4x4 (row-weighted 3x4 mtx LERP + Gram-Schmidt 直交化、translation copy)
+- 0x80061918 ShadowBillboard_SetField0xA4 (target intensity float setter)
+- 0x80061920 ShadowBillboard_IsRenderReady (+0xA0 > 0 predicate、render gate)
+- 0x80061938 ShadowBillboard_SetVec3At0x70 (target world pos vec3 setter、ItemEffect 発火点 3 箇所が caller)
+- 0x80061954 ShadowBillboard_SetField0x6CAndComputeAxis (+0x6C setter + CObj_LoadProjMatrix + up-axis Newton inv-sqrt normalize)
+- 0x80061a88 ShadowBillboard_Tick (per-frame spring 振動 + view-row snapshot + +0x9C smoothing + main pose 2 分岐 (effect type 0 = LerpMtx4x4 + 地面ペネトレ補正 + LinePath_Step / 1 = SObj joint LERP + SetWorldMatrix)、cobjSecondary 別行列で書き戻し)
+
+命名保留 2 件:
+- 0x8006178c FUN_8006178c_UnusedTimedFreeStub (caller / xref ゼロ、inline dtor 残骸の可能性)
+- 0x800617c8 FUN_800617c8_UnusedTimedFreeStub (上と完全に同一 body)
+
+**Agent D cluster (5 件、0x8006389c..0x80063f08)** — ShadowBillboard step/setter 系:
+
+| Address | 新名 | 用途 |
+|---|---|---|
+| 0x8006389c | ShadowBillboard_StepSimple | guarded subset (stripped) per-frame step、ItemStateGuard_IsActive==1 でだけ実行、flicker color/scale + path CObj LinePath_Step or LoadIntoGX + projector CObj SetWorldMatrix |
+| 0x80063e50 | ShadowBillboard_SetTargetSaturation | self+0x98 (target saturation) trivial setter |
+| 0x80063e58 | ShadowBillboard_TriggerSpinFlash | one-shot spin/tornado flash trigger (+0xac running flag、+0xb0 step、+0xb4 phase) |
+| 0x80063ee0 | ShadowBillboard_BeginFadeCleanup | mode (+0x68) := 1 (auto-clear fade)、+0x64 = decay rate |
+| 0x80063f08 | ShadowBillboard_BeginBoostScale | mode (+0x68) := 2 (sustained boost、auto-clear なし)、+0x64 = decay rate |
+
+主要発見:
+- **clMiyoshiCardCreate** は vanilla MKGP2 の **メモリカード初期化 debug screen**。vtable 0x803f9eec
+  (RTTI "clMiyoshi" @ 0x806ceee8)、姉妹実装 `CardCreate_Page @ 0x8006ad0c` が既に存在 (同 struct
+  layout で Page slot 経由)。state machine 4 段 (input → save_trigger → write 待ち → done)。
+- **ShadowBillboard** は KartItem の影/ビルボード制御。`KartItem_UpdateShadowBillboardAndViewport`
+  と `KartItem_RenderPipelinedWithEffects` 配下で、view matrix-relative の flicker color、地面
+  ペネトレ補正、tornado flash、warp transit fade 等を per-frame 更新する 0xD8 byte struct。
+- **2 命名保留 stub** (0x8006178c / 0x800617c8) は xref/caller 完全に空、CW emission の inline-dtor
+  artifact と推測。1500 件カウントには「rename 済 (suffix)」として含めるが「諦め」増分は +0。
+- **未修正 mis-name**: 0x8005fcd8 `SoundDriver_GetOrCreate` → `clItemBoxManager_GetOrCreate` (Session
+  56/57 でも検出済)、次セッション以降で修正候補。
+
+### Session 57 完了分 (2026-05-18、16 件) — clItemBoxManager singleton + std::list の C-rewrite
+
+Session 55 (debris) と Session 56 (clItemBox owner) に続く clItemBox 三部作の最終 piece。
+0x8005f65c..0x8005fff0 の 16 関数で **clItemBoxManager** (singleton @ DAT_806d10d0、
+0x20-byte) の ctor/dtor + draw/update + responder list を持つ 6 関数と、その実装に使われる
+**汎用 std::list 風 intrusive doubly-linked list** の 6 helper、それと `clItemBoxResponder`
+側の cmd-slot 3 関数。後者の cmd-slot dispatcher (0x8005ffbc) は vtable[2] 経由で base
+クラスの dtor を呼ぶように見える未解明 puzzle あり (plate 詳述)。
+
+| Address | 新名 | 用途 |
+|---|---|---|
+| 0x8005f65c | clItemBoxManager_Dtor | MI vtable 切替 + list2 walk で各 clItemBox_Dtor → TeardownAssets → 両 list Erase → ResponderBaseSlot 切替 → free |
+| 0x8005f778 | DoublyLinkedList_ClearAndFree_a | std::list 全 erase + free wrapper (template emission 1) |
+| 0x8005f7f0 | DoublyLinkedList_ClearAndFree_b | byte-identical sibling of f778 (template emission 2) |
+| 0x8005f868 | clItemBoxManager_UnregisterResponder | list1 から responder ptr を remove (responder dtor 経由) |
+| 0x8005f8a8 | clItemBoxManager_RegisterResponder | list1 に responder ptr を push_back (responder ctor 経由) |
+| 0x8005f8e8 | clItemBoxManager_Draw_Inner | 3-pass render: Bind(0/1/2) → list2 foreach DrawDebris → Unbind |
+| 0x8005f99c | clItemBoxManager_Draw | OSGetTick scoped-timer wrapper around Draw_Inner (slot 0x24) |
+| 0x8005fa34 | clItemBoxManager_Update_Inner | per-frame: 全 box × 全 responder collision、hit で TransitionToDebris、末尾で全 responder cmd-slot countdown |
+| 0x8005fbb0 | clItemBoxManager_Update | OSGetTick scoped-timer wrapper around Update_Inner (slot 0x24) |
+| 0x8005fd38 | DoublyLinkedList_RemoveByKey | std::list::remove(key) — 連続 match を chunk splice + free + count-- |
+| 0x8005fe04 | DoublyLinkedList_EraseRange | std::list::erase(first, last) — 範囲 splice + free chain + count-- |
+| 0x8005feb4 | DoublyLinkedList_PushBefore | std::list::insert(pos, value) — 0xC byte node alloc + 双方向 link + count++ |
+| 0x8005ff5c | DoublyLinkedList_Init | 12-byte head の {count=0, sentinel.next/prev = &sentinel} 初期化 (~32 callers) |
+| 0x8005ff74 | clItemBoxResponder_BaseSlot_Dtor | clItemBoxResponder subobject vtable (PTR_PTR_803f9cf0) の base-slot deleting-dtor (vtable swap + optional free のみ) |
+| 0x8005ffbc | clItemBoxResponder_CmdGetWorldPos | *(this+8) = 0x3C arm + vtable[2] dispatch、Update_Inner で kart velocity vec3 query として呼ぶ |
+| 0x8005fff0 | clItemBoxResponder_IsCmdSlotFree | predicate: *(this+8) == 0 ?、cooldown gate (cntlzw + rotlw bit trick) |
+
+主要発見:
+- **clItemBoxManager 0x20-byte instance**:
+  - +0x00: vtable (PTR_PTR_803f9ce4 = clItemBoxManager subobject)
+  - +0x04..+0x0F: list1 {count, sentinel.next, sentinel.prev} — `clItemBoxResponder*` の list
+  - +0x10..+0x1B: list2 {count, sentinel.next, sentinel.prev} — `clItemBox*` (= owned item-box) の list
+  - +0x1C: `enabled` byte flag (= 1 で Update 経路が走る)
+- **多重継承 vtable group** (CW C++ ABI、typeinfo を leading word に持つ):
+  - 0x803f9cd8 — primary vtable for `StateSingleton<clItemBoxManager>` subobject (typeinfo 0x806ceea8)
+  - 0x803f9ce4 — vtable for `clItemBoxManager` subobject (typeinfo 0x806ceeb0)、dtor = 0x8005f65c
+  - 0x803f9cf0 — vtable for `clItemBoxResponder` subobject (typeinfo 0x806ceeb8)、base slot dtor = 0x8005ff74
+  - 0x803f9d00 — vtable for **standalone** `clItemBoxResponder` (ctor 0x800600b0、dtor 0x80060024)。+0x0C 以降は item_id dispatch table (`ItemBox_ProcessPickup` 経由) として data 再利用。
+- **std::list 風 intrusive doubly-linked list の C 再構成**:
+  - head layout: `{count u32, sentinel.next ptr, sentinel.prev ptr}` (12 byte)
+  - node layout: `{next ptr, prev ptr, value u32}` (12 byte, MemoryManager_TimedFree で個別解放)
+  - sentinel = &head.sentinel_next field、空時 sentinel.next == sentinel.prev == &sentinel
+  - 6 API: Init / PushBefore (push_back ≒ pos=&end) / RemoveByKey / EraseRange / ClearAndFree (× 2 template emission)
+  - 全 32+ 用途、HUD_Init / BattleScene_InitAndPromoteRole 等で同じ template が再利用。
+- **clItemBoxResponder cmd-slot pattern**:
+  - +0x04: bound CarObject ptr (= kart driver、IsCmdSlotFree predicate でない getter `*(this+4)`)
+  - +0x08: cmd-slot u32 (= cooldown counter)
+  - cycle: IsCmdSlotFree (==0?) → CmdGetWorldPos (write 0x3C + vtable[2] call) → CmdSlotCountdown (1/frame) → 0 で再開
+  - cmd-slot 0x3C ≒ 60 frames ≒ 1 sec cooldown
+- **未解明 puzzle**: CmdGetWorldPos の vtable[2] dispatch は documented `clItemBoxResponder`
+  base vtable (0x803f9d00) では dtor wrapper (0x80060024) を指す。caller は 3-float
+  out-param query として使うので、実 instance は派生 subclass で vtable[2] を override
+  していると思われる (derived ctor が *(this+0) を上書き)。base ctor (0x800600b0)
+  だけでは破壊呼出になる。call site が dead な可能性もあり (next session で要追跡)。
+- **既存 mis-naming 発見** (今 session では未修正):
+  - 0x8005fc48 `SoundDriver_GetOrCreate` → 実体は `clItemBoxManager_GetOrCreate`
+    (singleton ctor、spawn table 走破 + clItemBoxManager_LoadAssets call、Session 56 の note
+    も同じ mis-name を指摘済)。Session 58 以降で訂正候補。
+
+### Session 56 完了分 (2026-05-18、16 件) — clItemBox + clItemBoxManager core (state-machine + draw + factory)
+
+Session 55 で解明した debris subsystem の **owner クラス** clItemBox とその manager の core API。
+rodata の `item_box.dat` / `item_box_*_joint` / `clItemBoxManager` / `clItemBoxResponder` cluster
+(0x802edf24..0x802edfc0) と一致。spawn record (16 byte = pos[3]+flag) → factory → ctor → 毎frame
+Tick (per-state step fn) → state==2 で TransitionToDebris → DrawDebris → 全 dead で gate=0 で
+自動 cleanup、という制御フロー。
+
+| Address | 新名 | 用途 |
+|---|---|---|
+| 0x8005e924 | clItemBox_StepFn_Bobbing | sin-driven bobbing 1-frame step、return 1 (常に advance) |
+| 0x8005e9d0 | clItemBox_StepFn_PopOut | sin pop-out + spin、phase が PI で saturate して return 1 (state 0/1/2 共用) |
+| 0x8005ea74 | clItemBox_ResetTimer | self+0x2c (phase/cooldown timer) = 0 |
+| 0x8005ea80 | clItemBox_IsPickedUp | `state == 3` ? 1 : 0 (countLeadingZeros trick) |
+| 0x8005ea94 | clItemBox_TransitionToDebris | state := 2、bound desc 更新、15 particle を pickup-dir bias で再 seed (SpawnDebris の re-init 版) |
+| 0x8005ed18 | clItemBox_Draw | per-frame draw: state==3 で skip、bound channel==2 で DrawDebris、それ以外で 3D box (a/b_box joint) を frustum 越し描画 |
+| 0x8005ee24 | clItemBox_Tick | bound-method thunk 経由で現 state の step fn を call、返り値を新 state、runtime state-table から bound desc を更新、state ∈ {0,1,3} で true |
+| 0x8005eeb0 | clItemBox_Dtor | debris buffer の 15 particle を dtor で per-elem 破棄 → buffer free → optional self free |
+| 0x8005ef38 | clItemBox_Ctor_XYZ | 0x34 byte instance を (x,y,z) で init、bound desc = rodata state-table[1]、debris buffer alloc |
+| 0x8005f050 | clItemBox_Ctor_GroundSnap | 同上 + Terrain_GetGroundHeight で Y を地形に snap、失敗時 "no ground search" debug print |
+| 0x8005f194 | clItemBoxManager_UnbindCurrent | DAT_806ceea0 (current channel idx) を見て 3 GX channel のどれか 1 つ unbind |
+| 0x8005f214 | clItemBoxManager_Bind | 指定 channelIdx (0..2) を bind、既存 bind は warning して auto-unbind |
+| 0x8005f318 | clItemBoxManager_TeardownAssets | 3 GX channel + 2 Object (item_box.dat × 2 variant) を破棄、joint ptr cache を 0 |
+| 0x8005f3a4 | clItemBoxManager_LoadAssets | item_box.dat × 2 (flag 1/0) を clNormal3D_Construct、4 joint resolve (hahen_null1/b_box/a_box/item_box_null)、3 GX channel 作成 |
+| 0x8005f53c | clItemBoxManager_InitStateTable | rodata state-table の entry 1..4 を runtime mutable slot 0..3 (0x803f9ca8..0x803f9cd3) に memcpy |
+| 0x8005f5d8 | clItemBox_FactoryCreate | spawn record (pos[3], flag) を読んで Alloc(0x34) + flag bit 0 で XYZ or GroundSnap ctor 分岐 |
+
+主要発見:
+- **clItemBox struct (0x34 bytes)**:
+  - +0x00: baseline.Y (= init pos.Y、step fn が rest height として参照)
+  - +0x04: debrisBuf (0x298 = gate u8 + 15 * 0x2c particle、Session 55 の subsystem)
+  - +0x08..+0x10: position (3 floats)
+  - +0x14: spin (Y rotation accumulator)
+  - +0x18..+0x20: **bound-method descriptor** {arg_offset, vtable_idx, fn_ptr} (per-state step fn を `std::function` 風に保持)
+  - +0x24: state index (0..3 runtime)
+  - +0x28: phase A counter (Bobbing)
+  - +0x2c: phase B counter / cooldown timer (PopOut, ResetTimer)
+  - +0x30: saturated-phase / alpha
+- **bound-method thunk (0x80271318) の意味解明**: r12 = &(self->bound) でこの 3 u32 descriptor を読む
+  PPC-typical な `std::function<R(T*)>` の C++03 emulation。`vtable_idx < 0` で direct call、
+  >= 0 で vtable[r12][r11] indirect。clItemBox は全部 direct call で使用。
+- **state-table の二段構成**: rodata 6 entries (0x803f9c64..0x803f9ca7) + runtime 4 entries
+  (0x803f9ca8..0x803f9cd7)。InitStateTable で rodata[1..4] → runtime[0..3] copy。
+  ctor は rodata entry 0 / 1 を直接読む (runtime には未 copy)。
+- **2 ctor variant**: XYZ vs GroundSnap (terrain query) — flag bit 0 で factory が分岐。
+  spawn record は 16 byte (pos[3] + flag u32)、GetOrCreate が `+= 0x10` で iter。
+- **3 render channel** (a_box, b_box, debris) を毎 frame Bind→Draw→Unbind 3 回転で順次描画
+  (clItemBoxManager_Draw_Inner = 0x8005f8e8 既存名で確認済)。
+- **既存 mis-naming 発見** (今 session では未修正):
+  - 0x8005fcd8 `SoundDriver_GetOrCreate` → 実体は `clItemBoxManager_GetOrCreate`
+    (item_box manager の singleton ctor、spawn table を走って FactoryCreate を呼ぶ)
+- **諦め関数なし**: 16/16 全件 caller-confirmed (clItemBoxManager_Tick / clItemBoxManager_Draw の
+  既存 named functions から逆引きで全部裏が取れた)。
+- **未定義 step fn 2 件** (state 3, 4 用): 0x8005e7e4 / 0x8005e794 は Ghidra 未 disassemble。
+  state-table の値からは判明しているが function entity ない。create_function は本 session 範囲外。
 
 ### Session 55 完了分 (2026-05-18、15 件) — clItemBoxResponder debris subsystem cluster
 
@@ -1961,9 +2122,10 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-55)
+## 累計 (Session 1-58)
 
-合計 **558 件処理** (rename ~545、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **37.2%**
+合計 **607 件処理** (rename ~592、諦め ~9、プレースホルダ rename 6 + 4 = 10) / 1500 件 ≒ **40.5%**
+(Session 56 = 16 件、Session 57 = 16 件、Session 58 = 17 件 (Agent C 12 + Agent D 5、命名保留 2 含む)、合計 +49 件)
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
