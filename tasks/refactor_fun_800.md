@@ -25,8 +25,34 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8002fffc (Object_SetByte10_Return1 rename 完)
-- 次セッション開始点: 0x80030008
+- 最後に処理した address: 0x80030d48 (JObjTree_TranslateAndMul rename 完)
+- 次セッション開始点: 0x80031408
+
+### Session 3 完了分 (2026-05-18、19 件)
+
+CObj (Camera Object、cobj.c assert 経由で確証) と関連 helper 群。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80030008 | FUN_80030008 | CObj_GetLineBufferPtr | cobj + 0x3034 ptr getter |
+| 0x80030010 | FUN_80030010 | CObj_UpdatePerspParam | persp param update + debug line buffer |
+| 0x800300d8 | FUN_800300d8 | CObj_ProjectPoint | world → screen project |
+| 0x80030200 | FUN_80030200 | CObj_UnprojectPoint | screen → world unproject |
+| 0x800303e8 | FUN_800303e8 | CObj_ApplyViewport | GX viewport apply (FUN_802c72ac) |
+| 0x80030424 | FUN_80030424 | CObj_LoadIntoGX | GX projection load (FUN_802c7384) |
+| 0x80030460 | FUN_80030460 | CObj_SetWorldMatrix | world mtx load + dirty flag |
+| 0x800304e0 | FUN_800304e0 | CObj_LinePath_Step | debug line trace point add (line buffer +0x34) |
+| 0x80030960 | FUN_80030960 | CObj_ApplyScissor | scissor apply (確証中) |
+| 0x8003099c | FUN_8003099c | CObj_LoadProjMatrix | proj matrix load (確証中) |
+| 0x800309d8 | FUN_800309d8 | CObj_GetProjMatrix_Cached | cobj+0x88 lazy alloc |
+| 0x80030a10 | FUN_80030a10 | CObj_GetViewMatrix_Cached | view mtx (FUN_802c7e30) |
+| 0x80030a48 | FUN_80030a48 | CObj_GlobalProjPushFrame | projection global init |
+| 0x80030a68 | FUN_80030a68 | CObj_DebugVizPathFlush | LObj update + line buffer flush |
+| 0x80030aa8 | FUN_80030aa8 | CObj_RenderPass_Execute | render pass dispatcher |
+| 0x80030aec | FUN_80030aec | Stub_NoOp_80030aec | empty function |
+| 0x80030af0 | FUN_80030af0 | Object_DtorTree_56b8 | dtor + refcounted sub-resource release |
+| 0x80030d24 | FUN_80030d24 | LinkedNode_GetField10_OrFallback | linked node fallback getter |
+| 0x80030d48 | FUN_80030d48 | JObjTree_TranslateAndMul | HSD JObj tree mtx walker (PSMTXTrans + Concat) |
 
 ### Session 2 完了分 (2026-05-18、合計 22 件)
 
