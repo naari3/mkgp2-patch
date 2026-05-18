@@ -25,8 +25,45 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80051dec (CarObjectManager_RunKartKartCollisionSweep rename 完)
-- 次セッション開始点: 0x80052158 以降
+- 最後に処理した address: 0x800525d4 (StlList_EraseRange rename 完)
+- 次セッション開始点: 0x80052684 以降
+
+### Session 38 完了分 (2026-05-18、9 件) — CarObjectManager dtor + Bitset / StlList primitives
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80052158 | FUN_80052158 | CarObjectManager_Dtor | 2-vtable class dtor (0x803f76a8 / 0x803f7690) + STL list teardown |
+| 0x80052200 | FUN_80052200 | Bitset_Dtor | self+8 buffer free + optional self free |
+| 0x8005225c | FUN_8005225c | Bitset_TestBit | `(-x \| x) >> 31` branchless bit test |
+| 0x80052288 | FUN_80052288 | Bitset_SetBit | bit set / clear with value param |
+| 0x800522d0 | FUN_800522d0 | Bitset_Init | std::vector<bool> ctor + length-error throw path |
+| 0x80052494 | FUN_80052494 | Bitset_MaxSize | UINT32_MAX 定数 |
+| 0x800524cc | FUN_800524cc | NoOpDtor_FreeIfRequested | 汎用 "vtbl[+8] dtor 入口" (no fields) |
+| 0x80052508 | FUN_80052508 | StlList_RemoveByValueField | STL list remove (連続 match を一括 splice + free) |
+| 0x800525d4 | FUN_800525d4 | StlList_EraseRange | STL list erase(first, last) |
+
+主要発見:
+- **Bitset (std::vector<bool>) 完全 API**:
+  - Init(count, init) → 32-bit word buffer alloc + initialize
+  - TestBit(idx) → 0/1 with branchless extract
+  - SetBit(idx, val) → set or clear
+  - Dtor / MaxSize (UINT32_MAX)
+  CarObjectManager_RunKartKartCollisionSweep が visited bitset で使用。
+- **STL List primitives**: STL の `list::remove` / `list::erase(first, last)` が
+  プロジェクト内で標準実装 (MetroTRK の MSL or 手書き)。layout: prev(+0)/next(+4)/value(+8)。
+  CarObjectManager_Dtor の STL list teardown は EraseRange で実装される。
+- **CarObjectManager は 2-vtable class** (`0x803f76a8` derived + `0x803f7690` base)。
+  KartItem (Session 33 で発見) と同じ multiple-inheritance パターン → CW C++ で
+  CarObjectManager が KartItem の親 class かまたは同じ interface を実装している可能性。
+- **NoOpDtor_FreeIfRequested** は POD-only class の dtor として再利用される generic
+  vtbl entry。複数 class からの参照が予想される。
+
+副次 rename 候補:
+  FUN_802791bc / FUN_80279274 / FUN_80271ef4 → std::logic_error / vector::length_error
+    の throw 経路 helpers
+  PTR_PTR_803f5700 / PTR_PTR_803f56f0 → typeinfo for std::vector::length_error /
+    std::logic_error (vtable)
+  PTR_PTR_803f76a8 / PTR_PTR_803f7690 → CarObjectManager class hierarchy vtables
 
 ### Session 37 完了分 (2026-05-18、10 件) — ItemEffect category starters + table-search helpers + kart-kart collision sweep
 
@@ -1192,9 +1229,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-37)
+## 累計 (Session 1-38)
 
-合計 **373 件処理** (rename ~364、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **24.9%**
+合計 **382 件処理** (rename ~373、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **25.5%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
