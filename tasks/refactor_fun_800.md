@@ -25,8 +25,41 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80052d40 (Wrapper_DestroyViaFUN_80058de8 rename 完)
-- 次セッション開始点: 0x80052dbc 以降
+- 最後に処理した address: 0x80053290 (ItemStateSlotC_TryArm rename 完)
+- 次セッション開始点: 0x800532d4 以降
+
+### Session 40 完了分 (2026-05-18、6 件) — KartMovement boost visual blend + ItemStateGuard / TryArm 系
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80052dbc | FUN_80052dbc | KartMovement_UpdateBoostVisualBlend | boost counter で 3 段階 (active/fade/idle) 色 LERP + 120fr fade |
+| 0x80052f20 | FUN_80052f20 | ItemStateGuard_PruneIfDeadAndReport | vtbl[3] alive check + vtbl[2] release + NULL out |
+| 0x80052f9c | FUN_80052f9c | ItemStateGuard_IsActive | branchless null-check predicate (per-frame hot path) |
+| 0x80052fb0 | FUN_80052fb0 | ItemState_TryArmWithDataCopy | 16-word descriptor を duplicate copy で arm (category D/E) |
+| 0x80053168 | FUN_80053168 | ItemState_InitKeyframeBufferAndArm | 4 channel × 8 keyframe buffer init + CarObject+0xd4=1 arm |
+| 0x80053290 | FUN_80053290 | ItemStateSlotC_TryArm | category C 用の no-arg TryArm |
+
+主要発見:
+- **ItemStateGuard pattern 確定**: 各 KartItem effect slot は (preallocated state @+0x14
+  or +0xc) と (active state @+0x18) のペア構造で、`TryArm` が pre → active へ promote
+  + vtbl[2] (init) を呼び、`PruneIfDead` が毎フレーム vtbl[3] (alive) で auto-cleanup。
+  `IsActive` は branchless null-check で per-frame の hot path に最適化。
+- **TryArm pattern** が複数 variant:
+  - SlotC (no-arg) — full freeze category
+  - WithDataCopy (16-word descriptor + 4-arg) — category D/E
+  - 他に変種あり (要 0x800532d4 等を確認)
+- **KartMovement_UpdateBoostVisualBlend** は boost effect visual の 3-mode FSM:
+  - active: u32→signed-float idiom で counter [0, FLOAT_806d2744] → t、LERP
+  - fade: 120-frame countdown
+  - idle: 固定値
+  global FLOAT_806d1080/1084 が boost ramp の現在値を保持し、別 subsystem が読む。
+- **u32 → signed-float idiom** (`(uVar9 ^ 0x80000000) - DOUBLE_806d2790`) が
+  KartItem_UpdateShadowBillboardAndViewport (Session 34) と KartMovement_UpdateBoostVisualBlend
+  の 2 関数で再利用。CW compiler の int→double cast の典型展開。
+
+副次 rename 候補:
+  FUN_800532d4 → ItemStateSlotC_Init (category C state init、ItemStateSlotC_TryArm の callee)
+  DAT_802ebe14..30 → boost color LERP keyframe table (8 floats × 2 colors)
 
 ### Session 39 完了分 (2026-05-18、16 件) — StlList primitives + 13 Wrapper dtors (KartItem sub-object holders)
 
@@ -1274,9 +1307,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-39)
+## 累計 (Session 1-40)
 
-合計 **398 件処理** (rename ~389、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **26.5%**
+合計 **404 件処理** (rename ~395、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **26.9%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
