@@ -25,8 +25,32 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8003b30c (SceneFlow_SetFlag1048 rename 完)
-- 次セッション開始点: 0x8003b400 範囲 (要確認)
+- 最後に処理した address: 0x8003d304 (Object_RenderJObjIfWithinRange rename 完)
+- 次セッション開始点: 0x8003dcd4 以降
+
+### Session 22 完了分 (2026-05-18、4 件) — Race progress comparator + Path participant array
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8003cdd8 | FUN_8003cdd8 | Race_CompareKartProgress | 2-kart race progress comparator (lap*total + wp 圧縮 score) |
+| 0x8003cee4 | FUN_8003cee4 | Path_ResetCursorForKart | 8-kart 中 1 名の cursor を -1 (= 未スタート) にリセット |
+| 0x8003d158 | FUN_8003d158 | PathParticipantArray_Dtor | 8-kart cursor 配列の一括 clear + PathCursor_Free + free |
+| 0x8003d304 | FUN_8003d304 | Object_RenderJObjIfWithinRange | distance scalar < 閾値 で Object_RenderJObjTree、LOD/cull gate |
+
+主要発見:
+- **PathManager struct layout**:
+  - per-kart cursor stride 0x98 (cursor base +0x14, +0xac, +0x144, +0x1dc, +0x274, +0x30c, +0x3a4, +0x43c)
+  - per-kart status byte at +0x4d4..+0x4db (8 bytes)
+  - **8-kart 固定**
+  - 4-byte field per cursor at offset 5 (= +0x14) = waypoint index (-1 で 未スタート)
+  - 4-byte field at offset 0x18 (= +0x60) = lap count
+- **race rank scoring**: progress = lap_count * total_waypoints + wp_index、wrap-around 補正
+  (last-10 to first-10) で finish line over 検出
+- LOD distance gate: FLOAT_806cedbc 閾値で render skip
+
+副次 rename 候補:
+  FUN_80276350 → abs / 標準 math
+  FLOAT_806cedbc → LODDistanceThreshold
 
 ### Session 21 完了分 (2026-05-18、5 件) — MemoryManager_Alloc + SceneFlow state setters
 
@@ -500,9 +524,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-21)
+## 累計 (Session 1-22)
 
-合計 **223 件処理** (rename ~215、諦め ~8) / 1500 件 ≒ **14.9%**
+合計 **227 件処理** (rename ~219、諦め ~8) / 1500 件 ≒ **15.1%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
