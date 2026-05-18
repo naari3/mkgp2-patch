@@ -25,8 +25,58 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8005ca64 (EffectSteering_Ctor rename 完)
-- 次セッション開始点: 0x8005ccbc 以降
+- 最後に処理した address: 0x8005d504 (ActionLock_Step rename 完)
+- 次セッション開始点: 0x8005d564 以降
+
+### Session 54 完了分 (2026-05-18、12 件 + 17 質改善 rename) — RTTI 解析で 8 sub-state class 完全特定 + Reset/Step 全 method 同定
+
+RTTI 解析の決定打:
+- メタデータテーブル at 0x806cee58 (7 entries) + 0x806cee98 (1 entry) で 8 derived class 名確定:
+  clActionDelay / clActionScale / clActionInputViscosity / clActionShake / clActionSplit /
+  clActionViscosity / clActionVibrate / clActionLock — すべて nsEffectSteering 名前空間
+- 各 class descriptor (sub-state[0] が指す pointer) layout 統一:
+  - +0x00: own_meta (string ptr)
+  - +0x08: dtor
+  - +0x0c: reset method (InitForXxx が vtbl[3] として呼ぶ start hook)
+  - +0x10: step method (per-frame tick)
+- ctor (0x8005ca64) を CarObject_Init から再解析、param_2 = CarObject*、size 0x4c (旧 plate の 0x48 誤り訂正)
+
+**新規 rename 12 件**:
+
+| Address | 新名 | 用途 |
+|---|---|---|
+| 0x8005ccbc | Action_BaseDtor | clAction base class dtor |
+| 0x8005cd04 | ActionDelay_Step | delay ring buffer per-frame step (clActionDelay) |
+| 0x8005ce54 | ActionScale_Step | scale per-frame step (関数未定義 → create_function で作成) |
+| 0x8005ce70 | ActionInputViscosity_Reset | byte-identical minimal reset |
+| 0x8005cea8 | ActionInputViscosity_Step | target-tracking integrator + Cmd2e/2d force-feedback |
+| 0x8005cf6c | ActionShake_Step | active-flag ramp + sign flip + IntensityFromSpeed |
+| 0x8005d0dc | ActionSplit_Step | quantised bucket + sign-cross pulse + countdown release |
+| 0x8005d2b8 | ActionViscosity_Reset | byte-identical minimal reset |
+| 0x8005d2f0 | ActionViscosity_Step | free-running ping-pong ramp + Cmd2e/2d |
+| 0x8005d3d4 | ActionVibrate_Step | integer ramp + Cmd2f vibration cmd |
+| 0x8005d504 | ActionLock_Step | minimal: delta = wheel - offset |
+| 0x8005ccbc | (上) | (重複行、削除可) |
+
+**質改善 re-rename 17 件** (既存名 → クラス名ベース):
+- 8 sub-state dtor: SteeringSubState_Dtor_t* → ActionXxx_Dtor (8 件)
+- 6 reset method: EffectSteering_Reset* → ActionXxx_Reset (6 件)
+- 9 init dispatcher: EffectSteering_InitStandard_t* → EffectSteering_InitForXxx (9 件)
+- 1 setter: EffectSteering_SetSubStateField38_C → EffectSteering_InputViscosity_SetFieldC (1 件)
+- 1 ctor plate fix: param_2 を vtbl から CarObject* に訂正 (size 0x48 → 0x4c)
+
+主要発見 (Session 53 補強):
+- **CarObject_Init 解析で ctor 真の signature 判明**: `EffectSteering_Ctor(self, CarObject*, isPlayer)`、
+  size は 0x4c (alloc_size 0x4c at CarObject_Init/field_44 init)。+0x48 は ctor で touch されない
+  「current sampled output」field、step method 群で更新。
+- **InitForXxx の vtbl[3] dispatch = class descriptor +0xc** (= reset method)。各 derived class が
+  独自の reset を持つ (e.g. Scale_Reset は wheel center + parent[+0x48]=0、Delay_Reset は parent
+  経由 KartItem_ResetStrPcbToIdle + ramp clear)。
+- **同 class の Reset と Step を同居解析**: Step は per-frame で sub-state state を進める + Cmd2d/2e/2f
+  force-feedback を StrPcb 経由で発行。Cmd2d/Cmd2e = 左右輪、Cmd2f = 振動振幅。
+- **clActionDelay の sub[+0x9c]**: ctor 解析時に「parent class descriptor + 0x9c から float を読む」
+  と推測していたが、これは sub-state の back-ptr 経由で parent EffectSteering の class descriptor を
+  辿って読む値。基底 0x803f9c28 では 0.0、derived では非 0 を仕込める仕様。
 
 ### Session 53 完了分 (2026-05-18、9 件) — SteeringSubState 8 dtor + EffectSteering_Ctor
 
@@ -1867,9 +1917,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-53)
+## 累計 (Session 1-54)
 
-合計 **531 件処理** (rename ~518、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **35.4%**
+合計 **543 件処理** (rename ~530、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **36.2%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
