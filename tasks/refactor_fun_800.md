@@ -25,8 +25,51 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x800564e4 (KartItem_DispatchEffectRenderByState rename 完)
-- 次セッション開始点: 0x800566d4 以降 (mode 7 render callback pair)
+- 最後に処理した address: 0x80056b20 (KartItem_RenderCb_Mode1_Post rename 完)
+- 次セッション開始点: 0x80056c4c 以降
+
+### Session 44 完了分 (2026-05-18、14 件) — KartItem render callback pair table 全 7 mode 命名
+
+KartItem_DispatchEffectRenderByState (Session 43) が dispatch する 7 つの pre/post render callback pair を全て命名。FUN_8007dc8c(postCb, preCb, ctx) の 2-phase render API パターン。
+
+| Mode | Pre callback | Post callback | 色 source | コメント |
+|---|---|---|---|---|
+| 7 (escalated) | 0x800566d4 KartItem_RenderCb_Mode7_Pre | 0x800566f8 KartItem_RenderCb_Mode7_Post | DAT_806d28c0/c4 (2 color) | 2-tone gradient |
+| Default (cycle mod-6<4) | 0x80056794 _DefaultCycle_Pre | 0x800567b8 _DefaultCycle_Post | PTR_DAT_806d28bc (indirect) | runtime-updated color slot |
+| 3 | 0x80056838 _Mode3_Pre | 0x8005685c _Mode3_Post | DAT_806d28b8 | banana/oil hit visual |
+| 5 | 0x800568dc _Mode5_Pre | 0x80056900 _Mode5_Post | DAT_806d28b4 | collision flash |
+| 6 | 0x80056980 _Mode6_Pre | 0x800569a4 _Mode6_Post | DAT_806d28b0 | heavy hit |
+| 2/4 | 0x80056a24 _Mode2or4_Pre | 0x80056a48 _Mode2or4_Post | DAT_806d28ac | common visual (2/4 が同一 callback を共有) |
+| 1 (boost charge) | 0x80056ac8 _Mode1_Pre | 0x80056b20 _Mode1_Post | DAT_806d28a8 + sub-mode switch | 13-phase cycle (0..12 → 3 swap-table group) |
+
+主要発見:
+- **Pre callback は 6/7 で identical body** (`FUN_802c352c(0)` のみ)、Mode 1 だけ 3 段
+  setup (`FUN_802c352c` + `FUN_8026949c` swap-table + `FUN_80269454` TEV stage)。
+  Mode 1 = boost charge は GX swap-table の追加 setup が必要。
+- **Post callback の標準テンプレート** (Mode 3/5/6/2or4):
+  ```
+  FUN_802695ec(target, 0xff, 0x100, 6)   // alpha/blend
+  load DAT_806d28XX → color reg 1
+  FUN_802690d8(target, 0, 0xf, 0xf, 2)   // TEV stage
+  FUN_80269160(target, 0, 0, 0, 1, 0)    // color combine
+  ```
+  Mode 7 は `FUN_802690d8(target, 0, 2, 4, 0xf)` の異なる引数 + 2 color slot。
+- **Mode 1 Post の 13-phase cycle**: subMode = state[+0x130] / 8 が 0..12 の範囲で 3 つの
+  swap-table group ({0,5,6,10,11,12} → 0, {1,4,7} → 1, {2,3,8,9} → 2) に dispatch。
+  case 13/14/15 は no-op (= dim phase)。CW switch table emission の典型。
+- **色定数のレイアウト** (806d28a8..28c4): mode 1 → 28a8, mode 2/4 → 28ac, mode 6 → 28b0,
+  mode 5 → 28b4, mode 3 → 28b8, default → PTR_28bc, mode 7 → 28c0/c4。アドレス順
+  != mode 順なのは linker layout の都合。
+
+副次 rename 候補:
+  DAT_806d28a8..28c4 → KartEffectColors_Mode{1,2or4,6,5,3,Default,7Lo,7Hi}
+  FUN_802c352c → GX_ResetTevStage_v1 (kart effect 専用 reset、推測)
+  FUN_8026949c → GX_SetTevSwapTable (= GameCube GX API wrapper)
+  FUN_80269454 → GX_SetTevStageColorInput
+  FUN_802695ec → GX_SetBlendMode_Custom
+  FUN_80269230 → GX_LoadColorReg
+  FUN_802690d8 → GX_SetTevColorInput
+  FUN_80269160 → GX_SetTevColorOp
 
 ### Session 43 完了分 (2026-05-18、14 件) — Orphan dtors + KartEffectFadeTransit family + 描画 callback dispatcher
 
@@ -1428,9 +1471,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-43)
+## 累計 (Session 1-44)
 
-合計 **439 件処理** (rename ~426、諦め ~9、プレースホルダ rename 6 [orphan 4 + stub 1 + dup1 旧]) / 1500 件 ≒ **29.3%**
+合計 **453 件処理** (rename ~440、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **30.2%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
