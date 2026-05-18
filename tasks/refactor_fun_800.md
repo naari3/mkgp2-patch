@@ -25,8 +25,28 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80038f84 (Mtx4x4_TransposeTo4x3 rename 完)
-- 次セッション開始点: 0x80039000 範囲
+- 最後に処理した address: 0x80039cf4 (MetricsTable_Accumulate rename 完、session 2 deferred 名を正式採用)
+- 次セッション開始点: 0x80039d38 以降 (まだ未処理)
+
+### Session 15 完了分 (2026-05-18、3 件) — metrics table API trio
+
+g_metricsTable[0..0x2f] (48 slot per-feature timing accumulator) の getter/setter/HUD 表示。
+Session 2 で deferred 名 MetricsTable_Accumulate を正式採用。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80039be8 | FUN_80039be8 | MetricsTable_Get | slot 値を time-scale で割って double 返却 |
+| 0x80039c40 | FUN_80039c40 | MetricsTable_DisplayOverlay | "%16s > %2.5f" format で debug HUD 表示 |
+| 0x80039cf4 | FUN_80039cf4 | MetricsTable_Accumulate | += accumulator (slot 0..0x2f bounded) |
+
+主要発見:
+- PTR_s_SYSTEM_802e9b7c が 48 個分の slot label string ptr table
+- Get 経路で FLOAT_806d2478 (epsilon / noise floor) と FLOAT_806d247c (time scale) を使用
+
+副次 rename 候補:
+  PTR_s_SYSTEM_802e9b7c → g_metricsSlotLabels
+  FLOAT_806d2478 → MetricsEpsilon (noise floor)
+  FLOAT_806d247c → MetricsTimeScale
 
 ### Session 14 完了分 (2026-05-18、15 件) — CW STL template + shared_ptr + ClStrPcb vtable cluster
 
@@ -319,9 +339,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-14)
+## 累計 (Session 1-15)
 
-合計 **192 件処理** (rename ~184、諦め ~8) / 1500 件 ≒ **12.8%**
+合計 **195 件処理** (rename ~187、諦め ~8) / 1500 件 ≒ **13.0%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
