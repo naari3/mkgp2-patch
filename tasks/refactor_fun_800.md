@@ -25,8 +25,59 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x800053e0 (OSResetSystem_NoArgs rename 完)
-- 次セッション開始点: 0x8002bca0
+- 最後に処理した address: 0x8002d0a8 (ServiceButtonExtra_Set rename 完)
+- 次セッション開始点: 0x8002d760
+
+### Session 2 完了分 (2026-05-18、合計 22 件)
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8002bca0 | FUN_8002bca0 | Flow_TransitionTo | scene transition |
+| 0x8002c554 | FUN_8002c554 | FlowDispatcher_Dtor | flow ctx dtor |
+| 0x8002cb80 | FUN_8002cb80 | FlowDispatcher_Create | flow ctx singleton ctor |
+| 0x8002ccd8 | FUN_8002ccd8 | ScopedTimer_End | timer/metrics accumulator |
+| 0x8002cd7c | FUN_8002cd7c | WrapInRange | bidirectional clamp/wrap |
+| 0x8002cd9c | FUN_8002cd9c | Scene_Draw | scene vtable slot 3 thunk |
+| 0x8002cdf4 | FUN_8002cdf4 | ObjectBase_Dtor | mkgp2 object hierarchy 最上位 dtor |
+| 0x8002cfb8 | FUN_8002cfb8 | (諦め) | 4-byte global setter、用途不明 |
+| 0x8002cfd0 | FUN_8002cfd0 | BootConfigFlag_Get | boot config flag (DAT_806d0fa0) |
+| 0x8002cfd8 | FUN_8002cfd8 | ServiceLatch_CheckTriggered | service latch trigger check |
+| 0x8002d004 | FUN_8002d004 | VBlankValue_Set | VBlank latch value setter |
+| 0x8002d018 | FUN_8002d018 | ServiceLatchAux97_Set | service latch aux byte (用途未特定) |
+| 0x8002d020 | FUN_8002d020 | VBlankEnable_Set | VBlank latch enable setter |
+| 0x8002d038 | FUN_8002d038 | VBlankValue_Get | VBlank latch value getter |
+| 0x8002d048 | FUN_8002d048 | ServiceValue_Set | service latch value setter |
+| 0x8002d064 | FUN_8002d064 | ServiceLatchAux96_Set | service latch aux byte (用途未特定) |
+| 0x8002d06c | FUN_8002d06c | ServiceEnable_Set | service latch enable setter |
+| 0x8002d084 | FUN_8002d084 | ServiceValue_Get | service latch value getter |
+| 0x8002d08c | FUN_8002d08c | ServiceEnable_Get | service latch enable getter |
+| 0x8002d094 | FUN_8002d094 | BootStateStruct_Get | boot state struct ptr (DAT_80594080) |
+| 0x8002d0a0 | FUN_8002d0a0 | ServiceButtonExtra_Get | service button extra byte getter |
+| 0x8002d0a8 | FUN_8002d0a8 | ServiceButtonExtra_Set | service button extra byte setter |
+
+### Session 2 副次 rename 候補 (deferred)
+
+| 副次 addr | 候補名 | 由来 |
+|---|---|---|
+| DAT_806d0f80 | g_FlowDispatcher | FlowDispatcher_Create singleton |
+| DAT_806d0f94 | g_ServiceEnable | service latch enable |
+| DAT_806d0f95 | g_VBlankEnable | VBlank latch enable |
+| DAT_806d0f98 | g_ServiceValue | service latch value |
+| DAT_806d0f99 | g_VBlankValue | VBlank latch value |
+| DAT_806d0fa0 | g_BootConfigFlag | BootConfigFlag_Get の対象 |
+| DAT_806d2264 | g_HeapStatsTag | HeapStats_DumpForTag のターゲット |
+| DAT_806d2268 | g_ZeroFloat | float 0.0 リテラル |
+| DAT_806d2280 | g_TimerScale | ScopedTimer 経路の divisor |
+| DAT_806d2288 | g_TimerOffsetBaseline | ScopedTimer 経路の baseline |
+| DAT_80594080 | g_BootStateStruct | BootDispatcher 用 state struct |
+| 0x803f5658 | g_ObjectBaseVtable | ObjectBase の vtable |
+| FUN_80039cf4 | MetricsTable_Accumulate | g_metricsTable[i] += val |
+| FUN_8003b2d8/2e0/2e8 | SceneTransitionCounter_* | Flow_TransitionTo の cleanup |
+| FUN_8002fc80 | MainMenuScene_Init | FlowDispatcher_Create の sub-init |
+| FUN_80121210 | FlowDispatcher_Cleanup | scene transition cleanup helper |
+| FUN_8002dc3c | Frame_Begin | per-frame GX state setup (MainGameLoop) |
+| FUN_8002da3c | Frame_PostDraw | per-frame post-process (MainGameLoop) |
+| FUN_80038574 | ApplicationRunFlag_Get | DAT_806d1010 getter |
 
 ### Session 1 完了分 (2026-05-18)
 
