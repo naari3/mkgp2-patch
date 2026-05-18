@@ -25,8 +25,121 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8004a074 (DebugOverlay_KartPhysicsForLocalPlayer rename 完)
-- 次セッション開始点: 0x8004a0a4 以降
+- 最後に処理した address: 0x8004b9bc (KartItem_RenderPipelinedWithEffects rename 完)
+- 次セッション開始点: 0x8004baac 以降
+
+### Session 32 完了分 (2026-05-18、9 件) — KartItem core collision + apply-effect + render pipeline
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8004a238 | FUN_8004a238 | KartItem_OnKartHit | kart-kart 衝突反応 (cooldown, SE 0x58/0x11/0xc6, KartReaction_Front/Side dispatch, RankLog) |
+| 0x8004a8b8 | FUN_8004a8b8 | KartItem_PlayHitSE_DifferentVictim | victim != owner なら SE 0xb 再生 |
+| 0x8004a918 | FUN_8004a918 | KartItem_ApplyEffectToVictim | central "apply effect" — RankLog/coin spend/2-lane teardown loop/effect commit trio |
+| 0x8004b118 | FUN_8004b118 | KartItem_PlaySE_0x09 | SE 9 単発再生 |
+| 0x8004b140 | FUN_8004b140 | KartItem_ApplyImpactReflectAndDampVelocity | rsqrt Newton-Raphson 2 iter で velocity damp + drop side event |
+| 0x8004b394 | FUN_8004b394 | KartItem_TryDropCoinsAndPlaySE | count/force gate + FUN_800601c0 drop + SE 9 |
+| 0x8004b430 | FUN_8004b430 | KartItem_TryCancelIfDropAllowed | cancel item + drop handler 確認 |
+| 0x8004b49c | FUN_8004b49c | KartItem_ApplyImpactImpulseAndRumble | impact 力学計算 + StrPcb force-feedback (front/side で 2 種 timer) |
+| 0x8004b9bc | FUN_8004b9bc | KartItem_RenderPipelinedWithEffects | multi-pass render + CarObject effects + 条件 post-FX blit |
+
+主要発見:
+- **KartItem subsystem の central API surface** がほぼ pin できた:
+  - **collision side**: KartItem_OnKartHit → KartItem_ApplyImpactImpulseAndRumble (physics) +
+    KartItem_ApplyImpactReflectAndDampVelocity (velocity damp + drop) を呼ぶ
+  - **effect side**: KartItem_ApplyEffectToVictim が central applicator。
+    RankLog/CoinSystem_RemoveCoins/MediaBoard_SendAndCheck を coordinate
+  - **drop API**: KartItem_TryDropCoinsAndPlaySE, KartItem_TryCancelIfDropAllowed
+  - **rendering**: KartItem_RenderPipelinedWithEffects が KartDriver_RenderTimed を
+    pass 3→4→2 順で driving、間に CarObject effect (FUN_80056388/424/464) を挟む
+- **iframe システム**: 衝突したら self+0xd0 = 0x2d (45 frames) で armed。
+  KartItem_OnKartHit 側は self+0x31 = 0x3c (60 frames) で異なる timer (event-specific 違い)。
+- **rumble timer mapping**: StrPcb_SetTimer3c40 で 2 種の duration:
+  - front impact (dot > 0) → FLOAT_806d2734 (short pulse)
+  - side/rear impact → FLOAT_806d2738 (long pulse)
+- **CarObject 内部 layout** の追加判明:
+  +0x1ac/+0x1b0/+0x1b4 = linear velocity, +0x1b8 = max velocity
+  +0x310..+0x318 = torque/angular impulse
+  +0x58/+0x5c/+0x60 = forward axis (3-float), +0x78..+0x80 = secondary axis
+  +0x88/+0x8c/+0x90 = world position
+  +0xb8..+0xc0 = rest/sleep velocity (snap target)
+- **event type 4** が特別: KartItem_ApplyEffectToVictim も KartItem_RenderPipelinedWithEffects
+  も `self+0x10 == 4` で異なる branch を取る。これは "drift" / "boost" の特殊 event type。
+- **rsqrt Newton-Raphson 2-iter idiom** が 2 関数で再利用される (B140 と B49C):
+    `dVar11 = 1.0 / sqrt(N); dVar11 = 0.5 * dVar11 * -(N * dVar11 * dVar11 - 3); ...×2`
+  GameCube SDK で標準的な fast inv-sqrt + 2 refinement。
+
+副次 rename 候補:
+  FUN_8005a0bc → SoundObj_IsInRange?
+  FUN_80091e40 / FUN_80091ac4 / FUN_80091438 / FUN_8009185c → KartCarPhysics の effect API
+  FUN_80050010 / FUN_800512e4 / FUN_80052f9c → item state guard chain
+  FUN_8005a140 / FUN_8005a314 / FUN_80058534 → CarObject SE channel API
+  FUN_80056388 / FUN_80056424 / FUN_80056464 / FUN_800564e4 / FUN_80056f40 → CarObject effect render hooks
+  FUN_802bd6ac / FUN_802bd6c0 → post-FX (bloom?) begin/end
+  FUN_8005b168 / FUN_80061918 / FUN_80061920 → effect state probes
+  FUN_8005b118 → state-row apply
+
+### Struct Application Pass (2026-05-18) — Session 1-22 audit 結果を一括 struct 化
+
+Session 1-22 で観察した struct access pattern を 5 並列 subagent で網羅 audit (227 関数全件)、
+12 件の struct 候補を Ghidra に新規作成し関連関数 70+ 件に prototype 適用。
+
+#### 新規作成 struct
+| name | size | apply 対象 |
+|---|---|---|
+| StrPcb | 0x70 | strpcb subsystem 30 関数 (Session 9-13) + 9 grobal apply at DAT_806d1010 |
+| HSD_JObj_Partial | 0x74 | JObj_GetNext/Child, JObj_SetScale, JObj_SetRotationQuat (Session 4/8) |
+| HSD_DObj_Partial | 0xc | DObj_GetNext (Session 8) |
+| mkgp2_Object_Partial | 0x5c | Object_* 29 関数 (Session 4-8) |
+| CObj_Partial | 0x3084 | CObj_* 14 関数 (Session 3) |
+| CObjProj_Partial | 0x84 | CObj_SetWorldMatrix sub-struct 参照のみ (まだ apply 未) |
+| PathManager_Partial | 0x4dc | Race_CompareKartProgress, Path_ResetCursorForKart, PathParticipantArray_Dtor (Session 22) |
+| PathCursor (stride 0x98) | 0x98 | PathManager_Partial.cursors[8] の要素型 |
+| FlowDispatcher | 0x3c | Flow_TransitionTo, FlowDispatcher_Dtor/Create (Session 2) + global at DAT_806d0f80 |
+| SeqMenuScene | 0x14 | SeqMenuScene_Init/Dtor/DrawDebugList/HandleInput (Session 2) |
+| VolumeCalibration | 0x28 | VolumeCalibration_Tick/Dtor/Ctor/DrawOverlay (Session 16-17) |
+| SceneRender_Partial | 0x2c | SceneRender_* 6 関数 (Session 19) |
+| ScopedTimer | 0x8 | ScopedTimer_End (Session 2) |
+| SharedPtr | 0x8 | SharedPtr_Init/Dtor (Session 14) |
+| ClRomTableEntry | 0x8 | array[40] apply at DAT_80598678 |
+
+#### 主要 verification
+- StrPcb_OutputTick: 全 byte offset アクセスが struct field name に変換 (`self->counter_current`,
+  `self->timerA_duration`, `self->dirty_flag` 等)
+- Object_DriveAnimAndSkin: `obj->primary_jobj`, `obj->jobj_array`, `obj->anim_chain_descriptor`
+  等が clean に。inner JObj access (`*(int *)(iVar12 + 0x1c)`) は local var 型未設定で残存
+- Race_CompareKartProgress: `pathMgr->cursors[kartA].waypoint_index/lap_count/terminal_zone_marker`
+  で 8-kart progress 比較が完全に struct field 経由に
+- VolumeCalibration_Tick: `self->steering_min/max`, `self->strpcb_pos` 等で読みやすく
+
+#### audit で見つけた訂正
+- LoaderEntry_Partial の path field は **+0x04 ptr** (タスクファイル原文「+0x18+: path string」は誤り)
+- PathCursor offset: 「offset 5 (= +0x14)」「offset 0x18 (= +0x60)」は **PathManager 起点絶対値**、
+  cursor 内部 offset では +0x00 waypoint / +0x4C lap が正
+- StrPcb +0x44 は **u32** (Session 12 メモ u16 は誤り、ParseResponse の `*(uint*)(self+0x44) = (uint)*(ushort*)(...)` で確証)
+- StrPcb +0x10/+0x28 は u32 counter (RGBA byte[4] ではない、Init `0,0,1,0xFF` は big-endian 0x000001FF = 0x1FF neutral)
+- Object_RenderJObjEx (0x80034220) **vestigial signature**: r3 (obj ptr) 未使用、r4=jobj のみ実質使用
+- mkgp2_Object_Partial +0x10 は float/Mtx* で union 衝突可能性、現状 float 採用
+
+#### struct 化を見送ったもの (理由付き)
+| 対象 | 理由 |
+|---|---|
+| ServiceLatch / VBlankLatch globals | 独立 setter/getter、隣接配置の偶然 |
+| MetricsTable | float[0x30] array で十分、per-slot struct 化 ROI 低 |
+| STLContainer (CW MSL rb-tree) | template per-instantiation 展開で汎用化逆効果 |
+| ClStrPcb vtable hierarchy | signature 不明、instance も SharedPtr 以外未確定 |
+| clRom GlobalState (4 globals) | ペア access ない、global rename で十分 |
+| MemoryManager globals | g_mainHeap は GC SDK HeapHandle、別 cluster |
+| SceneFlow cleanup list | singleton 24 byte sentinel、struct より 4 named global |
+| BootStateStruct (DAT_80594080) | size 0x60 だが field 意味未知、struct 後手 |
+| MJObj / MObj | 親 HSD_JObj 完成後にやるべき (cluster 4 deferred) |
+
+#### 既知の残課題
+- inner JObj access (Object_DriveAnimAndSkin 等の local var iVar12 = `*(int *)(obj->jobj_array + N)`)
+  は local var 型未設定で raw offset 残存。set_local_variable_type で個別 fix 可
+- Object_DriveAnimAndSkin の 4 引数 signature (`Object*, double, double, Object*`) は guess、
+  caller scan で確証要
+- 派生 class (MJObj/MObj) は cluster 4 deferred、将来 HSD_JObj を base にした inheritance 整理時に
+
 
 ### Session 31 完了分 (2026-05-18、12 件 + 4 副次) — NamCam_Init + ISESlot lifecycle + CoinEvent SE family
 
@@ -858,9 +971,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-31)
+## 累計 (Session 1-32)
 
-合計 **318 件処理** (rename ~309、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **21.2%**
+合計 **327 件処理** (rename ~318、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **21.8%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
