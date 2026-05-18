@@ -25,8 +25,122 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8006f608 (CardRW_TestTopMenu_Page rename 完)
-- 次セッション開始点: 0x8006f700 以降 / 0x80064cd4 等の命名保留 follow-up
+- 最後に処理した address: 0x8007fe0c (DrawCarRouletteAndQuad rename 完)
+- 次セッション開始点: 0x8008xxxx 以降
+
+### Session 60 完了分 (2026-05-18、127 件) — 4 並列 background agent I/J/K/L
+
+**Agent I cluster (28 件、0x80070ea8..0x800758ec)** — Service-menu UI + Backup memory + Operation clock + TaRecord leaderboard + PcbId/IP helper:
+
+Service-menu UI:
+- 0x80070ea8 FlashFadeOverlay_Draw (命名保留: Flash/Fade どちらか scene-transition 側未調査)
+- 0x80072074 GameSetting_Page_VariantA / 0x8007270c GameSetting_Page_VariantB
+- 0x80073b00 ServiceMenu_Draw / 0x80073b38 ServiceMenu_Tick / 0x80073bb0 ServiceMenu_Dtor
+
+Score entry / sub-class dtors:
+- 0x80073e20 FUN_80073e20_SmallObj_Dtor_VtableA (命名保留: vtable 主クラス未確定)
+- 0x80073ecc PostRace_StartScoreEntryFlow / 0x80073ef8 PostRace_StartScoreEntryFlow_WithCardSave
+- 0x80073f24 FUN_80073f24_SmallObj_Dtor_VtableB (命名保留)
+
+PCB network helpers:
+- 0x800740bc PcbIdToIp_GetCached / 0x8007413c PcbIdToIpString
+
+Backup memory (DAT_80598a60..):
+- 0x80074190 Backup_LoadFromMemoryOrInit / 0x80074370 Backup_PublishShadowCopy / 0x8007458c Backup_GetMinutesSinceBoot
+- 0x80074fa4 Backup_ClearBookkeeping / 0x8007502c Backup_ClearHiScores / 0x800751f0 Backup_ClearAll
+- 0x80075470 Backup_PublishShadowCopy_Inline / 0x800758ec Backup_Shutdown
+
+Operation clock:
+- 0x8007526c OperationClock_Commit / 0x800752cc OperationClock_GetLifetimeSeconds
+- 0x80075330 ServiceMode_UpdateScheduleGate
+
+TimeAttack leaderboard:
+- 0x80074910 TaRecord_GetEntry_Indexed / 0x800749d0 TaRecord_GetEntry_Current
+- 0x80074aa0 TaRecord_GetTime_Indexed / 0x80074b5c TaRecord_GetTime_Current
+- 0x80074c28 TaRecord_GetLastInsertedRank / 0x80074c30 TaRecord_InsertResult
+
+**Agent J cluster (32 件、0x80076370..0x80077e24)** — HSD LObj list + Triforce SCI2 Card-RW driver + KartTireFX 1 件:
+
+HSD LObj scene-light list (2):
+- 0x80076370 LObjList_ApplyForCObj (8-slot LObj を current CObj に再登録、clears prior lights)
+- 0x800763e4 LObjList_Destroy (8 LObj slot 解放 + clRom handle drop + container free)
+
+Triforce SCI2 Card-RW driver (29):
+- Singleton: 0x80076b68 Sci2Card_Singleton_GetOrCreate / 0x80076bb4 Sci2Card_Singleton_Get
+- Lifecycle: 0x80076870 Sci2Card_Init / 0x8007660c Sci2Card_AllocAndOpenSci2 / 0x80076a80 Sci2Card_Shutdown
+- Frame ops: 0x80076910 Sci2Card_BuildPacket (XOR-checksummed cmd frame、frameType/subCmd 経由)
+  / 0x80076bbc Sci2Card_Tick (5-state machine) / 0x80077810 GetResponsePayload / 0x80077c6c GetResponseStatus
+- SendCmd wrappers (9): Ping (0x40)/Print (0x7a)/Reset (0xa0)/LedSet (0x7d)/Register (0x7c)/Options (0x33)/Cleaning (0xb0)/Space (0x20)/Retry (0x10)
+  @ 0x8007723c/772d0/773f0/77484/77574/778c0/779ac/77afc/77ba4
+- State control: 0x80077840 ForceFailState / 0x80077de0 ResetRetryCount
+- Status decoders (12): IsStatus1Zero/OneTwoThree、IsStatus2A/Five/Three/One/Two、IsStatus3Zero/Five、
+  IsRetryExhausted、IsStatusOk02/OkNonTerm、IsIdleOrExhausted
+  @ 0x80077cb0..0x80077dec の小関数密集帯
+
+KartTireFX (1): 0x80077e24 KartTireFX_ShowGearStageJObjs (gear stage 0..4 JObj 表示切替)
+
+**Agent K cluster (26 件、0x8007842c..0x8007b208)** — KartTireFX + clDrawMan + KartItem rear-target:
+
+KartTireFX (0xc4 byte、KartDriver.behaviorObj):
+- 0x8007842c KartTireFX_ResolveJoints (sp_tire_set_<char>.dat / cart_tire.dat ロード + 36 joint cache)
+- 0x80078778 SetRollPair_Joints88_90 / 0x80078a3c SetRollPair_Joints84_8c
+- 0x80078d00 SetVisibleAll4Wheels / 0x80079224 AddYaw / 0x80079234 AddPitch / 0x80079244 AddSpinBoth
+- 0x80079260 SetYaw / 0x80079268 SetPitch / 0x80079270 ApplyAndRender
+- 0x800799d0 Dtor / 0x80079a44 Ctor
+
+clDrawMan (DAT_806d10ac、Z-sorted draw manager):
+- 0x80079b24 Dtor / 0x8007ad78 Base_Dtor
+- 0x80079bd0 NodePool_Free / 0x80079c0c Buckets_Free
+- 0x80079e9c EndFrame_NoOp / 0x80079ea0 Buckets_Reset / 0x80079f18 Buckets_Dispatch (OSTick slot 0x14/0x2a)
+- 0x8007a070 SetMaxClipZ / 0x8007a078 AddSorted (near+depthBias)
+- 0x8007a4cc AddSorted_NoDepthBias / 0x8007a91c AddSorted_DepthRange
+
+KartItem rear-target cone search (caller なし):
+- 0x8007adc0 v1 / 0x8007afc4 v2 (altitude gate) / 0x8007b208 v3 (tighter radius)
+
+**Agent L cluster (41 件、0x8007b44c..0x8007fe0c)** — ItemEffect + SpecialFaceMesh + GXChannel + DVDLoad + TransitionEffect:
+
+ItemEffect timer state machine (4):
+- 0x8007b44c ItemEffectMgr_GetPickedSlot / 0x8007b468 ItemEffectState_Init (type 1/6/9 vtable swap)
+- 0x8007b534 ItemEffectMgr_TickPickLowestTimer / 0x8007b74c ItemEffectState_DefaultInit
+
+SpecialFaceMesh (壁判定面、singleton @ DAT_806d1138):
+- 0x8007b798 Dtor / 0x8007b878 Ctor / 0x8007b944 SpecialFace_Init
+- 0x8007bb08 SpecialFace_BuildPlaneAndEdges (precompute plane + edge tangents)
+- 0x8007be70 Raycast / 0x8007bffc RaycastSegment (AABB + plane + edge halfplane)
+- 0x8007c4d0 raycast thunk / 0x8007c4f0 AddFace / 0x8007c56c GetOrCreate / 0x8007cc54 Base_Dtor
+- 0x8007c644 PtrVec_InsertFill / 0x8007cabc PtrVec_Reserve (STL vector<void*>)
+- 0x8007c470 StrPcbVec_Dtor / 0x8007c5e0 SimpleVec_Dtor / 0x8007d0d4 CourseAuxClass_VtableDtor (命名保留: 親 class 未確定)
+
+GXChannel (clItemBox 描画パイプ):
+- 0x8007d11c PushTransform / 0x8007d2ac PushChannelColors (HSD_TE color chain quantize)
+- 0x8007d7bc Unbind / 0x8007d834 Bind / 0x8007d9c4 Dtor / 0x8007da5c Init
+
+DVDLoad (archive sync/async loader + page-throttle):
+- 0x8007dc08 DrawDoneCallback / 0x8007dc38 AsyncStop / 0x8007dc8c AsyncStart (GX DrawDone hook)
+- 0x8007dd00 OpenAllocReadRelocSync (FileLoader_Open 本体、archive parse + reloc)
+- 0x8007dfd4/dfdc GetMax/LastReadSec / 0x8007dfe4 ReadChunkPathOpen / 0x8007e178 ReadChunkHandle
+- 0x8007e28c RecordOpStart / 0x8007e2b8 WaitIfSamePage (1KB 同 page throttle)
+- 0x8007e344 DVDFile_ProbeExists
+
+TransitionEffect (race screen overlay):
+- 0x8007e390 Dtor / 0x8007e4cc Tick / 0x8007ea4c RenderPass (case 1..6 各種演出)
+- 0x8007fa88 DrawCarRouletteOverlay / 0x8007fe0c DrawCarRouletteAndQuad
+
+主要発見 (Session 60):
+- **Triforce SCI2 Card-RW driver 全 29 関数同定**: Card-RW テスト pages (Session 59) の下層、`clTriforceSci2Device`
+  系の RS232C ポート 2 経由通信。9 種 SendCmd wrapper (Ping/Print/Reset/LedSet/Register/Options/Cleaning/Space/Retry)
+  + 5-state machine Tick + 12 status decoder。"clTriforceSci2Device::open::acSciPortInit2 error" 文字列で確証。
+- **clDrawMan の 3 段 AddSorted variants** (depthBias なし / depthBias あり / DepthRange) で透過描画の sort バリエーション。
+- **SpecialFaceMesh** = 壁衝突用 raycast 構造、precomputed plane + edge tangents で AABB+plane+halfplane の三段 culling。
+- **KartTireFX** が KartDriver.behaviorObj として 0xc4 byte、36 joint cache + 4 wheel + gear stage 0..4 で
+  per-frame anim mtx copy + render。Agent J の `ShowGearStageJObjs` (0x80077e24) は同 class の補助。
+- **TransitionEffect** = race scene overlay、6 種演出 (boost flash / damage flash / RGBA gradient / 8-quad mosaic / position roulette / kart-roulette).
+
+命名保留 (Session 60):
+- 0x80070ea8 FlashFadeOverlay_Draw (scene-transition 側未調査)
+- 0x80073e20 / 0x80073f24 SmallObj_Dtor_VtableA/B (GameCoin/CoinManager 周辺の vtable 主未確定)
+- 0x8007d0d4 CourseAuxClass_VtableDtor (vtable PTR_PTR_803fe0c8 の親クラス特定不能)
 
 ### Session 59 完了分 (2026-05-18、50 件) — 4 並列 background agent E/F/G/H
 
@@ -2213,10 +2327,12 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-59)
+## 累計 (Session 1-60)
 
-合計 **657 件処理** (rename ~639、諦め ~9、プレースホルダ rename 6 + 7 = 13) / 1500 件 ≒ **43.8%**
-(Session 56-58 = +49 件、Session 59 = +50 件 (Agent E 8 + F 21 + G 10 + H 11、命名保留 5 含む)、合計 +99 件)
+合計 **784 件処理** (rename ~762、諦め ~9、プレースホルダ rename 6 + 13 = 19) / 1500 件 ≒ **52.3%**
+(Session 56-58 = +49 件、Session 59 = +50 件、Session 60 = +127 件 (Agent I 28 + J 32 + K 26 + L 41、命名保留 9 含む)、合計 +226 件)
+
+**マイルストーン到達: 50% 通過**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
