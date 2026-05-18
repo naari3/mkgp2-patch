@@ -25,8 +25,36 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8005b104 (InputCmd_SetGlobalConfig rename 完)
-- 次セッション開始点: 0x8005b118 以降
+- 最後に処理した address: 0x8005b43c (EffectSteering_ResetKartItemAndClear rename 完)
+- 次セッション開始点: 0x8005b490 以降
+
+### Session 50 完了分 (2026-05-18、5 件) — EffectState / EffectSpeed / EffectSteering core API
+
+| Address | 新名 | 用途 |
+|---|---|---|
+| 0x8005b118 | EffectState_ReleaseAndClear | vtbl[3] で sub-state 解放 + slot clear (9 caller in KartItem hit/fall) |
+| 0x8005b168 | EffectState_HasContent | +0x1c != 0 branchless predicate |
+| 0x8005b17c | EffectSpeed_TickAndGet | 0x28 byte EffectSpeed の per-frame ramp + read (CarObject_MainUpdate から) |
+| 0x8005b288 | EffectSteering_InitStandard_t9 | clEffectSteering::initStandard_t (debug str 確証) — type 9 effect 起動 |
+| 0x8005b43c | EffectSteering_ResetKartItemAndClear | KartItem_ResetStrPcbToIdle + state clear |
+
+主要発見:
+- **clEffectSteering クラス確定** (debug string `s_clEffectSteering__initStandard_t_802edd98`)。
+  - 0x44+ byte struct、+0x04 parent、+0x08..+0x18 ramp accumulator、+0x1c effect type (1..9)
+  - +0x20 = 選択された sub-state ptr、+0x24..+0x40 = 8 sub-state slot ptrs
+  - InitStandard_t9 は switch table を common dispatcher として再利用 (= t1-t8 variant も
+    同パターンで存在する可能性。SET +0x1c THEN switch +0x1c で具体化)
+- **EffectSpeed (0x28 byte) の Tick semantics 確定**: 整数 ramp accumulator
+  (+0x14 target, +0x18 current, +0x1c step) + child sub-state ptr (+0x20 vtbl-driven).
+  Tick で int ramp、clamp、return float at +0x44 or source fallback at parent+0x9c。
+- **EffectState の release pattern**: 9 caller (KartItem/CarObject hit) が同じ
+  EffectState_ReleaseAndClear (0x8005b118) を call — generic release helper。
+
+副次 rename 候補:
+  FLOAT_806d2978 → STEERING_RAMP_SCALE (= e.g. 60.0)
+  FLOAT_806d297c → STEERING_RESET_VALUE
+  KartItem_ResetStrPcbToIdle (既存 named) との連携: EffectSteering 終了で SteeringPcb を idle へ
+  EffectSteering の t1-t8 variant が adjacent address に存在する可能性 (要 scan)
 
 ### Session 49 完了分 (2026-05-18、12 件) — KartItemAudio Throw/HitConfirm + InputCmd gesture detector
 
@@ -1736,9 +1764,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-49)
+## 累計 (Session 1-50)
 
-合計 **503 件処理** (rename ~490、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **33.5%**
+合計 **508 件処理** (rename ~495、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **33.9%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
