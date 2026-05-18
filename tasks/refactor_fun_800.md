@@ -25,8 +25,47 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8004e2b0 (KartItem_Dtor rename 完)
-- 次セッション開始点: 0x8004edd4 以降 (0x8004e618 は CarObject_Init で既 named)
+- 最後に処理した address: 0x8004f2e8 (KartItem_SetStrPcbCmd2dFromFloat rename 完)
+- 次セッション開始点: 0x8004f340 以降
+
+### Session 34 完了分 (2026-05-18、13 件) — KartItem shadow update + accessors + StrPcb command setters
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8004edd4 | FUN_8004edd4 | KartItem_UpdateShadowBillboardAndViewport | 速度 saturation → shadow billboard + SceneRender viewport set |
+| 0x8004efd8 | FUN_8004efd8 | KartItem_AdvanceAnim3c | self+0x3c の anim 1-frame advance |
+| 0x8004f040 | FUN_8004f040 | KartItem_GetMaxSpeedWithBonus | speed table + bonus multiplier (+0x2e0) で max-speed 計算 |
+| 0x8004f0f8 | FUN_8004f0f8 | KartItem_GetCurrentSpeedWithBonus | KartMovement_CalcSpeedWithCoinBonus(self+0x28, 0) wrapper |
+| 0x8004f134 | FUN_8004f134 | KartItem_GetCarObjectSoundCh | self+0x34 getter |
+| 0x8004f144 | FUN_8004f144 | KartItem_GetByte_f4 | self+0xf4 byte getter |
+| 0x8004f14c | FUN_8004f14c | KartItem_GetBoostArmedAndTimer | self+0xb1 byte + self+0xb4 float via out-ref |
+| 0x8004f168 | FUN_8004f168 | KartItem_GetCarObjectState_2bc | CarObject+0x2bc byte getter |
+| 0x8004f174 | FUN_8004f174 | KartItem_ResetStrPcbToIdle | StrPcb 0x28/0x1e/0/0 idle preset (KartItem_Dtor の preset と同等) |
+| 0x8004f1cc | FUN_8004f1cc | KartItem_SetStrPcbIntensityFromSpeed | saturate × FLOAT_806d27e4 × FLOAT_806d2700 → StrPcb counter |
+| 0x8004f238 | FUN_8004f238 | KartItem_SetStrPcbCmd2fFromFloat | float × FLOAT_806d27e8 → StrPcb Cmd2f byte |
+| 0x8004f290 | FUN_8004f290 | KartItem_SetStrPcbCmd2eFromFloat | 同 Cmd2e |
+| 0x8004f2e8 | FUN_8004f2e8 | KartItem_SetStrPcbCmd2dFromFloat | 同 Cmd2d (3-byte preset の 3 setter family) |
+
+主要発見:
+- **KartItem accessor cluster** が 0x8004f000-0x8004f2ff 範囲に集中。inline 化されず
+  individual function として外部に export されている = `KartItem` class の public API。
+  StrPcb setter 3-family (Cmd2d/2e/2f) + intensity setter は全て `self+0x20 == 1` で
+  local-control gated → "remote/AI のときは steering wheel に書かない" 安全策。
+- **bonus multiplier**: CarObject+0x2e0 が "速度ボーナス" の蓄積 field。
+  KartItem_GetMaxSpeedWithBonus が `base × (1 + bonus)` で適用する基準。
+- **KartItem_AdvanceAnim3c** の存在から self+0x3c は "AdvanceableAnim" interface
+  (per-frame tick 必要な anim handle)。これは KartItem_PerFrameStep の末尾
+  FUN_80056150(self+0x3c) と整合 (= commit 後の advance)。
+- **KartItem_UpdateShadowBillboardAndViewport** の signed-float idiom が判明:
+  `(u32 ^ 0x80000000) → DOUBLE_806d2790 を引く` は u32→signed-float 高速変換
+  (CW compiler の signed int → double cast の lookup pattern)。
+
+副次 rename 候補:
+  FUN_80056308 → AdvanceableAnim_AdvanceOneFrame
+  FUN_80056150 → AdvanceableAnim_Commit
+  FUN_8006389c → KartItem_UpdateShadowBillboard_AnimPath
+  FUN_80061a88 → KartItem_UpdateBillboardMtx
+  FUN_80063e50 → KartItem_CommitShadowBillboard
 
 ### Session 33 完了分 (2026-05-18、3 件、大型関数のみ) — KartItem master Tick / Step / Dtor
 
@@ -1020,9 +1059,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-33)
+## 累計 (Session 1-34)
 
-合計 **330 件処理** (rename ~321、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **22.0%**
+合計 **343 件処理** (rename ~334、諦め ~9、プレースホルダ rename 2) / 1500 件 ≒ **22.9%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
