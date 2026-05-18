@@ -25,8 +25,32 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80031c50 (Object_SetJObjField40 rename 完)
-- 次セッション開始点: 0x80031cf8
+- 最後に処理した address: 0x800320d8 (Object_SetByte48 rename 完)
+- 次セッション開始点: 0x800320e0
+
+### Session 5 完了分 (2026-05-18、8 件 + 訂正 2 件) — JObj position/rotation getters/setters
+
+assert "translate" (FUN_80031f10、jobj.h:0x3aa) で確定: HSD JObj layout
+- jobj+0x1c..0x24: rotation Euler XYZ
+- jobj+0x2c..0x34: scale XYZ
+- jobj+0x38..0x40: position/translate XYZ
+- jobj+0x14: flags (0x2000000 = skip dirty, 0x800000 = no propagate, 0x40 = ?)
+
+訂正 (Session 4 で position と命名したが scale だった):
+- JObj_SetPosition (0x8003151c) → JObj_SetScale
+- Object_SetJObjPositionXYZ (0x80031ab4) → Object_SetJObjScaleXYZ
+
+Session 5 完了:
+| Address | 旧名 | 新名 |
+|---|---|---|
+| 0x80031cf8 | FUN_80031cf8 | Object_SetJObjPositionY |
+| 0x80031da0 | FUN_80031da0 | Object_SetJObjPositionX |
+| 0x80031e48 | FUN_80031e48 | Object_SetJObjPositionXYZ |
+| 0x80031f10 | FUN_80031f10 | Object_SetJObjPositionVec (assert "translate") |
+| 0x80031fe8 | FUN_80031fe8 | Object_GetJObjRotationZ |
+| 0x80032038 | FUN_80032038 | Object_GetJObjRotationY |
+| 0x80032088 | FUN_80032088 | Object_GetJObjRotationX |
+| 0x800320d8 | FUN_800320d8 | Object_SetByte48 (obj+0x48、用途未特定) |
 
 ### Session 4 完了分 (2026-05-18、12 件) — JObj forwarding setters
 
