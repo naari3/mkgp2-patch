@@ -25,8 +25,43 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8005c51c (EffectSteering_Dtor rename 完)
-- 次セッション開始点: 0x8005c75c 以降
+- 最後に処理した address: 0x8005ca64 (EffectSteering_Ctor rename 完)
+- 次セッション開始点: 0x8005ccbc 以降
+
+### Session 53 完了分 (2026-05-18、9 件) — SteeringSubState 8 dtor + EffectSteering_Ctor
+
+| Address | 新名 | 用途 |
+|---|---|---|
+| 0x8005c75c | SteeringSubState_Dtor_t1 | t1 slot dtor (vtbl 0x803f9c48, +0x24, size 0xc) |
+| 0x8005c7b8 | SteeringSubState_Dtor_t2t4 | t2/t4 共有 slot dtor (vtbl 0x803f9c14, +0x28, size 0x24) |
+| 0x8005c814 | SteeringSubState_Dtor_t3 | t3/t3_Uniform 共有 slot dtor (vtbl 0x803f9bf4, +0x2c, size 0x1c) |
+| 0x8005c870 | SteeringSubState_Dtor_t5 | t5 slot dtor (vtbl 0x803f9bd4, +0x30, size 0x14) |
+| 0x8005c8cc | SteeringSubState_Dtor_t6 | t6 slot dtor (vtbl 0x803f9bb4, +0x34, size 0x2c) |
+| 0x8005c928 | SteeringSubState_Dtor_t7 | t7 slot dtor (vtbl 0x803f9b94, +0x38, size 0x1c) |
+| 0x8005c984 | SteeringSubState_Dtor_t8 | t8 slot dtor (vtbl 0x803f9b74, +0x3c, size 0xc) |
+| 0x8005c9e0 | SteeringSubState_Dtor_t9 | t9 slot dtor (vtbl 0x803f9b54, +0x40, size 0x20、+0xc に ring 所有) |
+| 0x8005ca64 | EffectSteering_Ctor | 0x48-byte ctor、8 sub-state を Alloc して slot 配置 + +0x44 に float 定数 |
+
+主要発見:
+- **EffectSteering 構造 0x48 byte / 全 8 sub-state class 同定**: ctor (0x8005ca64) を読んで
+  「どの secondary vtable がどの t-slot に置かれるか」が一意に確定。8 dtor の slot→vtable→dtor
+  対応表は ctor plate に格納。
+- **base vtable 0x803f9c28 = clSteeringSubState**。8 個の sub-state は全てこの base から派生
+  (CW MI codegen で `*self = base; *self = derived` の二段ストア)。
+- **t9 sub-state のみ heap 所有** (cap=14 の int[] ring at +0xc)、他 7 つは内部 alloc なし。
+- **dtor 8 個の disassembly stale-CR0 branch 罠**: `or. r31,r3,r3 → beq 0x...` の後に CR0 を
+  更新しない命令列を挟むため、後段の beq が "always-fall-through" として残る。decompile では
+  消えず `if (param_1 != 0xfffffff8)` 等の奇妙な条件に化ける。NULL guard 1 段で十分という認識
+  でよい。
+- **t-slot → sub-state size 対応** (caller でこれらを field 化したいときの参考):
+  - t1: 0x0c (vtbl + back-ptr のみ)
+  - t2/t4: 0x24 (vtbl + back-ptr + 4 int + flag)
+  - t3/t3_U: 0x1c (vtbl + back-ptr のみだが size 0x1c 確保)
+  - t5: 0x14
+  - t6: 0x2c
+  - t7: 0x1c
+  - t8: 0x0c
+  - t9: 0x20 (cap, int* ring, 3 累積, flag)
 
 ### Session 52 完了分 (2026-05-18、7 件) — EffectSteering t1/t2/t3_Uniform/t4 + Dtor + 2 Reset
 
@@ -1832,9 +1867,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-52)
+## 累計 (Session 1-53)
 
-合計 **522 件処理** (rename ~509、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **34.8%**
+合計 **531 件処理** (rename ~518、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **35.4%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
