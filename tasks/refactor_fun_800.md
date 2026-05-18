@@ -25,8 +25,33 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80040e9c (KartDriver_GetJointByIdx rename 完)
-- 次セッション開始点: 0x80041700 範囲 (KartDriver_GetJointByIdx の直後)
+- 最後に処理した address: 0x80041fe0 (KartDriver_TriggerSlotC3Action rename 完)
+- 次セッション開始点: 0x80042000 以降
+
+### Session 27 完了分 (2026-05-18、8 件) — KartDriver root accessor + per-slot transform setters
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80041748 | FUN_80041748 | KartDriver_GetKartRootMtx | driver->kartModel の JObj local mtx 取得 (100+ caller) |
+| 0x8004178c | FUN_8004178c | KartDriver_SetJointPosY_Slot3d | joint slot 0x3d の JObj position Y setter |
+| 0x80041858 | FUN_80041858 | KartDriver_SetJointPosY_Slot3c | 同 slot 0x3c |
+| 0x80041924 | FUN_80041924 | KartDriver_SetJointPosY_Slot3b | 同 slot 0x3b |
+| 0x800419f0 | FUN_800419f0 | KartDriver_SetJointPosY_Slot3a | 同 slot 0x3a |
+| 0x80041abc | FUN_80041abc | KartDriver_SetEulerY_4Joints_LastMirrored | 4 joint (3a/3b/59/5b) Euler Y、最後 mirror |
+| 0x80041d80 | FUN_80041d80 | KartDriver_SetUniformScale_4Wheels | 4 wheel (3a-3d) uniform scale (X=Y=Z) |
+| 0x80041fe0 | FUN_80041fe0 | KartDriver_TriggerSlotC3Action | slot 0xc3 non-NULL で FUN_80079224 trigger |
+
+主要発見:
+- **per-wheel transform setter pattern**: slot 0x3a..0x3d = 4 wheel joints (tire/ground 系)
+- **mirror slot pair**: 0x59/0x5b は対称 part (= 左右の handle/wheel)、最後 element の
+  rotation を -input で適用
+- JOBJ_USE_QUATERN flag (0x20000) チェック付き Euler write (assert で QUATERN モード排除)
+- **dirty mark pattern**: 0x2000000 skip-dirty flag + (0x800000=0 && 0x40!=0) で
+  FUN_802d20ac (mark dirty) 呼び出しの共通 idiom (8+ 関数で同 boilerplate)
+
+副次 rename 候補:
+  FUN_802d20ac → JObj_MarkDirty (recurring)
+  FUN_80079224 → KartDriver slot C3 用 action (副次調査)
 
 ### Session 26 完了分 (2026-05-18、8 件) — KartItem state begin family + KartDriver joint accessors
 
@@ -658,9 +683,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-26)
+## 累計 (Session 1-27)
 
-合計 **255 件処理** (rename ~247、諦め ~8) / 1500 件 ≒ **17.0%**
+合計 **263 件処理** (rename ~255、諦め ~8) / 1500 件 ≒ **17.5%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
