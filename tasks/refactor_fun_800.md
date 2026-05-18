@@ -25,8 +25,37 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8003aa58 (SceneRender_Dtor rename 完)
-- 次セタッション開始点: 0x8003ac84 (FUN_8003ac84、Session 9 で半解析済の clRom path-keyed table walker)
+- 最後に処理した address: 0x8003aee8 (MemoryManager_Free rename 完)
+- 次セッション開始点: 0x8003b120 (MemoryManager_Alloc、副次 rename 候補で既出) 経由 0x8003b200 範囲
+
+### Session 20 完了分 (2026-05-18、3 件) — clRom table sweep + memory manager pair
+
+Session 8 plate で「ObjectChain_Release」と仮称していた FUN_8003aee8 が実は
+MemoryManager_Free (HeapFree wrapper) と確定。session 8/9 の plate 内 "FUN_8003aee8"
+記述は新名で読み替え。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8003ac84 | FUN_8003ac84 | ClRomTable_PurgeAll | DAT_80598678 (40-entry path-keyed table) を全 sweep dispose |
+| 0x8003adfc | FUN_8003adfc | MemoryManager_AllocTagged | tag string で識別する allocator wrapper (debug error 識別用) |
+| 0x8003aee8 | FUN_8003aee8 | MemoryManager_Free | HeapFree wrapper (init check + scope timer)、100+ caller |
+
+主要発見:
+- DAT_80598678 は clRom-keyed registry table (40 entries × (clRomEntry*, path*))
+- MemoryManager 三組:
+  - Alloc (FUN_8003b120、既知): 一般 alloc
+  - AllocTagged (FUN_8003adfc、本 session): error message tag 付き alloc
+  - Free (FUN_8003aee8、本 session): HeapFree wrapper
+- Session 8 で誤称した FUN_8003aee8 = "ObjectChain_Release" は MemoryManager_Free が
+  正解 (Object dtor で sub-resource ptr を free する用途で頻出)
+
+副次 rename 候補:
+  DAT_80598678 → g_clRomKeyedTable
+  FUN_80278fd8 → strcmp (再認)
+  FUN_8008ee60 → HeapFree_Internal
+  FUN_8008ef5c → HeapAlloc_Internal
+  DAT_806d0fa1 → g_memoryManagerInitialized
+  DAT_806cf010 → g_mainHeap
 
 ### Session 19 完了分 (2026-05-18、6 件) — SceneRender per-object pipeline
 
@@ -449,9 +478,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-19)
+## 累計 (Session 1-20)
 
-合計 **215 件処理** (rename ~207、諦め ~8) / 1500 件 ≒ **14.3%**
+合計 **218 件処理** (rename ~210、諦め ~8) / 1500 件 ≒ **14.5%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
