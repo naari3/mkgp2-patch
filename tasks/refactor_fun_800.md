@@ -25,8 +25,38 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80034a6c (DObj_GetNext rename 完)
-- 次セッション開始点: 0x80034b0c (FUN_80034dfc 周辺の Object dtor secondary chain から)
+- 最後に処理した address: 0x80034dfc (clRom_Release rename 完)
+- 次セッション開始点: 0x800350a8 (Object_ReleaseAnimResource_Impl 系から、または 0x80036988)
+
+### Session 9 完了分 (2026-05-18、6 件) — clRom (ROM/asset loader) subsystem
+
+clRom = ROMData / asset loader 系。debug HUD の "clRom: %04d" format string で system 名確定。
+双方向リンクトリスト + refcount 管理。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80034a84 | FUN_80034a84 | clRom_GetActiveCount | DAT_806d0fec (active count) getter、debug HUD のみ |
+| 0x80034a94 | FUN_80034a94 | clRom_DtorForce | refcount 無視で force dtor + unlink + free |
+| 0x80034c38 | FUN_80034c38 | DVDFile_LoadSync | DVD file 同期読み + 32-align alloc (clRom と independent) |
+| 0x80034ca0 | FUN_80034ca0 | clRom_DumpListOverlay | debug HUD で全 entry 表示 ("No %02d %02d %s") |
+| 0x80034d24 | FUN_80034d24 | clRom_PurgeAll | 全 entry sweep 40+ caller (scene change 用) |
+| 0x80034dfc | FUN_80034dfc | clRom_Release | refcount decrement、0 で dtor (Object dtor から呼ばれる) |
+
+主要発見:
+- **clRom subsystem 確定**: debug HUD format string s_clRom__04d_802e8e68 で system 名特定
+- **double-linked list + refcount**: PTR_806d0fe0 (head) / PTR_806d0fe4 (tail) /
+  DAT_806d0fe8 (entry count) / DAT_806d0fec (active count、別 counter)
+- **LoaderEntry_Partial layout** (Ghidra struct 既定義):
+  - +0x00: refcount
+  - +0x08: prev / +0x0c: next
+  - +0x10: handle / +0x14: flags (0/1 で 解放経路分岐)
+  - +0x18+: path string
+- **dtor variant trio**:
+  - clRom_DtorForce: refcount 無視 (path-keyed table dispose)
+  - clRom_Release: refcount check、0 で free (Object dtor 経路)
+  - clRom_PurgeAll: 全 sweep (scene change)
+- **DVDFile_LoadSync は clRom と independent**: 32-aligned 1 ショット buffer 確保 + sync read
+- 副次 rename 候補 5 件 (DAT_*, FUN_802db2d4/dc964/8007e344/8003b120/8007dfe4)
 
 ### Session 8 完了分 (2026-05-18、9 件) — animation binding pair + HSD hierarchy getters
 
@@ -79,9 +109,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-8)
+## 累計 (Session 1-9)
 
-合計 **127 件処理** (rename ~121、諦め ~6) / 1500 件 ≒ **8.5%**
+合計 **133 件処理** (rename ~127、諦め ~6) / 1500 件 ≒ **8.9%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
