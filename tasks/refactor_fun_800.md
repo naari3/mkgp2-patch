@@ -25,8 +25,49 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80038824 (ClStrPcb_Dtor rename 完)
-- 次セッション開始点: 0x80038e30 (ClStrPcb_Inner_Dtor 系から)
+- 最後に処理した address: 0x80038f84 (Mtx4x4_TransposeTo4x3 rename 完)
+- 次セッション開始点: 0x80039000 範囲
+
+### Session 14 完了分 (2026-05-18、15 件) — CW STL template + shared_ptr + ClStrPcb vtable cluster
+
+CW MSL の STL container (set/map 風) と shared_ptr テンプレートの instantiation 群、
+ClStrPcb vtable 3-level hierarchy の 2/3 段 dtor。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x800388b4 | FUN_800388b4 | ClStrPcb_Mid_Dtor | CW C++ 2-level vtable downgrade dtor (中間→基底) |
+| 0x80038934 | FUN_80038934 | STLContainer_GlobalInit_854 | DAT_80598554 を STL container として boot init + atexit 登録 |
+| 0x80038980 | FUN_80038980 | STLContainer_HeaderInit | sentinel node + size/root 初期化 (CW MSL 風) |
+| 0x800389a0 | FUN_800389a0 | STLContainer_Dtor | tree dispose entry (root != 0 で recursive dispose 呼び出し) |
+| 0x80038a00 | FUN_80038a00 | STLContainer_DisposeRecursive | 4-level manual unroll の tree subtree dispose、CW template 展開 |
+| 0x80038dc8 | FUN_80038dc8 | STLContainer_GetAllocatorSlot | self + 4 wrapper (trivial getter) |
+| 0x80038dd0 | FUN_80038dd0 | Stub_NoOp_38dd0 | empty stub (template no-op) |
+| 0x80038dd4 | FUN_80038dd4 | ClStrPcb_Base_Dtor | 基底 vtable のみ設定 shallow dtor |
+| 0x80038e30 | FUN_80038e30 | SharedPtr_Dtor | refcounted ptr の dispose (refcount decrement + 0 で free) |
+| 0x80038ea8 | FUN_80038ea8 | SharedPtr_Init | refcount cell alloc + value set ctor |
+| 0x80038f54 | FUN_80038f54 | Stub_NoOp_38f54 | empty stub |
+| 0x80038f58 | FUN_80038f58 | Stub_NoOp_38f58 | empty stub |
+| 0x80038f5c | FUN_80038f5c | Allocator_Deallocate | STL allocator deallocate() wrapper (TimedFree) |
+| 0x80038f80 | FUN_80038f80 | Stub_NoOp_38f80 | empty stub |
+| 0x80038f84 | FUN_80038f84 | Mtx4x4_TransposeTo4x3 | 16-float column-major → 12-float row-major matrix 変換 |
+
+主要発見:
+- **CW MSL STL template の instantiation cluster**: STLContainer_*、Stub_NoOp_*、
+  Allocator_Deallocate 等は CW template engine の per-type instantiation。trivial-type で
+  empty stub になる関数が多い (= compiler が template に default 引数を渡した結果)
+- **shared_ptr 実装** が SharedPtr_Init/Dtor で確認: 2-word struct = [raw_ptr, ref_cell]、
+  refcell は alloc'd int (initial count = 1)
+- **ClStrPcb は 3-level inheritance hierarchy**: 派生 vtable 803f56f0 → 中間 803f5700 →
+  基底 803f5710、各レベルに dtor あり (ClStrPcb_Dtor / Mid_Dtor / Base_Dtor)
+- **Mtx4x4_TransposeTo4x3**: 4x4 → 4x3 行列の transpose 経由 dimension reduction
+  (PSMTX44 → PSMTX の変換ヘルパー)
+- **STL container 用途は副次**: DAT_80598554 は副次 (game-global config or registry の可能性)
+
+副次 rename 候補:
+  DAT_80598554 → g_someSTLContainer (用途不明、副次調査)
+  DAT_80598548 → g_someSTLContainerData
+  FUN_8025d120 → 副次 (Mtx4x4_TransposeTo4x3 内、dst preprocessing)
+  PTR_803f56f0 / 803f5700 / 803f5710 → ClStrPcb 3 vtable
 
 ### Session 13 完了分 (2026-05-18、8 件) — strpcb singleton lifecycle + clamp util
 
@@ -278,9 +319,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-13)
+## 累計 (Session 1-14)
 
-合計 **177 件処理** (rename ~169、諦め ~8) / 1500 件 ≒ **11.8%**
+合計 **192 件処理** (rename ~184、諦め ~8) / 1500 件 ≒ **12.8%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
