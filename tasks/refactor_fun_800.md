@@ -25,8 +25,28 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80039cf4 (MetricsTable_Accumulate rename 完、session 2 deferred 名を正式採用)
-- 次セッション開始点: 0x80039d38 以降 (まだ未処理)
+- 最後に処理した address: 0x80039e10 (VolumeCalibration_DrawOverlay rename 完)
+- 次セッション開始点: 0x80039edc 以降
+
+### Session 16 完了分 (2026-05-18、4 件) — metrics init/shutdown + volume calibration overlay
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80039d38 | FUN_80039d38 | MetricsTable_Init | boot で g_metricsTable[48] を alloc + init + atexit 登録 |
+| 0x80039d90 | FUN_80039d90 | MetricsTable_Shutdown | g_metricsTable を sweep して per-slot dtor 実行 |
+| 0x80039dc8 | FUN_80039dc8 | MetricsTable_DefaultDtor | per-slot trivial dtor callback (実質 no-op) |
+| 0x80039e10 | FUN_80039e10 | VolumeCalibration_DrawOverlay | "Volume caribration" (vanilla typo) HANDLE/PEDAL 値表示 |
+
+主要発見:
+- Triforce cabinet の boot "Volume calibration" 画面 (steering / pedal raw value 確認画面)
+- format strings: "Volume caribration", "HANDLE NOW %d" (raw >> 6)
+- PTR_s_RIGHT_PEDAL_806d2480 が 2+ 個分の input label table
+
+副次 rename 候補:
+  FUN_80270d6c → Array_AllocAndInit (推測)
+  FUN_80270cf4 → Array_DisposeAll
+  FUN_80270c30 → AtExit_Register (再認)
+  PTR_s_RIGHT_PEDAL_806d2480 → g_calibrationInputLabels
 
 ### Session 15 完了分 (2026-05-18、3 件) — metrics table API trio
 
@@ -339,9 +359,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-15)
+## 累計 (Session 1-16)
 
-合計 **195 件処理** (rename ~187、諦め ~8) / 1500 件 ≒ **13.0%**
+合計 **199 件処理** (rename ~191、諦め ~8) / 1500 件 ≒ **13.3%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
