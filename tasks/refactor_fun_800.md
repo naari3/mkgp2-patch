@@ -25,8 +25,53 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80042610 (KartDriver_RenderTimed rename 完)
-- 次セッション開始点: 0x80042620 以降
+- 最後に処理した address: 0x80047118 (CourseEnvironment_RenderObjects_Timed rename 完)
+- 次セッション開始点: 0x800471b0 以降
+
+### Session 29 完了分 (2026-05-18、14 件 + 1 deferred) — KartDriver new/dtor chain + course env renderer
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80044d50 | FUN_80044d50 | KartDriver_InitFull | full kart driver init (robo-mario / bazooka / local-player extras 込み) |
+| 0x80045950 | FUN_80045950 | KartDriver_Dtor | kart driver tear-down (10-slot aux + 0x31 secondary clN free 含む) |
+| 0x80045b50 | FUN_80045b50 | KartDriver_Construct | zero-init + 10 × 0x24 aux struct allocate |
+| 0x80045e20 | FUN_80045e20 | KartDriver_New_Full | Construct → InitFull ctor chain |
+| 0x80045e88 | FUN_80045e88 | KartDriver_New_Empty | Construct のみの bare ctor |
+| 0x80045eb8 | FUN_80045eb8 | GetItemDataEntry_Bounded | itemId < 0x115 ガード付き GetItemDataEntry |
+| 0x80046050 | FUN_80046050 | ItemCategoryBudget_Decrement | item_data[5] カテゴリで budget[1..4] を decrement + 0 clamp |
+| 0x800462e8 | FUN_800462e8 | PathIndex_AdvanceCircular | (path[1] + delta) mod path[0] (loop add/sub) |
+| 0x8004632c | FUN_8004632c | Path_GetCurrentIndex | path[1] getter (Path_GetTotalCount のペア) |
+| 0x80046960 | FUN_80046960 | ObjectChain_RenderInZRange | 4-level unrolled chain + 末端 recursion で z-cull render |
+| 0x80046d84 | FUN_80046d84 | Subsystem36c_DispatchPass4_Timed | parent[0x36c].vtbl[4](self,4) + metrics slot 0x21 |
+| 0x80046e38 | FUN_80046e38 | Subsystem36c_DispatchPass2_Timed | 同 arg=2 variant |
+| 0x80046eec | FUN_80046eec | CourseEnvironment_RenderObjects | scene 0xd0/0x12/0x13/0x2f 系の object table を render |
+| 0x80047118 | FUN_80047118 | CourseEnvironment_RenderObjects_Timed | 上記の timed wrapper、metrics slot 0x20 |
+
+主要発見:
+- **KartDriver constructor chain** 確定:
+  - `KartDriver_New_Full = KartDriver_Construct + KartDriver_InitFull`
+  - `KartDriver_New_Empty = KartDriver_Construct` のみ
+  - `KartDriver_Construct` は driver[0xb7..0xc0] に 10 × 0x24 aux 確保 (`KartDriver_Dtor` の
+    10-slot free 対応) + 初期値 (-1 sentinels, 999 marker, FLOAT_806d2540=1.0 等) を流し込む
+- **CourseEnvironment_RenderObjects** は course の per-frame 環境 object renderer。8-slot
+  pre-render array + 0x1c-stride 可変長 table + 0x20 × 0x14-stride 固定 table の 3 種類の
+  chained-object structure を持つ。`ObjectChain_RenderInZRange` を呼び出す。
+- **path index API**: `Path_GetTotalCount(@+0) / Path_GetCurrentIndex(@+4) /
+  PathIndex_AdvanceCircular` の triplet が AI waypoint cursor の primitive。
+
+副次 rename 候補:
+  FUN_801746a8 / FUN_8017a52c / FUN_8017aa80 → env object 系 pre/effect/post hook
+  FUN_802d07d4 / FUN_802d0b48 → JObj layer mask manip (HSD?)
+  FUN_8016b0a0 / FUN_8016b0c4 → blend setup save/restore?
+  FUN_8023ff18 → HUD/light per-slot update
+  FUN_80048820 / FUN_80048890 / FUN_80048798 → ObjectChain サブ helper
+  FUN_8025df40 → likely PSMTXMultVec (view xform)
+
+諦めリスト追加:
+- 0x80045ff8: `(self[0x15] == 1) ? self[6] : -1` 形の 1-line accessor。命名のために
+  必要な構造体型 / xref tool が未利用 (mcp__ghidra__get_xrefs_to 等が disconnected)、
+  flag-byte の意味が code-only からは確定不能。後続セッションで xref tool が
+  復活したら再着手。
 
 ### Session 28 完了分 (2026-05-18、10 件) — KartDriver TickAction variants + Render dispatcher
 
@@ -720,9 +765,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-28)
+## 累計 (Session 1-29)
 
-合計 **273 件処理** (rename ~265、諦め ~8) / 1500 件 ≒ **18.2%**
+合計 **288 件処理** (rename ~279、諦め ~9) / 1500 件 ≒ **19.2%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
