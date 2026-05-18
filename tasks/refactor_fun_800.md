@@ -25,8 +25,39 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8003f668 (KartItem_CancelAndQueueDefault rename 完)
-- 次セッション開始点: 0x80040000 範囲 (要確認)
+- 最後に処理した address: 0x80040e9c (KartDriver_GetJointByIdx rename 完)
+- 次セッション開始点: 0x80041700 範囲 (KartDriver_GetJointByIdx の直後)
+
+### Session 26 完了分 (2026-05-18、8 件) — KartItem state begin family + KartDriver joint accessors
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x800404c4 | FUN_800404c4 | KartItem_CancelIfNotForced | self[+0x5e] gate 付き state cancel (CancelAndQueueDefault のバリアント) |
+| 0x80040890 | FUN_80040890 | KartItem_TryBeginState25 | state 0x25 の begin (no current/saved state 条件) |
+| 0x800408f8 | FUN_800408f8 | KartItem_TryBeginState21Family_v1 | state 0x21-0x24 family、saved value で分岐、+0x78 init = 1 |
+| 0x80040a28 | FUN_80040a28 | KartItem_TryBeginState21Family_v2 | 同 family の v2、+0x78 init = 0、param4 offset 差 |
+| 0x80040b48 | FUN_80040b48 | KartItem_TryBeginState18Family | state 0x18-0x1B family (saved 0/3/4/その他で variant) |
+| 0x80040d84 | FUN_80040d84 | KartDriver_GetJointPosition | joint translation (mtx col 0xc/0x1c/0x2c) → outVec 3 word |
+| 0x80040dfc | FUN_80040dfc | KartDriver_GetJointMatrix4x3 | joint mtx を column-major → row-major 変換で出力 |
+| 0x80040e9c | FUN_80040e9c | KartDriver_GetJointByIdx | jointSelector 0..0x10 → driver の joint field 別 JObj ptr 取得 (17-way dispatcher) |
+
+主要発見:
+- **KartDriver joint dispatcher** (0..0x10 = 17 種類):
+  - 0..3: tires FL/FR/RL/RR
+  - 4..7: ground FL/FR/RL/RR
+  - 8: engine
+  - 9: body
+  - 10/11: mufflers L/R
+  - 0xc: right hand
+  - 0xd: TeresaNull
+  - 0xe: InfoNull
+  - 0xf: HeadNull
+  - 0x10: koopa fire null (robo kart only)
+- **state group ID mapping** (TryBeginStateXXFamily 解析より):
+  - 0x18-0x1B family: saved 0/3/4/その他 → 0x18/0x1a/0x1b/0x19
+  - 0x21-0x24 family: 同上 → 0x21/0x23/0x24/0x22
+  - 0x25: 単独 state
+- **state begin の前提条件 pattern**: self[+0x7c] (current state)、+0xa9 (saved state)、+0x6e (cooldown)、+0xb0 (item type for 0x51 exclusion)、+0x5e (force flag)
 
 ### Session 25 完了分 (2026-05-18、12 件) — KartItem field setters/getters + cancel
 
@@ -627,9 +658,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-25)
+## 累計 (Session 1-26)
 
-合計 **247 件処理** (rename ~239、諦め ~8) / 1500 件 ≒ **16.5%**
+合計 **255 件処理** (rename ~247、諦め ~8) / 1500 件 ≒ **17.0%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
