@@ -25,8 +25,42 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80056b20 (KartItem_RenderCb_Mode1_Post rename 完)
-- 次セッション開始点: 0x80056c4c 以降
+- 最後に処理した address: 0x80056fc0 (TornadoEffect_Tick rename 完)
+- 次セッション開始点: 0x800576d8 以降
+
+### Session 45 完了分 (2026-05-18、6 件) — VisualEffectHolder_Dtor + TornadoEffect 系完結
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x80056c4c | FUN_80056c4c | VisualEffectHolder_Dtor | 17 caller の generic dtor (Resource[19] slot release + Object_DtorWithGXSync) |
+| 0x80056cb0 | FUN_80056cb0 | TornadoEffect_InitDetails | clNormal3D("tornado.dat") + 4x4 identity + 0x154 byte state init |
+| 0x80056ec0 | FUN_80056ec0 | TornadoEffect_Ctor | 0x154 byte ctor outer wrapper |
+| 0x80056f1c | FUN_80056f1c | TornadoEffect_RenderCallback | Object_RenderJObjTree wrapper (FUN_8007a078 callback) |
+| 0x80056f40 | FUN_80056f40 | TornadoEffect_SubmitRender | per-frame render queue submission (5 caller) |
+| 0x80056fc0 | FUN_80056fc0 | TornadoEffect_Tick | 大型 per-frame Tick (timers + wheel scale 3-mode FSM + color modulation + KartDriver resource flags) |
+
+主要発見:
+- **TornadoEffect = カート被弾時のスピン visual** (clNormal3D model `s_tornado_dat_802edc60` =
+  "tornado.dat" を 4x4 identity 配置で render)。0x154 byte の独立 state を持ち、
+  CarObject_Init で per-kart alloc。被弾時の wheel scale (4 wheel uniform) + body color
+  +tornado spin + KartDriver-side resource flag を統合管理。
+- **VisualEffectHolder_Dtor (0x80056c4c)** は generic dtor: ResourceHolder@(+0x10) の
+  19 slot release + mkgp2_Object_Partial@(+0xa8) dtor + TimedFree。17 caller が同じ
+  layout の visual effect holder 共有 (TornadoEffect は 1 例)。
+- **wheel scale animator の 3-mode FSM** (state[+0x104]):
+  - mode 1: single-direction lerp to target +0x108
+  - mode 0/-1: bidir lerp to 1.0 (FLOAT_806d28cc)
+  - mode 2: oscillator between [FLOAT_806d28f4, FLOAT_806d28f0]
+  KartDriver_SetUniformScale_4Wheels で 4 wheel に適用。
+- **player vs non-player alpha**: state[+0x8] == 1 なら FLOAT_806d28d4 (player full alpha)、
+  else FLOAT_806d28d8 (other transparent)。tornado overlay の visibility 制御。
+
+副次 rename 候補:
+  FUN_800af65c / FUN_800b541c → ResourceHolder_Alloc / ResourceHolder_Bind
+  FUN_800b542c → ResourceSlot_ReleaseAll_x19
+  FUN_800b5400/53cc/53dc/53ec/53bc → KartResourceHolder_Set{Scales, FlagD2, Flag30, FlagsC8CC, Pulse}
+  FUN_800dc638 → KartVisibility_IsHidden (推定)
+  FUN_8007a078 → RenderQueue_Submit_v1
 
 ### Session 44 完了分 (2026-05-18、14 件) — KartItem render callback pair table 全 7 mode 命名
 
@@ -1471,9 +1505,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-44)
+## 累計 (Session 1-45)
 
-合計 **453 件処理** (rename ~440、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **30.2%**
+合計 **459 件処理** (rename ~446、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **30.6%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
