@@ -25,8 +25,40 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8005b43c (EffectSteering_ResetKartItemAndClear rename 完)
-- 次セッション開始点: 0x8005b490 以降
+- 最後に処理した address: 0x8005bb0c (EffectSteering_InitStandard_t3 rename 完)
+- 次セッション開始点: 0x8005bbf0 以降 (= t2/t1 variants 候補)
+
+### Session 51 完了分 (2026-05-18、7 件) — EffectSteering Init t3/t5/t6/t8 + 2 Reset + sub-state setter
+
+| Address | 新名 | 用途 |
+|---|---|---|
+| 0x8005b490 | EffectSteering_InitStandard_t8 | type 8 init (+0x3c sub-state、direct float store) |
+| 0x8005b628 | EffectSteering_InitStandard_t6 | type 6 init (+0x34 sub-state、3 sub-fields + ramp re-arm) |
+| 0x8005b880 | EffectSteering_ResetSelfAndKartItem | full reset (+0x08/0x0c/0x24 clear) |
+| 0x8005b8cc | EffectSteering_InitStandard_t5 | type 5 init (+0x30 sub-state、StrPcb Cmd2d/2e force-feedback drive) |
+| 0x8005bab0 | EffectSteering_ResetSelfAndKartItem_v2 | reset variant 2 (+0x0c/0x10 のみ clear) |
+| 0x8005bb00 | EffectSteering_SetSubStateField38_C | *(self+0x38)+0xc = value setter |
+| 0x8005bb0c | EffectSteering_InitStandard_t3 | type 3 init (+0x2c sub-state、5 float setter) |
+
+主要発見:
+- **clEffectSteering t1-t9 family 確証**: 同じ switch table + ramp accumulator pattern を
+  9 つの type 個別に展開、各 type で:
+  - +0x1c に type 番号設定 (1..9)
+  - sub-state slot (case 1→+0x24, 2/4→+0x28, 3→+0x2c, 5→+0x30, 6→+0x34, 7→+0x38, 8→+0x3c, 9→+0x40)
+  - type 別 sub-state setup (vtbl[3] call / 直接 float store / sub-field setter)
+- **EffectSteering Reset には 2 variant**: full (self+0x880) と partial (self+0xab0)。
+  full は self+0x08/0x0c/0x24 全 clear、partial は self+0x0c/0x10 のみ。両方 parent
+  KartItem を ResetStrPcbToIdle + +0x48 = 0 する。
+- **t5 = StrPcb force-feedback 経路**: KartItem_SetStrPcbCmd2dFromFloat / Cmd2e で
+  steering 力覚を更新、scale は StrPcb_GetIntensityScale (player カート設定) × 定数。
+- **t6 = ramp re-arm pattern**: 完了状態の ramp なら新 target = old/2、direction reverse。
+- **t3 = 5-float setup**: sub-state[+0x08/0x0c/0x10/0x14/0x18] を一度に書く。CW param
+  register coalescing で v2/v3 の順序逆転 artifact あり。
+
+副次 rename 候補:
+  FLOAT_806d2984 / 2988 → STEERING_CMD2D_BASE / STEERING_CMD2E_BASE
+  FLOAT_806d2980 → STEERING_RAMP_HALF_SCALE
+  StrPcb_GetIntensityScale (既存 named): player カート個別の force-feedback gain
 
 ### Session 50 完了分 (2026-05-18、5 件) — EffectState / EffectSpeed / EffectSteering core API
 
@@ -1764,9 +1796,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-50)
+## 累計 (Session 1-51)
 
-合計 **508 件処理** (rename ~495、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **33.9%**
+合計 **515 件処理** (rename ~502、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **34.3%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
