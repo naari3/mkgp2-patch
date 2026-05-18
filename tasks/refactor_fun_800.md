@@ -25,8 +25,44 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8005bb0c (EffectSteering_InitStandard_t3 rename 完)
-- 次セッション開始点: 0x8005bbf0 以降 (= t2/t1 variants 候補)
+- 最後に処理した address: 0x8005c51c (EffectSteering_Dtor rename 完)
+- 次セッション開始点: 0x8005c75c 以降
+
+### Session 52 完了分 (2026-05-18、7 件) — EffectSteering t1/t2/t3_Uniform/t4 + Dtor + 2 Reset
+
+| Address | 新名 | 用途 |
+|---|---|---|
+| 0x8005bd04 | EffectSteering_InitStandard_t3_Uniform | t3 variant、3 sub-fields すべて同値 (sphere scale 的) |
+| 0x8005bec4 | EffectSteering_InitStandard_t4 | type 4 init (+0x28 sub-state、ramp re-arm with target=10000 hardcoded) |
+| 0x8005c0c4 | EffectSteering_ResetKartItemOnly | minimal reset (parent KartItem のみ) |
+| 0x8005c0fc | EffectSteering_InitStandard_t2 | type 2 init (+0x28 共有、dynamic ramp re-arm + DebugPrintf trace) |
+| 0x8005c338 | EffectSteering_InitStandard_t1 | type 1 init (+0x24 sub-state、最も単純) |
+| 0x8005c4e4 | EffectSteering_ResetKartItemOnly_v2 | byte-identical to 0x8005c0c4 (duplicate emission) |
+| 0x8005c51c | EffectSteering_Dtor | 9-slot full dtor (+0x24..+0x40 + active +0x20) |
+
+主要発見:
+- **EffectSteering t1-t9 全 9 variant 命名完了** (t3 と t3_Uniform で 10 関数):
+  | type | switch case | sub-state slot | param 構成 |
+  |---|---|---|---|
+  | t1 | 1 | +0x24 | 1 int |
+  | t2 | 2 | +0x28 | 2 floats + ramp re-arm with dynamic target |
+  | t3 | 3 | +0x2c | 5 distinct floats |
+  | t3_Uniform | 3 | +0x2c | uniform value × 3 + 2 extras |
+  | t4 | 4 | +0x28 (shared with t2) | 1 int + ramp re-arm with target=10000 fixed |
+  | t5 | 5 | +0x30 | 1 int + StrPcb Cmd2d/2e force-feedback drive |
+  | t6 | 6 | +0x34 | 3 sub-fields + ramp re-arm half-target |
+  | t7 | 7 | +0x38 | (要調査、0x8005bb00 が setter としてある) |
+  | t8 | 8 | +0x3c | 1 float direct store |
+  | t9 | 9 | +0x40 | 1 int + vtbl[3] init |
+- **clEffectSteering = 0x44 byte struct**: +0x04 parent, +0x08..+0x18 ramp accumulator,
+  +0x1c effect type, +0x20 active sub-state, +0x24..+0x40 = 8 sub-state slot ptrs。
+- **Dtor 構造**: 9 slot 全て vtbl[2] で destroy。"param_1 != 0xffffffXX" は CW codegen
+  artifact (= NULL guard at offset、param_1 + offset != 0 の判定)。
+- **複数 Reset variant** (Session 50/51 含めて全 4 variant):
+  - 0x8005b43c: state clear only
+  - 0x8005b880: full (self+0x08/0x0c/0x24 clear) + parent
+  - 0x8005bab0: variant 2 (self+0x0c/0x10 のみ) + parent
+  - 0x8005c0c4 / c4e4: minimal (parent only)
 
 ### Session 51 完了分 (2026-05-18、7 件) — EffectSteering Init t3/t5/t6/t8 + 2 Reset + sub-state setter
 
@@ -1796,9 +1832,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-51)
+## 累計 (Session 1-52)
 
-合計 **515 件処理** (rename ~502、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **34.3%**
+合計 **522 件処理** (rename ~509、諦め ~9、プレースホルダ rename 6) / 1500 件 ≒ **34.8%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
