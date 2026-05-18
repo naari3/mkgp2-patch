@@ -25,8 +25,48 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x8003ef20 (KartItem_TickTrailingFx rename 完)
-- 次セッション開始点: 0x8003f000 以降 (要確認)
+- 最後に処理した address: 0x8003f668 (KartItem_CancelAndQueueDefault rename 完)
+- 次セッション開始点: 0x80040000 範囲 (要確認)
+
+### Session 25 完了分 (2026-05-18、12 件) — KartItem field setters/getters + cancel
+
+KartItem 系 cluster の continuation: field-level setter/getter 9 件 + state cancel/trigger 3 件。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x8003f2d8 | FUN_8003f2d8 | KartItem_BroadcastParamToCarAndISE | car render + ISE 両者に param sync (重複防止) |
+| 0x8003f394 | FUN_8003f394 | KartItem_SetField358 | trivial setter +0x358 |
+| 0x8003f39c | FUN_8003f39c | KartItem_SetShortArray34a | 5-short config 配列 (+0x34a..+0x352) setter |
+| 0x8003f3e4 | FUN_8003f3e4 | KartItem_SetByte2b8 | trivial byte setter +0x2b8 |
+| 0x8003f3ec | FUN_8003f3ec | KartItem_GetCurrentISESlot | self[+0x2dc + slot*4] (active ISE ptr) |
+| 0x8003f410 | FUN_8003f410 | KartItem_SetField2ac | trivial setter +0x2ac |
+| 0x8003f418 | FUN_8003f418 | KartItem_GetOrAssignId | lazy ID gen + cache (+0x244 flag、+0x23c cached) |
+| 0x8003f554 | FUN_8003f554 | KartItem_SetVec3At338 | 3-word vec3 setter +0x338..+0x340 |
+| 0x8003f584 | FUN_8003f584 | KartItem_IsAtStartSlot | +0x248 == g_kartStartSlot + callback |
+| 0x8003f5c4 | FUN_8003f5c4 | KartItem_TriggerStateAction | self[+0x29c] への action trigger |
+| 0x8003f660 | FUN_8003f660 | KartItem_GetField1f0 | trivial getter |
+| 0x8003f668 | FUN_8003f668 | KartItem_CancelAndQueueDefault | active state を cancel + default (-1) を queue |
+
+主要発見:
+- **KartItem state struct layout 追加**:
+  - +0x23c / +0x244: cached id + generated flag (lazy ID)
+  - +0x248: kart slot id (= g_kartStartSlot 一致判定)
+  - +0x29c: state object ptr (KartItem_TriggerStateAction の対象)
+  - +0x338..+0x340: vec3 field (position?)
+  - +0x34a..+0x352: 5-short config array
+  - +0x358: 何かの param ptr
+  - +0x378 / +0x374: ISE param sync sticky
+- **CarObject ↔ ISE の sync 経路**: BroadcastParamToCarAndISE が両者に同時 propagate
+- **state cancel + default queue pattern**: 既存 state を full reset してから -1 を queue
+
+副次 rename 候補:
+  FUN_8009c170 → CarObject_GetActive
+  FUN_80250ae8 → CarObjectRender_SetParam
+  FUN_8024f650 → ISE_SetParam
+  FUN_8009bd04 → KartItemId_Generate
+  FUN_801737cc → KartItem_state callback (+0x29c 用)
+  FUN_801737f0 → KartItem_state action (+0x29c 用)
+  g_kartStartSlot — kart slot id 比較定数
 
 ### Session 24 完了分 (2026-05-18、5 件) — KartItem state machine cluster
 
@@ -587,9 +627,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-24)
+## 累計 (Session 1-25)
 
-合計 **235 件処理** (rename ~227、諦め ~8) / 1500 件 ≒ **15.7%**
+合計 **247 件処理** (rename ~239、諦め ~8) / 1500 件 ≒ **16.5%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
