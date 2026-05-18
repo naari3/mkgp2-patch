@@ -25,8 +25,52 @@
 各セッションで進めた範囲を記録。**「最後に処理した address」**を更新していけば、次セッションの再開点が明確になる。
 
 - 開始: 2026-05-18
-- 最後に処理した address: 0x80034dfc (clRom_Release rename 完)
-- 次セッション開始点: 0x800350a8 (Object_ReleaseAnimResource_Impl 系から、または 0x80036988)
+- 最後に処理した address: 0x800374f8 (StrPcb_OutputTick rename 完)
+- 次セッション開始点: 0x80037874 (FUN_80037874 以降)
+
+### Session 10 完了分 (2026-05-18、9 件) — strpcb (Steering PCB 通信) subsystem
+
+format string "strpcb result code is %c%c%c" で system 名 strpcb 確定。Triforce arcade
+cabinet の steering wheel PCB との 3-char ASCII 制御コード通信。
+
+| Address | 旧名 | 新名 | カテゴリ |
+|---|---|---|---|
+| 0x800350a8 | FUN_800350a8 | Object_ReleaseAnimResource_Impl | obj+0x14 gated chain release worker |
+| 0x800369c4 | FUN_800369c4 | QuadFrame_FromPackedCorners | 4-vec3 packed → tangent frame thin wrapper |
+| 0x800369f8 | FUN_800369f8 | QuadFrame_FromCornerPtrs | 4-corner quad の right/forward 単位 vec + center-Y 計算 (rsqrt + NR) |
+| 0x80036988 | FUN_80036988 | ObjectDtor_Trivial_988 | dead code (no callers / no xrefs) |
+| 0x80036e40 | FUN_80036e40 | StrPcb_Dtor | strpcb 系オブジェクトの vtable trivial dtor、13+ 件で fn ptr 渡される |
+| 0x80036e7c | FUN_80036e7c | StrPcb_StateTick | state machine countdown + "E20" error trigger + handle query |
+| 0x80036ffc | FUN_80036ffc | StrPcb_ParseResponse | 3-char response code "C/E/H" parser |
+| 0x800372f4 | FUN_800372f4 | StrPcb_InputTick | response 受信 + 3-byte rolling buffer + timeout 検出 |
+| 0x800374f8 | FUN_800374f8 | StrPcb_OutputTick | per-frame 8-byte command output + state/input tick chain |
+
+主要発見:
+- **strpcb (Steering PCB) 通信 subsystem 確定**: log format "strpcb result code is %c%c%c" /
+  "strpcb_e: result code is %c%c%c" でシステム名特定
+- **3-char ASCII 制御プロトコル**:
+  - "C01" / "C06" → Ack (state 遷移)
+  - "E00".."E2x" → エラーコード (E20 = expected reset)
+  - "H<hi><lo>" → handle/position data
+- **serial ring buffer 経由**: port 0 を SerialQueue_PushByte (FUN_80293338) /
+  PopByte (FUN_8029321c) / AvailableBytes (FUN_80293290) で I/O
+- **StrPcb state struct** layout 大半確定 (0x60+ byte、+0x10 = current position,
+  +0x20 = state, +0x24 = status byte, +0x48 = intensity, +0x58..0x5a = last error code)
+- **QuadFrame_From* 数値計算**: 4-corner quad から tangent/forward unit vec + center-Y、
+  rsqrt + 2-step Newton-Raphson 精度向上の典型 (epsilon fallback 付き)
+- **trivial dtor の重複**: CW C++ ABI が per-class __dt を生成するため、内容が同一でも
+  別 vtable 参照のため別関数として残る (ObjectDtor_Trivial_988 と StrPcb_Dtor は同 body)
+
+副次 rename 候補:
+  FUN_80293338 → SerialQueue_PushByte
+  FUN_80293290 → SerialQueue_AvailableBytes
+  FUN_8029321c → SerialQueue_PopByte
+  FUN_80038778 → saturate (float)
+  FUN_80038798 → clamp (int)
+  FUN_802768b4 → memmove
+  DAT_80598500-80598508 → g_strPcbOutBuf
+  DAT_806d1000-1004 → g_strPcbRecvBuf / g_strPcbRecvIdx
+  DAT_806d100c → g_strPcbLastRecvTick
 
 ### Session 9 完了分 (2026-05-18、6 件) — clRom (ROM/asset loader) subsystem
 
@@ -109,9 +153,9 @@ MTX slot 系 (obj+0x18) と、JObj render forwarder、anim drive helper、HSD hi
 | 0x80032540 | FUN_80032540 | ObjectTree_BlendOrCopy_Timed | wrapper + metric slot 9 |
 | 0x8003267c | FUN_8003267c | Object_CopyFieldsRotPosScale | 単 node の transform copy helper |
 
-## 累計 (Session 1-9)
+## 累計 (Session 1-10)
 
-合計 **133 件処理** (rename ~127、諦め ~6) / 1500 件 ≒ **8.9%**
+合計 **142 件処理** (rename ~135、諦め ~7) / 1500 件 ≒ **9.5%**
 
 主要発見:
 - mkgp2 universal base class **ObjectBase** (vtable @ 0x803f5658)、CW C++ ABI 的 dtor chain。
